@@ -41,6 +41,24 @@ import {
   toVoiceSessionInfo,
 } from "./voice-session-pool.js";
 
+/**
+ * Default system prompt for voice sessions.
+ * Instructs the agent to acknowledge requests before tool calls to prevent
+ * silence during processing, improving conversational UX.
+ */
+export const DEFAULT_VOICE_SYSTEM_PROMPT = `You are in VOICE MODE. Follow these rules strictly:
+
+1. ALWAYS acknowledge the user's request conversationally BEFORE performing any tool calls.
+2. Use brief, natural phrases like "Let me check that for you..." or "One moment while I look that up..." or "I'll find that information..."
+3. Keep acknowledgments under 10 words.
+4. After acknowledging, proceed with tool calls and respond with results.
+5. Speak naturally and conversationally - you are talking, not typing.
+6. Keep responses concise - aim for spoken delivery under 30 seconds.
+
+Example flow:
+User: "What's on my calendar today?"
+You: "Let me check your calendar... [tool call] You have 3 meetings today: ..."`;
+
 export type OpenAICompatConfig = {
   apiKey?: string;
   defaultSessionKey?: string;
@@ -98,7 +116,7 @@ export function createOpenAICompatHandler(
     sessionKey: string,
     model: string,
     abortSignal: AbortSignal,
-    opts?: { lane?: string },
+    opts?: { lane?: string; extraSystemPrompt?: string },
   ): Promise<void> {
     const runId = randomUUID();
     // Look up session ID from store - voice sessions must use their pre-warmed session
@@ -107,7 +125,9 @@ export function createOpenAICompatHandler(
     const sessionStore = loadSessionStore(storePath);
     const sessionEntry = sessionStore[sessionKey];
     const sessionId = sessionEntry?.sessionId ?? randomUUID();
-    log.info(`handleStreamingRequest: sessionKey=${sessionKey} foundSessionId=${sessionEntry?.sessionId ?? "none"} using=${sessionId}`);
+    log.info(
+      `handleStreamingRequest: sessionKey=${sessionKey} foundSessionId=${sessionEntry?.sessionId ?? "none"} using=${sessionId}`,
+    );
     const sseWriter = createSSEWriter({ res, model });
 
     // Track accumulated text for building response
@@ -170,7 +190,9 @@ export function createOpenAICompatHandler(
 
     try {
       // Run the agent
-      log.info(`Calling agentCommand: sessionId=${sessionId} runId=${runId} lane=${opts?.lane ?? "none"} msg=${message.slice(0, 30)}...`);
+      log.info(
+        `Calling agentCommand: sessionId=${sessionId} runId=${runId} lane=${opts?.lane ?? "none"} extraPrompt=${opts?.extraSystemPrompt ? "yes" : "no"} msg=${message.slice(0, 30)}...`,
+      );
       await agentCommand(
         {
           message,
@@ -179,6 +201,7 @@ export function createOpenAICompatHandler(
           messageProvider: "openai-compat",
           abortSignal,
           lane: opts?.lane,
+          extraSystemPrompt: opts?.extraSystemPrompt,
         },
         runtime,
         deps,
@@ -209,7 +232,7 @@ export function createOpenAICompatHandler(
     sessionKey: string,
     model: string,
     abortSignal: AbortSignal,
-    opts?: { lane?: string },
+    opts?: { lane?: string; extraSystemPrompt?: string },
   ): Promise<void> {
     const runId = randomUUID();
     const sessionId = randomUUID();
@@ -267,6 +290,7 @@ export function createOpenAICompatHandler(
           messageProvider: "openai-compat",
           abortSignal,
           lane: opts?.lane,
+          extraSystemPrompt: opts?.extraSystemPrompt,
         },
         runtime,
         deps,
@@ -366,9 +390,9 @@ export function createOpenAICompatHandler(
     const voiceHeaderValue = req.headers["x-clawdbot-voice-session"];
     log.info(
       `[request] model=${model} stream=${stream} user=${user ?? "none"} ` +
-      `voiceHeader=${voiceHeaderValue ?? "none"} ` +
-      `userAgent=${req.headers["user-agent"]?.slice(0, 50) ?? "none"} ` +
-      `msgCount=${messages.length} firstMsg=${messages[0]?.content?.toString().slice(0, 50) ?? "empty"}...`
+        `voiceHeader=${voiceHeaderValue ?? "none"} ` +
+        `userAgent=${req.headers["user-agent"]?.slice(0, 50) ?? "none"} ` +
+        `msgCount=${messages.length} firstMsg=${messages[0]?.content?.toString().slice(0, 50) ?? "empty"}...`,
     );
 
     // Convert messages to Clawdbot format
@@ -455,6 +479,25 @@ export function createOpenAICompatHandler(
     // Route to appropriate handler
     // Voice requests get their own lane to avoid blocking on main session runs
     const lane = isVoiceMode ? "voice" : undefined;
+
+    // Build voice system prompt if in voice mode
+    // Use configured prompt, or default, or disabled if empty string
+    let extraSystemPrompt: string | undefined;
+    if (isVoiceMode) {
+      const configuredPrompt = openaiCompatConfig?.voiceSystemPrompt;
+      if (configuredPrompt === "") {
+        // Explicitly disabled
+        extraSystemPrompt = undefined;
+      } else {
+        extraSystemPrompt = configuredPrompt ?? DEFAULT_VOICE_SYSTEM_PROMPT;
+      }
+      if (extraSystemPrompt) {
+        log.info(
+          `Voice mode: injecting voice system prompt (${extraSystemPrompt.length} chars)`,
+        );
+      }
+    }
+
     if (stream) {
       await handleStreamingRequest(
         res,
@@ -462,7 +505,7 @@ export function createOpenAICompatHandler(
         sessionKey,
         effectiveModel,
         abortController.signal,
-        { lane },
+        { lane, extraSystemPrompt },
       );
     } else {
       await handleNonStreamingRequest(
@@ -471,7 +514,7 @@ export function createOpenAICompatHandler(
         sessionKey,
         effectiveModel,
         abortController.signal,
-        { lane },
+        { lane, extraSystemPrompt },
       );
     }
 

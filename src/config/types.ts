@@ -818,6 +818,13 @@ export type OpenAICompatConfig = {
    * Default: 50.
    */
   voiceCompactionThreshold?: number;
+  /**
+   * System prompt injected for voice sessions to improve conversational UX.
+   * Instructs the agent to acknowledge requests before tool calls to prevent
+   * silence during processing. Set to empty string to disable.
+   * Default: Built-in prompt encouraging acknowledgments.
+   */
+  voiceSystemPrompt?: string;
 };
 
 export type ModelApi =
