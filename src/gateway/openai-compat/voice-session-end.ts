@@ -6,6 +6,17 @@
  * Signals the end of a voice session and triggers compaction (summary written
  * back to the main session). This is a generic endpoint that can be called by
  * any voice provider (ElevenLabs webhook, Twilio, etc.).
+ *
+ * Accepts two request formats:
+ *
+ * 1. Simple format:
+ *    { conversation_id?, reason?, summary? }
+ *
+ * 2. ElevenLabs post_call_transcription webhook format:
+ *    { agent_id, conversation_id, status, transcript[], metadata?, analysis? }
+ *
+ * When ElevenLabs format is detected (has agent_id, conversation_id, and transcript array),
+ * the transcript is automatically converted to a summary for compaction.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -20,7 +31,7 @@ import {
 } from "./voice-session.js";
 import { releasePreWarmedSession } from "./voice-session-pool.js";
 
-/** Request body for ending a voice session. */
+/** Request body for ending a voice session (simple format). */
 export type VoiceSessionEndRequest = {
   /** Optional: specific voice session ID to end. If omitted, ends the single active session. */
   conversation_id?: string;
@@ -29,6 +40,62 @@ export type VoiceSessionEndRequest = {
   /** Optional: pre-generated summary from the voice provider. */
   summary?: string;
 };
+
+/** ElevenLabs transcript entry. */
+export type ElevenLabsTranscriptEntry = {
+  role: "user" | "agent";
+  message: string;
+  time_in_call_secs?: number;
+  tool_calls?: unknown[];
+  tool_results?: unknown[];
+};
+
+/** ElevenLabs post_call_transcription webhook payload. */
+export type ElevenLabsWebhookPayload = {
+  agent_id: string;
+  conversation_id: string;
+  status: "initiating" | "in-progress" | "processing" | "done" | "failed";
+  transcript: ElevenLabsTranscriptEntry[];
+  metadata?: Record<string, unknown>;
+  analysis?: {
+    call_successful?: boolean;
+    transcript_summary?: string;
+    evaluation_criteria_results?: Record<string, unknown>;
+    data_collection_results?: Record<string, unknown>;
+    custom_prompts?: Record<string, unknown>;
+  };
+};
+
+/**
+ * Check if the request body is ElevenLabs webhook format.
+ */
+function isElevenLabsFormat(body: unknown): body is ElevenLabsWebhookPayload {
+  if (typeof body !== "object" || body === null) return false;
+  const obj = body as Record<string, unknown>;
+  return (
+    typeof obj.agent_id === "string" &&
+    typeof obj.conversation_id === "string" &&
+    Array.isArray(obj.transcript)
+  );
+}
+
+/**
+ * Convert ElevenLabs transcript to a summary string.
+ */
+function formatElevenLabsTranscript(payload: ElevenLabsWebhookPayload): string {
+  // Prefer analysis summary if available
+  if (payload.analysis?.transcript_summary) {
+    return payload.analysis.transcript_summary;
+  }
+
+  // Otherwise format the transcript
+  const lines = payload.transcript.map((entry) => {
+    const role = entry.role === "user" ? "User" : "Agent";
+    return `${role}: ${entry.message}`;
+  });
+
+  return lines.join("\n");
+}
 
 /** Response from the voice session end endpoint. */
 export type VoiceSessionEndResponse = {
@@ -78,10 +145,9 @@ function sendError(
 
 /**
  * Read and parse JSON body from request.
+ * Returns the raw parsed JSON to allow format detection.
  */
-async function readJsonBody(
-  req: IncomingMessage,
-): Promise<VoiceSessionEndRequest> {
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -100,6 +166,35 @@ async function readJsonBody(
     });
     req.on("error", reject);
   });
+}
+
+/**
+ * Normalize request body to VoiceSessionEndRequest format.
+ * Accepts both simple format and ElevenLabs webhook format.
+ */
+function normalizeRequestBody(
+  body: unknown,
+  log: { info: (msg: string) => void },
+): VoiceSessionEndRequest {
+  // Check if this is ElevenLabs format
+  if (isElevenLabsFormat(body)) {
+    log.info(
+      `Detected ElevenLabs webhook format: agent_id=${body.agent_id}, transcript=${body.transcript.length} entries`,
+    );
+    return {
+      conversation_id: body.conversation_id,
+      summary: formatElevenLabsTranscript(body),
+      reason: body.status === "failed" ? "call_failed" : undefined,
+    };
+  }
+
+  // Simple format - return as-is with defaults
+  const simple = body as VoiceSessionEndRequest;
+  return {
+    conversation_id: simple.conversation_id,
+    summary: simple.summary,
+    reason: simple.reason,
+  };
 }
 
 /**
@@ -196,10 +291,12 @@ export function createVoiceSessionEndHandler(deps: VoiceSessionEndHandlerDeps) {
       return true;
     }
 
-    // Parse request body
+    // Parse request body and normalize to simple format
+    // Accepts both simple format and ElevenLabs webhook format
     let body: VoiceSessionEndRequest;
     try {
-      body = await readJsonBody(req);
+      const rawBody = await readJsonBody(req);
+      body = normalizeRequestBody(rawBody, log);
     } catch (err) {
       sendError(res, 400, {
         error: {

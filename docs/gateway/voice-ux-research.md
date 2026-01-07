@@ -35,10 +35,10 @@ ElevenLabs [recommends](https://elevenlabs.io/docs/agents-platform/customization
 3. Sessions use `thinkingLevel: "none"` for speed
 4. SSE streaming via `sse-writer.ts` can stream content chunks immediately
 
-**Current Gaps:**
-- No voice-specific system prompt injection
-- No mechanism to acknowledge before tool calls
-- `messagesToClawdbotFormat()` extracts system prompts but they're not used for voice
+**Addressed (Previously Gaps):**
+- ✅ Voice-specific system prompt injection now implemented
+- ✅ Acknowledgment before tool calls via prompt engineering
+- ✅ `extraSystemPrompt` passed through to agent when in voice mode
 
 ### Solution Options
 
@@ -104,10 +104,25 @@ For voice-to-main session sync, ElevenLabs provides [post-call webhooks](https:/
 - `analysis` (if configured)
 - `status`: initiated | in-progress | processing | done | failed
 
-**Clawdbot Already Has:**
+**Clawdbot Implementation:**
 - `/v1/voice/session/end` endpoint (see `voice-session-end.ts`)
-- Accepts optional `summary` from webhook
+- Accepts both simple format and ElevenLabs webhook format
+- Auto-detects format based on presence of `agent_id`, `conversation_id`, and `transcript` array
+- Extracts summary from `analysis.transcript_summary` or formats transcript
 - Supports `compactionSource`: 'self' | 'webhook' | 'auto'
+
+**Configuring ElevenLabs Post-Call Webhook:**
+
+1. In ElevenLabs Agent settings, go to Webhooks
+2. Enable "Post-call transcription" webhook
+3. Set webhook URL to: `https://your-tunnel-url/v1/voice/session/end`
+4. Add authentication header: `Authorization: Bearer YOUR_OPENAI_COMPAT_API_KEY`
+5. (Optional) Enable webhook signature verification for added security
+
+The endpoint automatically detects ElevenLabs format and extracts:
+- `conversation_id` for session matching
+- `analysis.transcript_summary` or formatted `transcript` for compaction
+- `status` to detect failed calls
 
 ### Timeout Configuration
 
@@ -125,25 +140,27 @@ For tools that take >10 seconds, consider:
 
 This requires coordination between voice session (Haiku) and main session (Opus).
 
-## Recommended Implementation Plan
+## Implementation Status
 
-### Phase 1: Voice System Prompt Injection (Simplest)
+### Phase 1: Voice System Prompt Injection ✅ COMPLETE
 
-1. Add `voiceSystemPrompt` to `OpenAICompatConfig`
-2. Inject it when `isVoiceMode` is detected in `index.ts`
-3. Default prompt instructs acknowledgment before tool use
+- Added `voiceSystemPrompt` to `OpenAICompatConfig`
+- Default `DEFAULT_VOICE_SYSTEM_PROMPT` instructs acknowledgment before tool use
+- Injected automatically when `isVoiceMode` is detected
+- Configurable: set to empty string to disable, or provide custom prompt
 
-### Phase 2: ElevenLabs Webhook Integration
+### Phase 2: ElevenLabs Webhook Integration ✅ COMPLETE
 
-1. Configure ElevenLabs to send `post_call_transcription` to `/v1/voice/session/end`
-2. Use transcript data to enrich main session context
-3. Already mostly implemented - needs testing
+- `/v1/voice/session/end` accepts ElevenLabs `post_call_transcription` format
+- Auto-detects format and extracts transcript/summary
+- Configure webhook URL in ElevenLabs Agent settings (see above)
 
-### Phase 3: Streaming Optimization (If Needed)
+### Phase 3: Streaming Optimization (Future)
 
+If prompt engineering is insufficient:
 1. Detect tool call intent in streaming response
 2. Inject acknowledgment at SSE level before tool execution
-3. More complex, only if prompt engineering insufficient
+3. More complex, only implement if needed
 
 ## References
 
