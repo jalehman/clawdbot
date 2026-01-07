@@ -453,17 +453,45 @@ export function stopVoiceSessionPool(): void {
 }
 
 /**
- * Run periodic warmup check.
- * - Refreshes sessions that are too old
- * - Creates sessions for main session keys that need them
+ * Check if a session key is a main session (eligible for pre-warming).
+ * Main sessions match pattern agent:main:* and do NOT contain :voice:.
  */
-async function runWarmupCheck(): Promise<void> {
+export function isMainSessionKey(key: string): boolean {
+  return key.startsWith("agent:main:") && !key.includes(":voice:");
+}
+
+/**
+ * Run periodic warmup check.
+ * - Discovers main sessions from the session store and creates pre-warmed sessions
+ * - Refreshes sessions that are too old
+ */
+export async function runWarmupCheck(): Promise<void> {
   if (!getConfigRef || !logRef) return;
 
   const config = getConfigRef();
   const now = Date.now();
 
-  // Check existing pre-warmed sessions
+  // Load session store to discover main sessions
+  const storePath = resolveStorePath(config.session?.store);
+  const store = loadSessionStore(storePath);
+
+  // Discover main sessions that need pre-warmed sessions
+  for (const [key, entry] of Object.entries(store)) {
+    // Only process main sessions (not voice sessions or other types)
+    if (!isMainSessionKey(key)) continue;
+
+    // Skip if no session ID (incomplete session)
+    if (!entry.sessionId) continue;
+
+    // Check if we already have a pre-warmed session for this main session
+    const existing = preWarmedSessions.get(key);
+    if (!existing) {
+      logRef.info(`Creating pre-warmed session for main session: ${key}`);
+      await createPreWarmedSession(key, config, logRef);
+    }
+  }
+
+  // Check existing pre-warmed sessions for staleness
   for (const [mainKey, session] of preWarmedSessions.entries()) {
     // Skip sessions in use
     if (session.inUse) continue;

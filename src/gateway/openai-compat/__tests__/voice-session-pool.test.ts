@@ -15,8 +15,10 @@ import {
   getPreWarmedSessionById,
   getPreWarmedSessionByMainKey,
   initVoiceSessionPool,
+  isMainSessionKey,
   isPoolEnabled,
   releasePreWarmedSession,
+  runWarmupCheck,
   stopVoiceSessionPool,
   toVoiceSessionInfo,
 } from "../voice-session-pool.js";
@@ -547,5 +549,215 @@ describe("getPreWarmedSessionById", () => {
     const found = getPreWarmedSessionById("nonexistent-id");
 
     expect(found).toBeUndefined();
+  });
+});
+
+describe("isMainSessionKey", () => {
+  it("returns true for main session keys", () => {
+    expect(isMainSessionKey("agent:main:openai-compat")).toBe(true);
+    expect(isMainSessionKey("agent:main:test")).toBe(true);
+    expect(isMainSessionKey("agent:main:custom-provider")).toBe(true);
+  });
+
+  it("returns false for voice session keys", () => {
+    expect(isMainSessionKey("agent:main:openai-compat:voice:prewarm-123")).toBe(
+      false,
+    );
+    expect(isMainSessionKey("agent:main:test:voice:session-456")).toBe(false);
+  });
+
+  it("returns false for non-main session keys", () => {
+    expect(isMainSessionKey("agent:ephemeral:test")).toBe(false);
+    expect(isMainSessionKey("some:other:key")).toBe(false);
+    expect(isMainSessionKey("agent:main")).toBe(false); // missing provider
+  });
+});
+
+describe("runWarmupCheck", () => {
+  beforeEach(async () => {
+    clearPreWarmedSessions();
+    stopVoiceSessionPool();
+    await fs.promises.mkdir(TEST_DIR, { recursive: true });
+  });
+
+  afterEach(async () => {
+    clearPreWarmedSessions();
+    stopVoiceSessionPool();
+    const files = await fs.promises.readdir(TEST_DIR).catch(() => []);
+    for (const file of files) {
+      await fs.promises.unlink(path.join(TEST_DIR, file)).catch(() => {});
+    }
+  });
+
+  it("proactively creates pre-warmed sessions for discovered main sessions", async () => {
+    const config = createMockConfig();
+    const logger = createMockLogger();
+
+    // Mock loadSessionStore to return main sessions
+    const sessions = await import("../../../config/sessions.js");
+    vi.mocked(sessions.loadSessionStore).mockReturnValue({
+      "agent:main:openai-compat": {
+        sessionId: "main-session-uuid-1",
+        updatedAt: Date.now(),
+      },
+      "agent:main:another-provider": {
+        sessionId: "main-session-uuid-2",
+        updatedAt: Date.now(),
+      },
+      // Voice session that should be skipped
+      "agent:main:openai-compat:voice:prewarm-123": {
+        sessionId: "voice-session-uuid",
+        updatedAt: Date.now(),
+      },
+    });
+
+    initVoiceSessionPool({
+      getConfig: () => config,
+      log: logger,
+    });
+
+    // Initially no pre-warmed sessions
+    expect(getPoolStats().sessionCount).toBe(0);
+
+    // Run warmup check
+    await runWarmupCheck();
+
+    // Should have created 2 pre-warmed sessions (one for each main session)
+    const stats = getPoolStats();
+    expect(stats.sessionCount).toBe(2);
+
+    // Verify we have sessions for both main session keys
+    const session1 = getPreWarmedSessionByMainKey("agent:main:openai-compat");
+    const session2 = getPreWarmedSessionByMainKey(
+      "agent:main:another-provider",
+    );
+    expect(session1).not.toBeUndefined();
+    expect(session2).not.toBeUndefined();
+
+    // Verify logging
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.stringContaining("Creating pre-warmed session for main session"),
+    );
+  });
+
+  it("skips main sessions without sessionId", async () => {
+    const config = createMockConfig();
+    const logger = createMockLogger();
+
+    const sessions = await import("../../../config/sessions.js");
+    vi.mocked(sessions.loadSessionStore).mockReturnValue({
+      "agent:main:complete": {
+        sessionId: "complete-uuid",
+        updatedAt: Date.now(),
+      },
+      "agent:main:incomplete": {
+        // No sessionId - incomplete session
+        updatedAt: Date.now(),
+      },
+    });
+
+    initVoiceSessionPool({
+      getConfig: () => config,
+      log: logger,
+    });
+
+    await runWarmupCheck();
+
+    // Only one session created (the complete one)
+    expect(getPoolStats().sessionCount).toBe(1);
+    expect(
+      getPreWarmedSessionByMainKey("agent:main:complete"),
+    ).not.toBeUndefined();
+    expect(
+      getPreWarmedSessionByMainKey("agent:main:incomplete"),
+    ).toBeUndefined();
+  });
+
+  it("does not re-create existing pre-warmed sessions", async () => {
+    const config = createMockConfig();
+    const logger = createMockLogger();
+
+    const sessions = await import("../../../config/sessions.js");
+    vi.mocked(sessions.loadSessionStore).mockReturnValue({
+      "agent:main:test": {
+        sessionId: "test-uuid",
+        updatedAt: Date.now(),
+      },
+    });
+
+    initVoiceSessionPool({
+      getConfig: () => config,
+      log: logger,
+    });
+
+    // Create initial session
+    await runWarmupCheck();
+    const firstSession = getPreWarmedSessionByMainKey("agent:main:test");
+    expect(firstSession).not.toBeUndefined();
+    const firstId = firstSession?.id;
+
+    // Run warmup again
+    await runWarmupCheck();
+
+    // Should still have same session, not a new one
+    const secondSession = getPreWarmedSessionByMainKey("agent:main:test");
+    expect(secondSession?.id).toBe(firstId);
+    expect(getPoolStats().sessionCount).toBe(1);
+  });
+
+  it("refreshes stale pre-warmed sessions", async () => {
+    const config = createMockConfig({
+      openaiCompat: {
+        apiKey: "test-key",
+        preWarmVoiceSessions: true,
+        maxSessionAgeMs: 1000, // 1 second for testing
+      },
+    });
+    const logger = createMockLogger();
+
+    const sessions = await import("../../../config/sessions.js");
+    vi.mocked(sessions.loadSessionStore).mockReturnValue({
+      "agent:main:stale-test": {
+        sessionId: "stale-uuid",
+        updatedAt: Date.now(),
+      },
+    });
+
+    initVoiceSessionPool({
+      getConfig: () => config,
+      log: logger,
+    });
+
+    // Create initial session
+    await runWarmupCheck();
+    const firstSession = getPreWarmedSessionByMainKey("agent:main:stale-test");
+    const firstId = firstSession?.id;
+
+    // Wait for session to become stale
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // Run warmup again
+    await runWarmupCheck();
+
+    // Should have a new session with different ID
+    const refreshedSession = getPreWarmedSessionByMainKey(
+      "agent:main:stale-test",
+    );
+    expect(refreshedSession?.id).not.toBe(firstId);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.stringContaining("Refreshing stale pre-warmed session"),
+    );
+  });
+
+  it("does nothing when pool is not initialized", async () => {
+    // Reset the mock to return an empty store
+    const sessions = await import("../../../config/sessions.js");
+    vi.mocked(sessions.loadSessionStore).mockReturnValue({});
+
+    // Don't initialize the pool
+    await runWarmupCheck();
+
+    // Should have no effect, no errors (pool not enabled, so no sessions created)
+    expect(getPoolStats().sessionCount).toBe(0);
   });
 });
