@@ -33,6 +33,8 @@ import {
   getVoiceSessionId,
   isVoiceSessionHeader,
   registerVoiceSession,
+  releaseVoiceSessionLock,
+  tryAcquireVoiceSessionLock,
   type VoiceSessionInfo,
 } from "./voice-session.js";
 import {
@@ -48,16 +50,59 @@ import {
  */
 export const DEFAULT_VOICE_SYSTEM_PROMPT = `You are in VOICE MODE. Follow these rules strictly:
 
-1. ALWAYS acknowledge the user's request conversationally BEFORE performing any tool calls.
-2. Use brief, natural phrases like "Let me check that for you..." or "One moment while I look that up..." or "I'll find that information..."
-3. Keep acknowledgments under 10 words.
-4. After acknowledging, proceed with tool calls and respond with results.
-5. Speak naturally and conversationally - you are talking, not typing.
-6. Keep responses concise - aim for spoken delivery under 30 seconds.
+1. When a request requires tool calls, ALWAYS start your response with a brief acknowledgment ENDING WITH "..." (literal ellipsis).
+2. The ellipsis signals you're still working. Example: "Let me check that..." or "One moment..."
+3. After the acknowledgment, perform tool calls and continue your response with the results.
+4. This MUST be a single continuous response - acknowledge, tool call, then results - NOT separate messages.
+5. Keep total response under 30 seconds of spoken delivery.
 
-Example flow:
+CRITICAL: Your acknowledgment MUST end with "..." to maintain the audio stream while tools run.
+
+Example:
 User: "What's on my calendar today?"
-You: "Let me check your calendar... [tool call] You have 3 meetings today: ..."`;
+You: "Let me check your calendar..." [tool calls happen here] "You have 3 meetings today: a standup at 9, lunch at noon, and a review at 3."`;
+
+/**
+ * Voice mode message wrapper.
+ * Wraps user messages with voice instructions to ensure they appear
+ * immediately before the query, maximizing model compliance.
+ */
+export const VOICE_MESSAGE_WRAPPER = `[VOICE MODE - READ BEFORE RESPONDING]
+1. If tool calls needed: start with brief acknowledgment ending in "..." BEFORE any tool use
+2. Format response as natural speech - NO bullets, lists, headers, or markdown
+3. Keep it conversational and concise, as if speaking aloud
+Example: "Let me check..." [tool calls] "You have three meetings tomorrow: a standup at 9, then lunch with Sarah at noon, and a project review at 3."
+[END VOICE INSTRUCTIONS]
+
+`;
+
+/**
+ * Buffer words to stream immediately for voice mode.
+ * These fill silence while the agent processes tool calls.
+ * All end with ellipsis to signal continuation.
+ */
+export const VOICE_BUFFER_WORDS = [
+  "Let me check on that...",
+  "One moment...",
+  "Let me look into that...",
+  "Give me just a second...",
+  "Let me see...",
+  "Hang on...",
+  "Let me find that for you...",
+  "One sec...",
+  "Hmm...",
+  "Um...",
+  "Hmm, let me see...",
+  "Um, one moment...",
+  "Hmm, let me check...",
+];
+
+/**
+ * Get a random buffer word for voice mode.
+ */
+export function getRandomBufferWord(): string {
+  return VOICE_BUFFER_WORDS[Math.floor(Math.random() * VOICE_BUFFER_WORDS.length)];
+}
 
 export type OpenAICompatConfig = {
   apiKey?: string;
@@ -116,7 +161,7 @@ export function createOpenAICompatHandler(
     sessionKey: string,
     model: string,
     abortSignal: AbortSignal,
-    opts?: { lane?: string; extraSystemPrompt?: string },
+    opts?: { lane?: string; extraSystemPrompt?: string; isVoiceMode?: boolean },
   ): Promise<void> {
     const runId = randomUUID();
     // Look up session ID from store - voice sessions must use their pre-warmed session
@@ -128,10 +173,26 @@ export function createOpenAICompatHandler(
     log.info(
       `handleStreamingRequest: sessionKey=${sessionKey} foundSessionId=${sessionEntry?.sessionId ?? "none"} using=${sessionId}`,
     );
-    const sseWriter = createSSEWriter({ res, model });
 
-    // Track accumulated text for building response
-    let lastText = "";
+    // For voice mode, enable keepalive to prevent ElevenLabs timeout during processing.
+    // SSE comments (": keepalive\n\n") are ignored by clients but keep connection alive.
+    const keepaliveIntervalMs = opts?.isVoiceMode ? 1000 : 0;
+    const sseWriter = createSSEWriter({ res, model, keepaliveIntervalMs });
+
+    // For voice mode, immediately stream a buffer word to fill silence
+    // while the agent processes tool calls.
+    // IMPORTANT: Track agent text separately from buffer word injection.
+    // The agent's evt.data.text is accumulated text starting from 0,
+    // NOT including our buffer word. Don't confuse the two!
+    if (opts?.isVoiceMode) {
+      const bufferWord = getRandomBufferWord();
+      log.info(`Voice mode: streaming buffer word "${bufferWord}"`);
+      sseWriter.writeContentChunk(bufferWord + " ");
+      // Don't add to agentLastText - buffer is separate from agent output
+    }
+
+    // Track agent's accumulated text for delta calculation (starts at 0)
+    let agentLastText = "";
 
     // Register run context for event routing
     registerAgentRunContext(runId, { sessionKey });
@@ -141,13 +202,15 @@ export function createOpenAICompatHandler(
       if (evt.runId !== runId) return;
       if (sseWriter.isClosed()) return;
 
-      // Handle streaming text
+      // Handle streaming text from agent
       if (evt.stream === "assistant" && typeof evt.data?.text === "string") {
         const newText = evt.data.text;
-        // Calculate delta (new content since last update)
-        if (newText.length > lastText.length) {
-          const delta = newText.slice(lastText.length);
-          lastText = newText;
+        // Calculate delta (new content since agent's last update)
+        // Note: agentLastText tracks the agent's accumulated text only,
+        // NOT including our injected buffer word
+        if (newText.length > agentLastText.length) {
+          const delta = newText.slice(agentLastText.length);
+          agentLastText = newText;
           sseWriter.writeContentChunk(delta);
         }
       }
@@ -461,61 +524,88 @@ export function createOpenAICompatHandler(
       }
     }
 
-    log.info(
-      `OpenAI compat request: model=${effectiveModel}, stream=${stream}, session=${sessionKey}${isVoiceMode ? " (voice)" : ""}`,
-    );
-
-    // Create abort controller for this request
-    const abortController = new AbortController();
-
-    // Handle abort on disconnect
-    res.on("close", () => {
-      abortController.abort();
-      // Note: Voice session compaction is now triggered explicitly via
-      // POST /v1/voice/session/end, not on connection close (which fires
-      // every turn in a streaming context).
-    });
-
-    // Route to appropriate handler
-    // Voice requests get their own lane to avoid blocking on main session runs
-    const lane = isVoiceMode ? "voice" : undefined;
-
-    // Build voice system prompt if in voice mode
-    // Use configured prompt, or default, or disabled if empty string
-    let extraSystemPrompt: string | undefined;
-    if (isVoiceMode) {
-      const configuredPrompt = openaiCompatConfig?.voiceSystemPrompt;
-      if (configuredPrompt === "") {
-        // Explicitly disabled
-        extraSystemPrompt = undefined;
-      } else {
-        extraSystemPrompt = configuredPrompt ?? DEFAULT_VOICE_SYSTEM_PROMPT;
-      }
-      if (extraSystemPrompt) {
-        log.info(
-          `Voice mode: injecting voice system prompt (${extraSystemPrompt.length} chars)`,
-        );
-      }
+    // Try to acquire lock for voice session to prevent concurrent requests
+    const voiceSessionId = voiceSession?.voiceSessionId;
+    if (voiceSessionId && !tryAcquireVoiceSessionLock(voiceSessionId)) {
+      log.warn(
+        `Voice session ${voiceSessionId} is busy, rejecting concurrent request`,
+      );
+      sendError(res, 429, {
+        error: {
+          message: "Voice session is busy processing another request",
+          type: "server_error",
+          code: "server_error",
+        },
+      });
+      return true;
     }
 
-    if (stream) {
-      await handleStreamingRequest(
-        res,
-        message,
-        sessionKey,
-        effectiveModel,
-        abortController.signal,
-        { lane, extraSystemPrompt },
+    try {
+      log.info(
+        `OpenAI compat request: model=${effectiveModel}, stream=${stream}, session=${sessionKey}${isVoiceMode ? " (voice)" : ""}`,
       );
-    } else {
-      await handleNonStreamingRequest(
-        res,
-        message,
-        sessionKey,
-        effectiveModel,
-        abortController.signal,
-        { lane, extraSystemPrompt },
-      );
+
+      // Create abort controller for this request
+      const abortController = new AbortController();
+
+      // Handle abort on disconnect
+      res.on("close", () => {
+        abortController.abort();
+        // Note: Voice session compaction is now triggered explicitly via
+        // POST /v1/voice/session/end, not on connection close (which fires
+        // every turn in a streaming context).
+      });
+
+      // Route to appropriate handler
+      // Voice requests get their own lane to avoid blocking on main session runs
+      const lane = isVoiceMode ? "voice" : undefined;
+
+      // Build voice system prompt if in voice mode
+      // Use configured prompt, or default, or disabled if empty string
+      let extraSystemPrompt: string | undefined;
+      let effectiveMessage = message;
+      if (isVoiceMode) {
+        const configuredPrompt = openaiCompatConfig?.voiceSystemPrompt;
+        if (configuredPrompt === "") {
+          // Explicitly disabled
+          extraSystemPrompt = undefined;
+        } else {
+          extraSystemPrompt = configuredPrompt ?? DEFAULT_VOICE_SYSTEM_PROMPT;
+        }
+        if (extraSystemPrompt) {
+          log.info(
+            `Voice mode: injecting voice system prompt (${extraSystemPrompt.length} chars)`,
+          );
+        }
+        // Wrap the message with voice instructions for maximum prominence
+        effectiveMessage = VOICE_MESSAGE_WRAPPER + message;
+        log.info(`Voice mode: wrapped message with voice instructions`);
+      }
+
+      if (stream) {
+        await handleStreamingRequest(
+          res,
+          effectiveMessage,
+          sessionKey,
+          effectiveModel,
+          abortController.signal,
+          { lane, extraSystemPrompt, isVoiceMode },
+        );
+      } else {
+        await handleNonStreamingRequest(
+          res,
+          effectiveMessage,
+          sessionKey,
+          effectiveModel,
+          abortController.signal,
+          { lane, extraSystemPrompt },
+        );
+      }
+    } finally {
+      // Release voice session lock
+      if (voiceSessionId) {
+        releaseVoiceSessionLock(voiceSessionId);
+      }
     }
 
     return true;

@@ -11,17 +11,20 @@ import type { OpenAIChatCompletionChunk } from "./types.js";
 export type SSEWriterOptions = {
   res: ServerResponse;
   model?: string;
+  /** Interval in ms for keepalive comments (0 = disabled). Default: 0 */
+  keepaliveIntervalMs?: number;
 };
 
 /**
  * Create an SSE writer for streaming OpenAI-compatible responses.
  */
 export function createSSEWriter(opts: SSEWriterOptions) {
-  const { res, model = "clawdbot" } = opts;
+  const { res, model = "clawdbot", keepaliveIntervalMs = 0 } = opts;
   const completionId = `chatcmpl-${randomUUID().replace(/-/g, "").slice(0, 24)}`;
   const created = Math.floor(Date.now() / 1000);
   let rolesSent = false;
   let closed = false;
+  let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
 
   // Initialize SSE headers
   res.writeHead(200, {
@@ -30,6 +33,31 @@ export function createSSEWriter(opts: SSEWriterOptions) {
     Connection: "keep-alive",
     "X-Accel-Buffering": "no", // Disable nginx buffering
   });
+
+  /**
+   * Write an SSE comment (keepalive).
+   * Comments are lines starting with ":" and are ignored by clients
+   * but keep the connection alive.
+   */
+  const writeKeepalive = () => {
+    if (closed) return;
+    res.write(": keepalive\n\n");
+  };
+
+  // Start keepalive timer if configured
+  if (keepaliveIntervalMs > 0) {
+    keepaliveTimer = setInterval(writeKeepalive, keepaliveIntervalMs);
+  }
+
+  /**
+   * Stop the keepalive timer.
+   */
+  const stopKeepalive = () => {
+    if (keepaliveTimer) {
+      clearInterval(keepaliveTimer);
+      keepaliveTimer = null;
+    }
+  };
 
   /**
    * Write a raw SSE event.
@@ -115,6 +143,7 @@ export function createSSEWriter(opts: SSEWriterOptions) {
    */
   const close = () => {
     if (closed) return;
+    stopKeepalive();
     closed = true;
     writeFinishChunk("stop");
     res.write("data: [DONE]\n\n");
@@ -126,6 +155,7 @@ export function createSSEWriter(opts: SSEWriterOptions) {
    */
   const closeWithError = (error: string) => {
     if (closed) return;
+    stopKeepalive();
     // Write error event before setting closed flag (writeEvent checks closed)
     const errorChunk = {
       id: completionId,
@@ -154,6 +184,8 @@ export function createSSEWriter(opts: SSEWriterOptions) {
     writeRoleChunk,
     writeContentChunk,
     writeFinishChunk,
+    writeKeepalive,
+    stopKeepalive,
     close,
     closeWithError,
     isClosed,

@@ -100,6 +100,38 @@ export type VoiceSessionInfo = {
 const activeVoiceSessions = new Map<string, VoiceSessionInfo>();
 
 /**
+ * Lock for voice sessions currently processing a request.
+ * Prevents concurrent requests from interleaving on the same session.
+ */
+const voiceSessionLocks = new Set<string>();
+
+/**
+ * Try to acquire a lock for a voice session.
+ * @returns true if lock acquired, false if session is already busy
+ */
+export function tryAcquireVoiceSessionLock(voiceSessionId: string): boolean {
+  if (voiceSessionLocks.has(voiceSessionId)) {
+    return false;
+  }
+  voiceSessionLocks.add(voiceSessionId);
+  return true;
+}
+
+/**
+ * Release the lock for a voice session.
+ */
+export function releaseVoiceSessionLock(voiceSessionId: string): void {
+  voiceSessionLocks.delete(voiceSessionId);
+}
+
+/**
+ * Check if a voice session is currently locked (processing a request).
+ */
+export function isVoiceSessionLocked(voiceSessionId: string): boolean {
+  return voiceSessionLocks.has(voiceSessionId);
+}
+
+/**
  * Check if a header indicates this is a voice session.
  */
 export function isVoiceSessionHeader(
