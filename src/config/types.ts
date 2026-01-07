@@ -774,6 +774,17 @@ export type SkillsConfig = {
   entries?: Record<string, SkillConfig>;
 };
 
+export type OpenAICompatConfig = {
+  /** API key (bearer token) for OpenAI-compatible endpoint. Required to enable the endpoint. */
+  apiKey?: string;
+  /** Default session key for API requests (e.g., agent:main:openai-compat). */
+  defaultSessionKey?: string;
+  /** Model to use for voice sessions (default: claude-3-5-haiku-latest). */
+  voiceModel?: string;
+  /** Whether to auto-compact voice session on disconnect (default: true). */
+  autoCompact?: boolean;
+};
+
 export type ModelApi =
   | "openai-completions"
   | "openai-responses"
@@ -1079,6 +1090,7 @@ export type ClawdbotConfig = {
   canvasHost?: CanvasHostConfig;
   talk?: TalkConfig;
   gateway?: GatewayConfig;
+  openaiCompat?: OpenAICompatConfig;
 };
 
 export type ConfigValidationIssue = {

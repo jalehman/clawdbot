@@ -19,6 +19,10 @@ import {
 } from "./hooks.js";
 import { applyHookMappings } from "./hooks-mapping.js";
 
+export type { OpenAICompatHandlerDeps } from "./openai-compat/index.js";
+// Re-export OpenAI compat handler creator for convenience
+export { createOpenAICompatHandler } from "./openai-compat/index.js";
+
 type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
 
 type HookDispatchers = {
@@ -197,23 +201,34 @@ export function createHooksRequestHandler(
   };
 }
 
+export type OpenAICompatRequestHandler = (
+  req: IncomingMessage,
+  res: ServerResponse,
+) => Promise<boolean>;
+
 export function createGatewayHttpServer(opts: {
   canvasHost: CanvasHostHandler | null;
   controlUiEnabled: boolean;
   controlUiBasePath: string;
   handleHooksRequest: HooksRequestHandler;
+  handleOpenAICompatRequest?: OpenAICompatRequestHandler | null;
 }): HttpServer {
   const {
     canvasHost,
     controlUiEnabled,
     controlUiBasePath,
     handleHooksRequest,
+    handleOpenAICompatRequest,
   } = opts;
   const httpServer: HttpServer = createHttpServer((req, res) => {
     // Don't interfere with WebSocket upgrades; ws handles the 'upgrade' event.
     if (String(req.headers.upgrade ?? "").toLowerCase() === "websocket") return;
 
     void (async () => {
+      // OpenAI-compatible API takes priority (before hooks)
+      if (handleOpenAICompatRequest) {
+        if (await handleOpenAICompatRequest(req, res)) return;
+      }
       if (await handleHooksRequest(req, res)) return;
       if (canvasHost) {
         if (await handleA2uiHttpRequest(req, res)) return;
