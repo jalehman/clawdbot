@@ -28,7 +28,6 @@ import {
 import { createSSEWriter } from "./sse-writer.js";
 import type { OpenAIChatCompletion, OpenAIErrorResponse } from "./types.js";
 import {
-  endVoiceSession,
   getOrCreateVoiceSession,
   getVoiceSessionId,
   isVoiceSessionHeader,
@@ -396,22 +395,12 @@ export function createOpenAICompatHandler(
     // Create abort controller for this request
     const abortController = new AbortController();
 
-    // Handle voice session cleanup on disconnect
+    // Handle abort on disconnect
     res.on("close", () => {
       abortController.abort();
-
-      // End voice session on disconnect (auto-compact if enabled)
-      if (voiceSession) {
-        endVoiceSession({
-          voiceSessionId: voiceSession.voiceSessionId,
-          config: cfg,
-          log,
-          // Note: generateSummary callback would be provided in production
-          // to actually generate a summary via an LLM call
-        }).catch((err) => {
-          log.warn(`Failed to end voice session: ${err}`);
-        });
-      }
+      // Note: Voice session compaction is now triggered explicitly via
+      // POST /v1/voice/session/end, not on connection close (which fires
+      // every turn in a streaming context).
     });
 
     // Route to appropriate handler

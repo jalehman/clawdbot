@@ -23,6 +23,9 @@ export type { OpenAICompatHandlerDeps } from "./openai-compat/index.js";
 // Re-export OpenAI compat handler creator for convenience
 export { createOpenAICompatHandler } from "./openai-compat/index.js";
 
+export type { VoiceSessionEndHandlerDeps } from "./openai-compat/voice-session-end.js";
+export { createVoiceSessionEndHandler } from "./openai-compat/voice-session-end.js";
+
 type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
 
 type HookDispatchers = {
@@ -206,12 +209,18 @@ export type OpenAICompatRequestHandler = (
   res: ServerResponse,
 ) => Promise<boolean>;
 
+export type VoiceSessionEndRequestHandler = (
+  req: IncomingMessage,
+  res: ServerResponse,
+) => Promise<boolean>;
+
 export function createGatewayHttpServer(opts: {
   canvasHost: CanvasHostHandler | null;
   controlUiEnabled: boolean;
   controlUiBasePath: string;
   handleHooksRequest: HooksRequestHandler;
   handleOpenAICompatRequest?: OpenAICompatRequestHandler | null;
+  handleVoiceSessionEndRequest?: VoiceSessionEndRequestHandler | null;
 }): HttpServer {
   const {
     canvasHost,
@@ -219,6 +228,7 @@ export function createGatewayHttpServer(opts: {
     controlUiBasePath,
     handleHooksRequest,
     handleOpenAICompatRequest,
+    handleVoiceSessionEndRequest,
   } = opts;
   const httpServer: HttpServer = createHttpServer((req, res) => {
     // Don't interfere with WebSocket upgrades; ws handles the 'upgrade' event.
@@ -228,6 +238,10 @@ export function createGatewayHttpServer(opts: {
       // OpenAI-compatible API takes priority (before hooks)
       if (handleOpenAICompatRequest) {
         if (await handleOpenAICompatRequest(req, res)) return;
+      }
+      // Voice session end endpoint (same API key as OpenAI compat)
+      if (handleVoiceSessionEndRequest) {
+        if (await handleVoiceSessionEndRequest(req, res)) return;
       }
       if (await handleHooksRequest(req, res)) return;
       if (canvasHost) {

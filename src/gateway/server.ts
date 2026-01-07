@@ -135,6 +135,7 @@ import {
   createGatewayHttpServer,
   createHooksRequestHandler,
   createOpenAICompatHandler,
+  createVoiceSessionEndHandler,
 } from "./server-http.js";
 import { handleGatewayRequest } from "./server-methods.js";
 import { createProviderManager } from "./server-providers.js";
@@ -609,12 +610,24 @@ export async function startGatewayServer(
     },
   });
 
+  // Create voice session end handler (uses same auth as OpenAI compat)
+  const handleVoiceSessionEndRequest = createVoiceSessionEndHandler({
+    getConfig: loadConfig,
+    log: {
+      info: (msg: string) => logOpenAI.info(msg),
+      warn: (msg: string) => logOpenAI.warn(msg),
+      error: (msg: string) => logOpenAI.error(msg),
+    },
+    // TODO: Wire up generateSummary callback when LLM summarization is ready
+  });
+
   const httpServer: HttpServer = createGatewayHttpServer({
     canvasHost,
     controlUiEnabled,
     controlUiBasePath,
     handleHooksRequest,
     handleOpenAICompatRequest,
+    handleVoiceSessionEndRequest,
   });
   let bonjourStop: (() => Promise<void>) | null = null;
   let bridge: Awaited<ReturnType<typeof startNodeBridgeServer>> | null = null;
