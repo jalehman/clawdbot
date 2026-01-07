@@ -7,8 +7,12 @@
  */
 
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import {
   loadSessionStore,
+  resolveAgentIdFromSessionKey,
+  resolveSessionTranscriptPath,
   resolveStorePath,
   type SessionEntry,
   saveSessionStore,
@@ -17,6 +21,57 @@ import type { ClawdbotConfig } from "../../config/types.js";
 
 /** Default model for voice sessions - fast model for low latency. */
 export const DEFAULT_VOICE_MODEL = "claude-3-5-haiku-latest";
+
+/**
+ * Copy transcript from main session to ephemeral voice session.
+ *
+ * This copies the full message history so the voice session has context
+ * of what was discussed before the call started. No summarization is
+ * performed - the full transcript is copied as-is.
+ */
+async function copyMainSessionContext(params: {
+  mainSessionId: string;
+  ephemeralSessionId: string;
+  mainSessionKey: string;
+  log?: { info: (msg: string) => void };
+}): Promise<void> {
+  const { mainSessionId, ephemeralSessionId, mainSessionKey, log } = params;
+  const agentId = resolveAgentIdFromSessionKey(mainSessionKey);
+
+  // Resolve transcript paths for both sessions
+  const mainTranscriptPath = resolveSessionTranscriptPath(
+    mainSessionId,
+    agentId,
+  );
+  const ephemeralTranscriptPath = resolveSessionTranscriptPath(
+    ephemeralSessionId,
+    agentId,
+  );
+
+  // Check if main session has a transcript
+  if (!fs.existsSync(mainTranscriptPath)) {
+    log?.info(
+      `No main session transcript to copy (${mainSessionId}); starting fresh`,
+    );
+    return;
+  }
+
+  try {
+    // Ensure the ephemeral transcript directory exists
+    const transcriptDir = path.dirname(ephemeralTranscriptPath);
+    await fs.promises.mkdir(transcriptDir, { recursive: true });
+
+    // Copy the transcript file
+    await fs.promises.copyFile(mainTranscriptPath, ephemeralTranscriptPath);
+
+    log?.info(
+      `Copied main session context (${mainSessionId}) to voice session (${ephemeralSessionId})`,
+    );
+  } catch (err) {
+    // Non-fatal - voice session can still work without context
+    log?.info(`Could not copy main session context: ${err}`);
+  }
+}
 
 /**
  * Voice session metadata tracked in memory.
@@ -125,6 +180,17 @@ export async function getOrCreateVoiceSession(params: {
 
   store[ephemeralSessionKey] = ephemeralEntry;
   await saveSessionStore(storePath, store);
+
+  // Copy context from main session if it has a transcript
+  // This gives the voice session full awareness of prior conversation
+  if (mainSession?.sessionId) {
+    await copyMainSessionContext({
+      mainSessionId: mainSession.sessionId,
+      ephemeralSessionId,
+      mainSessionKey,
+      log,
+    });
+  }
 
   const voiceInfo: VoiceSessionInfo = {
     voiceSessionId: newVoiceSessionId,
