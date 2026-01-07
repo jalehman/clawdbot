@@ -13,6 +13,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { CliDeps } from "../../cli/deps.js";
 import { agentCommand } from "../../commands/agent.js";
 import type { ClawdbotConfig } from "../../config/config.js";
+import { loadSessionStore, resolveStorePath } from "../../config/sessions.js";
 import {
   type AgentEventPayload,
   clearAgentRunContext,
@@ -99,7 +100,13 @@ export function createOpenAICompatHandler(
     opts?: { lane?: string },
   ): Promise<void> {
     const runId = randomUUID();
-    const sessionId = randomUUID();
+    // Look up session ID from store - voice sessions must use their pre-warmed session
+    const cfg = getConfig();
+    const storePath = resolveStorePath(cfg.session?.store);
+    const sessionStore = loadSessionStore(storePath);
+    const sessionEntry = sessionStore[sessionKey];
+    const sessionId = sessionEntry?.sessionId ?? randomUUID();
+    log.info(`handleStreamingRequest: sessionKey=${sessionKey} foundSessionId=${sessionEntry?.sessionId ?? "none"} using=${sessionId}`);
     const sseWriter = createSSEWriter({ res, model });
 
     // Track accumulated text for building response
@@ -351,6 +358,15 @@ export function createOpenAICompatHandler(
     }
 
     const { messages, model, stream, user } = parseResult.value;
+
+    // Log incoming request details for debugging
+    const voiceHeaderValue = req.headers["x-clawdbot-voice-session"];
+    log.info(
+      `[request] model=${model} stream=${stream} user=${user ?? "none"} ` +
+      `voiceHeader=${voiceHeaderValue ?? "none"} ` +
+      `userAgent=${req.headers["user-agent"]?.slice(0, 50) ?? "none"} ` +
+      `msgCount=${messages.length} firstMsg=${messages[0]?.content?.toString().slice(0, 50) ?? "empty"}...`
+    );
 
     // Convert messages to Clawdbot format
     // Note: systemPrompt is available but not used yet; future enhancement for extraSystemPrompt
