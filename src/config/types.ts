@@ -783,6 +783,14 @@ export type OpenAICompatConfig = {
   voiceModel?: string;
   /** Whether to auto-compact voice session on disconnect (default: true). */
   autoCompact?: boolean;
+  /**
+   * How to source the summary for voice session compaction.
+   *
+   * - 'self': always generate our own summary via LLM
+   * - 'webhook': require summary in request, error if missing
+   * - 'auto': use webhook summary if provided, else generate (default)
+   */
+  compactionSource?: "self" | "webhook" | "auto";
 };
 
 export type ModelApi =

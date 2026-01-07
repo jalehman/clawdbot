@@ -231,11 +231,40 @@ export function createVoiceSessionEndHandler(deps: VoiceSessionEndHandlerDeps) {
     const duration = formatDuration(durationMs);
 
     try {
-      // End the session with optional compaction
-      // If a summary was provided in the request, use a callback that returns it
-      const summaryCallback = body.summary
-        ? async () => body.summary as string
-        : generateSummary;
+      // Determine summary source based on config
+      const compactionSource = openaiCompatConfig?.compactionSource ?? "auto";
+      let summaryCallback: (() => Promise<string>) | undefined;
+
+      switch (compactionSource) {
+        case "self":
+          // Always generate our own summary, ignore webhook-provided one
+          summaryCallback = generateSummary
+            ? async () => generateSummary(session.ephemeralSessionKey)
+            : undefined;
+          break;
+        case "webhook":
+          // Require summary in request
+          if (!body.summary) {
+            sendJson(res, 400, {
+              success: false,
+              error:
+                "Summary required in request body when compactionSource is 'webhook'",
+            } as VoiceSessionEndResponse);
+            return true;
+          }
+          summaryCallback = async () => body.summary as string;
+          break;
+        case "auto":
+        default:
+          // Use webhook summary if provided, else fall back to generating
+          if (body.summary) {
+            summaryCallback = async () => body.summary as string;
+          } else if (generateSummary) {
+            summaryCallback = async () =>
+              generateSummary(session.ephemeralSessionKey);
+          }
+          break;
+      }
 
       const result = await endVoiceSession({
         voiceSessionId: session.voiceSessionId,

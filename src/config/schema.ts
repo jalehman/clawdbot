@@ -182,6 +182,8 @@ const FIELD_HELP: Record<string, string> = {
     "Model to use for voice sessions (default: claude-haiku-4-5). Should be a fast model for low latency.",
   "openaiCompat.autoCompact":
     "Whether to auto-compact voice sessions on disconnect (default: true). Writes a summary to the main session.",
+  "openaiCompat.compactionSource":
+    "How to source the summary for compaction: 'self' (generate via LLM), 'webhook' (require in request), 'auto' (prefer webhook, fallback to self). Default: 'auto'.",
 };
 
 const FIELD_PLACEHOLDERS: Record<string, string> = {

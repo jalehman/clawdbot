@@ -22,9 +22,7 @@ vi.mock("../../../config/sessions.js", () => ({
 /**
  * Create a mock config for testing.
  */
-function createMockConfig(
-  overrides?: Partial<ClawdbotConfig>,
-): ClawdbotConfig {
+function createMockConfig(overrides?: Partial<ClawdbotConfig>): ClawdbotConfig {
   return {
     openaiCompat: {
       apiKey: "test-api-key",
@@ -347,6 +345,159 @@ describe("createVoiceSessionEndHandler", () => {
       expect((res.body as { summary?: string })?.summary).toContain(
         "User discussed project planning",
       );
+    });
+  });
+
+  describe("compactionSource config", () => {
+    it("'webhook' mode requires summary in request", async () => {
+      const config = createMockConfig({
+        openaiCompat: {
+          apiKey: "test-api-key",
+          autoCompact: true,
+          compactionSource: "webhook",
+        },
+      });
+      const handler = createVoiceSessionEndHandler({
+        getConfig: () => config,
+        log: {
+          info: vi.fn(),
+          warn: vi.fn(),
+          error: vi.fn(),
+        },
+      });
+
+      await getOrCreateVoiceSession({
+        mainSessionKey: "agent:main:webhook-required",
+        voiceSessionId: "voice-webhook-required",
+        config,
+      });
+
+      // Request without summary should fail
+      const req = createMockRequest({
+        body: { conversation_id: "voice-webhook-required" },
+      });
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.statusCode).toBe(400);
+      expect((res.body as { error?: string })?.error).toContain(
+        "Summary required",
+      );
+    });
+
+    it("'webhook' mode accepts provided summary", async () => {
+      const config = createMockConfig({
+        openaiCompat: {
+          apiKey: "test-api-key",
+          autoCompact: true,
+          compactionSource: "webhook",
+        },
+      });
+      const handler = createVoiceSessionEndHandler({
+        getConfig: () => config,
+        log: {
+          info: vi.fn(),
+          warn: vi.fn(),
+          error: vi.fn(),
+        },
+      });
+
+      await getOrCreateVoiceSession({
+        mainSessionKey: "agent:main:webhook-ok",
+        voiceSessionId: "voice-webhook-ok",
+        config,
+      });
+
+      const req = createMockRequest({
+        body: {
+          conversation_id: "voice-webhook-ok",
+          summary: "Webhook-provided summary",
+        },
+      });
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.statusCode).toBe(200);
+      expect((res.body as { summary?: string })?.summary).toContain(
+        "Webhook-provided summary",
+      );
+    });
+
+    it("'auto' mode uses webhook summary when provided", async () => {
+      const config = createMockConfig({
+        openaiCompat: {
+          apiKey: "test-api-key",
+          autoCompact: true,
+          compactionSource: "auto",
+        },
+      });
+      const handler = createVoiceSessionEndHandler({
+        getConfig: () => config,
+        log: {
+          info: vi.fn(),
+          warn: vi.fn(),
+          error: vi.fn(),
+        },
+      });
+
+      await getOrCreateVoiceSession({
+        mainSessionKey: "agent:main:auto-webhook",
+        voiceSessionId: "voice-auto-webhook",
+        config,
+      });
+
+      const req = createMockRequest({
+        body: {
+          conversation_id: "voice-auto-webhook",
+          summary: "Auto mode webhook summary",
+        },
+      });
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.statusCode).toBe(200);
+      expect((res.body as { summary?: string })?.summary).toContain(
+        "Auto mode webhook summary",
+      );
+    });
+
+    it("'auto' mode works without summary (falls back to generator)", async () => {
+      const config = createMockConfig({
+        openaiCompat: {
+          apiKey: "test-api-key",
+          autoCompact: true,
+          compactionSource: "auto",
+        },
+      });
+      const generateSummary = vi.fn().mockResolvedValue("Generated summary");
+      const handler = createVoiceSessionEndHandler({
+        getConfig: () => config,
+        log: {
+          info: vi.fn(),
+          warn: vi.fn(),
+          error: vi.fn(),
+        },
+        generateSummary,
+      });
+
+      await getOrCreateVoiceSession({
+        mainSessionKey: "agent:main:auto-gen",
+        voiceSessionId: "voice-auto-gen",
+        config,
+      });
+
+      const req = createMockRequest({
+        body: { conversation_id: "voice-auto-gen" },
+      });
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.statusCode).toBe(200);
+      expect(generateSummary).toHaveBeenCalled();
     });
   });
 
