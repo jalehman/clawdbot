@@ -243,7 +243,16 @@ async function syncDelta(params: {
 
     // Get the new lines to append
     const newLines = lines.slice(preWarmedSession.highWaterMark);
-    const deltaContent = `${newLines.join("\n")}\n`;
+
+    // Read existing ephemeral content to check if we need a leading newline
+    const existingContent = await fs.promises
+      .readFile(ephemeralTranscriptPath, "utf-8")
+      .catch(() => "");
+    const needsLeadingNewline =
+      existingContent.length > 0 && !existingContent.endsWith("\n");
+
+    // Build delta content with proper newline handling
+    const deltaContent = `${needsLeadingNewline ? "\n" : ""}${newLines.join("\n")}\n`;
 
     // Append to voice session transcript
     await fs.promises.appendFile(ephemeralTranscriptPath, deltaContent);
