@@ -207,13 +207,13 @@ async function readJsonBody(
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
     req.on("end", () => {
       if (chunks.length === 0) {
-        resolve({});
+        resolve({ raw: "", parsed: {} });
         return;
       }
       try {
-        const body = Buffer.concat(chunks).toString("utf-8");
-        const parsed = JSON.parse(body);
-        resolve(parsed ?? {});
+        const raw = Buffer.concat(chunks).toString("utf-8");
+        const parsed = JSON.parse(raw);
+        resolve({ raw, parsed: parsed ?? {} });
       } catch (err) {
         reject(new Error(`Invalid JSON body: ${err}`));
       }
@@ -338,19 +338,13 @@ export function createVoiceSessionEndHandler(deps: VoiceSessionEndHandlerDeps) {
     const cfg = getConfig();
     const openaiCompatConfig = cfg.openaiCompat;
 
-    // Authenticate request
-    const authResult = validateBearerAuth(req, openaiCompatConfig?.apiKey);
-    if (!authResult.ok) {
-      sendError(res, authResult.status, authResult.error);
-      return true;
-    }
-
-    // Parse request body and normalize to simple format
-    // Accepts both simple format and ElevenLabs webhook format
-    let body: VoiceSessionEndRequest;
+    // Parse request body first (needed for HMAC verification)
+    let rawBody: string;
+    let parsedBody: unknown;
     try {
-      const rawBody = await readJsonBody(req);
-      body = normalizeRequestBody(rawBody, log);
+      const result = await readJsonBody(req);
+      rawBody = result.raw;
+      parsedBody = result.parsed;
     } catch (err) {
       sendError(res, 400, {
         error: {
@@ -361,6 +355,49 @@ export function createVoiceSessionEndHandler(deps: VoiceSessionEndHandlerDeps) {
       });
       return true;
     }
+
+    // Authenticate request
+    // If ElevenLabs signature header present and secret configured, use HMAC verification
+    // Otherwise fall back to bearer auth
+    const elevenLabsSignature = req.headers["elevenlabs-signature"];
+    const webhookSecret = openaiCompatConfig?.elevenLabsWebhookSecret;
+
+    if (
+      elevenLabsSignature &&
+      webhookSecret &&
+      typeof elevenLabsSignature === "string"
+    ) {
+      // ElevenLabs webhook - verify HMAC signature
+      const hmacResult = verifyElevenLabsSignature(
+        elevenLabsSignature,
+        rawBody,
+        webhookSecret,
+      );
+      if (!hmacResult.ok) {
+        log.warn(
+          `ElevenLabs webhook signature verification failed: ${hmacResult.error}`,
+        );
+        sendError(res, 401, {
+          error: {
+            message: hmacResult.error,
+            type: "invalid_request_error",
+            code: "invalid_api_key",
+          },
+        });
+        return true;
+      }
+      log.info("ElevenLabs webhook signature verified");
+    } else {
+      // Standard bearer auth
+      const authResult = validateBearerAuth(req, openaiCompatConfig?.apiKey);
+      if (!authResult.ok) {
+        sendError(res, authResult.status, authResult.error);
+        return true;
+      }
+    }
+
+    // Normalize body to simple format
+    const body = normalizeRequestBody(parsedBody, log);
 
     log.info(
       `Voice session end request: conversation_id=${body.conversation_id ?? "(auto)"}, reason=${body.reason ?? "(none)"}`,
