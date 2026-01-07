@@ -15,6 +15,11 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { compactEmbeddedPiSession } from "../../agents/pi-embedded.js";
+import {
+  DEFAULT_AGENT_WORKSPACE_DIR,
+  ensureAgentWorkspace,
+} from "../../agents/workspace.js";
 import {
   loadSessionStore,
   resolveAgentIdFromSessionKey,
@@ -25,6 +30,13 @@ import {
 } from "../../config/sessions.js";
 import type { ClawdbotConfig } from "../../config/types.js";
 import { DEFAULT_VOICE_MODEL, type VoiceSessionInfo } from "./voice-session.js";
+
+/**
+ * Default threshold for pre-compaction during warmup.
+ * Sessions with more lines than this will be compacted during warmup
+ * to avoid compaction latency during voice requests.
+ */
+const DEFAULT_PRECOMPACT_THRESHOLD = 50;
 
 /**
  * Pre-warmed session state tracked for each main session key.
@@ -351,7 +363,7 @@ async function createPreWarmedSession(
     spawnedBy: mainSessionKey,
     modelOverride: model,
     chatType: "direct",
-    thinkingLevel: mainSession?.thinkingLevel,
+    thinkingLevel: "none", // Voice sessions need no thinking for speed - latency is critical
     verboseLevel: mainSession?.verboseLevel,
   };
 
@@ -361,6 +373,7 @@ async function createPreWarmedSession(
   // Copy context from main session and get line count
   let highWaterMark = 0;
   let transcriptHash = "";
+  const agentId = resolveAgentIdFromSessionKey(mainSessionKey);
   if (mainSession?.sessionId) {
     const result = await copyMainSessionContext({
       mainSessionId: mainSession.sessionId,
@@ -370,6 +383,57 @@ async function createPreWarmedSession(
     });
     highWaterMark = result.lineCount;
     transcriptHash = result.hash;
+  }
+
+  // Pre-compact if transcript is large to avoid compaction latency during voice requests
+  const precompactThreshold =
+    openaiConfig.voiceCompactionThreshold ?? DEFAULT_PRECOMPACT_THRESHOLD;
+  if (highWaterMark > precompactThreshold) {
+    log?.info(
+      `Pre-compacting voice session ${id}: ${highWaterMark} lines exceeds threshold ${precompactThreshold}`,
+    );
+    try {
+      const workspaceDirRaw =
+        config.agent?.workspace ?? DEFAULT_AGENT_WORKSPACE_DIR;
+      const workspace = await ensureAgentWorkspace({
+        dir: workspaceDirRaw,
+        ensureBootstrapFiles: !config.agent?.skipBootstrap,
+      });
+      const sessionFile = resolveSessionTranscriptPath(
+        ephemeralSessionId,
+        agentId,
+      );
+      const compactResult = await compactEmbeddedPiSession({
+        sessionId: ephemeralSessionId,
+        sessionKey: ephemeralSessionKey,
+        sessionFile,
+        workspaceDir: workspace.dir,
+        config,
+        model,
+        thinkLevel: "off",
+        lane: "voice-warmup",
+      });
+      if (compactResult.ok && compactResult.compacted) {
+        // Re-read transcript to get new line count after compaction
+        const content = await fs.promises
+          .readFile(sessionFile, "utf-8")
+          .catch(() => "");
+        const newLineCount = content.split("\n").filter((l) => l.trim()).length;
+        const newHash = computeTranscriptHash(content);
+        log?.info(
+          `Pre-compaction complete for ${id}: ${highWaterMark} -> ${newLineCount} lines`,
+        );
+        highWaterMark = newLineCount;
+        transcriptHash = newHash;
+      } else {
+        log?.warn(
+          `Pre-compaction skipped for ${id}: ${compactResult.reason ?? "not compacted"}`,
+        );
+      }
+    } catch (err) {
+      log?.warn(`Pre-compaction failed for ${id}: ${err}`);
+      // Continue without compaction - voice request will trigger it if needed
+    }
   }
 
   const preWarmed: PreWarmedSession = {
@@ -486,6 +550,32 @@ export async function runWarmupCheck(): Promise<void> {
     // Check if we already have a pre-warmed session for this main session
     const existing = preWarmedSessions.get(key);
     if (!existing) {
+      // Also check session store for existing prewarm session (survives restarts)
+      const prewarmKeyPrefix = `${key}:voice:prewarm-`;
+      const existingInStore = Object.entries(store).find(
+        ([k, _v]) => k.startsWith(prewarmKeyPrefix)
+      );
+      if (existingInStore) {
+        // Load existing prewarm session into memory instead of creating new
+        const [existingKey, existingEntry] = existingInStore;
+        const prewarmId = existingKey.split(":voice:")[1]; // e.g., "prewarm-abc123"
+        if (existingEntry.sessionId && prewarmId) {
+          const loaded: PreWarmedSession = {
+            id: prewarmId,
+            mainSessionKey: key,
+            ephemeralSessionKey: existingKey,
+            ephemeralSessionId: existingEntry.sessionId,
+            model: existingEntry.modelOverride ?? poolConfig.voiceModel ?? "claude-haiku-4-5",
+            warmedAt: existingEntry.updatedAt ?? Date.now(),
+            highWaterMark: 0,
+            transcriptHash: "",
+            inUse: false,
+          };
+          preWarmedSessions.set(key, loaded);
+          logRef.info(`Loaded existing pre-warmed session ${prewarmId} from store for ${key}`);
+          continue;
+        }
+      }
       logRef.info(`Creating pre-warmed session for main session: ${key}`);
       await createPreWarmedSession(key, config, logRef);
     }
@@ -556,8 +646,22 @@ export async function releasePreWarmedSession(
     if (session.id === sessionId) {
       logRef?.info(`Releasing pre-warmed session ${sessionId}, will rotate`);
 
-      // Remove the used session
+      // Remove the used session from in-memory map
       preWarmedSessions.delete(mainKey);
+
+      // Also remove from session store to prevent stale session accumulation
+      if (getConfigRef) {
+        const config = getConfigRef();
+        const storePath = resolveStorePath(config.session?.store);
+        const store = loadSessionStore(storePath);
+        if (store[session.ephemeralSessionKey]) {
+          delete store[session.ephemeralSessionKey];
+          await saveSessionStore(storePath, store);
+          logRef?.info(
+            `Deleted stale session ${session.ephemeralSessionKey} from store`,
+          );
+        }
+      }
 
       // Create a new pre-warmed session for next time
       if (poolConfig.enabled && getConfigRef) {

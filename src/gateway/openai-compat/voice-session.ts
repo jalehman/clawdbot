@@ -173,8 +173,8 @@ export async function getOrCreateVoiceSession(params: {
     spawnedBy: mainSessionKey,
     modelOverride: model,
     chatType: "direct",
-    // Copy thinking level from main session
-    thinkingLevel: mainSession?.thinkingLevel,
+    // Voice sessions use no thinking for speed - latency is critical
+    thinkingLevel: "none",
     verboseLevel: mainSession?.verboseLevel,
   };
 
@@ -304,6 +304,14 @@ export function listActiveVoiceSessions(): VoiceSessionInfo[] {
  */
 export function clearVoiceSessions(): void {
   activeVoiceSessions.clear();
+}
+
+/**
+ * Register a voice session (e.g., from pre-warmed pool) in the active sessions map.
+ * This allows subsequent requests to reuse the session instead of creating new ones.
+ */
+export function registerVoiceSession(info: VoiceSessionInfo): void {
+  activeVoiceSessions.set(info.voiceSessionId, info);
 }
 
 /**

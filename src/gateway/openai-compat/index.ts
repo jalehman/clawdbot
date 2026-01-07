@@ -32,6 +32,7 @@ import {
   getOrCreateVoiceSession,
   getVoiceSessionId,
   isVoiceSessionHeader,
+  registerVoiceSession,
   type VoiceSessionInfo,
 } from "./voice-session.js";
 import {
@@ -169,6 +170,7 @@ export function createOpenAICompatHandler(
 
     try {
       // Run the agent
+      log.info(`Calling agentCommand: sessionId=${sessionId} runId=${runId} lane=${opts?.lane ?? "none"} msg=${message.slice(0, 30)}...`);
       await agentCommand(
         {
           message,
@@ -181,6 +183,7 @@ export function createOpenAICompatHandler(
         runtime,
         deps,
       );
+      log.info(`agentCommand completed: runId=${runId}`);
 
       // Agent completed - ensure stream is closed
       if (!sseWriter.isClosed()) {
@@ -405,6 +408,8 @@ export function createOpenAICompatHandler(
             voiceSession = toVoiceSessionInfo(preWarmed);
             sessionKey = voiceSession.ephemeralSessionKey;
             effectiveModel = voiceSession.model;
+            // Register in active sessions so subsequent requests reuse it
+            registerVoiceSession(voiceSession);
             log.info(
               `Voice session ${voiceSession.voiceSessionId}: using pre-warmed session ${sessionKey} with model ${effectiveModel}`,
             );

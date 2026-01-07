@@ -810,6 +810,14 @@ export type OpenAICompatConfig = {
    * Default: 3600000 (1 hour).
    */
   maxSessionAgeMs?: number;
+  /**
+   * Transcript line count threshold above which pre-compaction runs during warmup.
+   * When a pre-warmed session has more lines than this, it will be compacted
+   * during the warmup phase instead of waiting for the first voice request.
+   * Only relevant when preWarmVoiceSessions is true.
+   * Default: 50.
+   */
+  voiceCompactionThreshold?: number;
 };
 
 export type ModelApi =
