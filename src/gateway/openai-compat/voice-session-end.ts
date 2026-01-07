@@ -19,6 +19,7 @@
  * the transcript is automatically converted to a summary for compaction.
  */
 
+import { createHmac, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ClawdbotConfig } from "../../config/types.js";
 import { validateBearerAuth } from "./auth.js";
@@ -144,10 +145,63 @@ function sendError(
 }
 
 /**
- * Read and parse JSON body from request.
- * Returns the raw parsed JSON to allow format detection.
+ * Verify ElevenLabs HMAC signature.
+ *
+ * ElevenLabs sends the signature in the `ElevenLabs-Signature` header.
+ * Format: t=<timestamp>,v0=<signature>
+ * The signature is SHA256 HMAC of `<timestamp>.<body>` using the webhook secret.
  */
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+function verifyElevenLabsSignature(
+  signature: string | undefined,
+  body: string,
+  secret: string,
+): { ok: true } | { ok: false; error: string } {
+  if (!signature) {
+    return { ok: false, error: "Missing ElevenLabs-Signature header" };
+  }
+
+  // Parse signature header: t=<timestamp>,v0=<signature>
+  const parts = signature.split(",");
+  const timestampPart = parts.find((p) => p.startsWith("t="));
+  const signaturePart = parts.find((p) => p.startsWith("v0="));
+
+  if (!timestampPart || !signaturePart) {
+    return { ok: false, error: "Invalid signature format" };
+  }
+
+  const timestamp = timestampPart.slice(2);
+  const expectedSignature = signaturePart.slice(3);
+
+  // Compute expected signature
+  const payload = `${timestamp}.${body}`;
+  const computedSignature = createHmac("sha256", secret)
+    .update(payload)
+    .digest("hex");
+
+  // Timing-safe comparison
+  try {
+    const expectedBuf = Buffer.from(expectedSignature, "hex");
+    const computedBuf = Buffer.from(computedSignature, "hex");
+    if (
+      expectedBuf.length !== computedBuf.length ||
+      !timingSafeEqual(expectedBuf, computedBuf)
+    ) {
+      return { ok: false, error: "Invalid signature" };
+    }
+  } catch {
+    return { ok: false, error: "Invalid signature format" };
+  }
+
+  return { ok: true };
+}
+
+/**
+ * Read and parse JSON body from request.
+ * Returns both the raw string (for HMAC) and parsed JSON.
+ */
+async function readJsonBody(
+  req: IncomingMessage,
+): Promise<{ raw: string; parsed: unknown }> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));

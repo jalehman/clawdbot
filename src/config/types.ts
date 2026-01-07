@@ -825,6 +825,13 @@ export type OpenAICompatConfig = {
    * Default: Built-in prompt encouraging acknowledgments.
    */
   voiceSystemPrompt?: string;
+  /**
+   * ElevenLabs webhook signing secret for HMAC signature verification.
+   * When set, the /v1/voice/session/end endpoint will verify the
+   * ElevenLabs-Signature header using this secret.
+   * Format: wsec_... (from ElevenLabs webhook settings)
+   */
+  elevenLabsWebhookSecret?: string;
 };
 
 export type ModelApi =

@@ -96,6 +96,8 @@ export type PoolLogger = {
  * Maps main session key to pre-warmed session state.
  */
 const preWarmedSessions = new Map<string, PreWarmedSession>();
+/** Track main session keys with creation in progress to prevent concurrent creates */
+const creatingInProgress = new Set<string>();
 
 /** Warmup interval timer handle. */
 let warmupIntervalHandle: ReturnType<typeof setInterval> | null = null;
@@ -344,7 +346,15 @@ async function createPreWarmedSession(
   mainSessionKey: string,
   config: ClawdbotConfig,
   log?: PoolLogger,
-): Promise<PreWarmedSession> {
+): Promise<PreWarmedSession | null> {
+  // Prevent concurrent creation for same main session (pre-compaction can be slow)
+  if (creatingInProgress.has(mainSessionKey)) {
+    log?.info(`Skipping create for ${mainSessionKey}: already in progress`);
+    return null;
+  }
+  creatingInProgress.add(mainSessionKey);
+
+  try {
   const openaiConfig = config.openaiCompat ?? {};
   const id = `prewarm-${randomUUID().slice(0, 8)}`;
   const ephemeralSessionId = randomUUID();
@@ -454,6 +464,9 @@ async function createPreWarmedSession(
   );
 
   return preWarmed;
+  } finally {
+    creatingInProgress.delete(mainSessionKey);
+  }
 }
 
 /**
