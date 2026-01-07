@@ -96,6 +96,7 @@ export function createOpenAICompatHandler(
     sessionKey: string,
     model: string,
     abortSignal: AbortSignal,
+    opts?: { lane?: string },
   ): Promise<void> {
     const runId = randomUUID();
     const sessionId = randomUUID();
@@ -168,6 +169,7 @@ export function createOpenAICompatHandler(
           runId,
           messageProvider: "openai-compat",
           abortSignal,
+          lane: opts?.lane,
         },
         runtime,
         deps,
@@ -197,6 +199,7 @@ export function createOpenAICompatHandler(
     sessionKey: string,
     model: string,
     abortSignal: AbortSignal,
+    opts?: { lane?: string },
   ): Promise<void> {
     const runId = randomUUID();
     const sessionId = randomUUID();
@@ -253,6 +256,7 @@ export function createOpenAICompatHandler(
           runId,
           messageProvider: "openai-compat",
           abortSignal,
+          lane: opts?.lane,
         },
         runtime,
         deps,
@@ -428,6 +432,8 @@ export function createOpenAICompatHandler(
     });
 
     // Route to appropriate handler
+    // Voice requests get their own lane to avoid blocking on main session runs
+    const lane = isVoiceMode ? "voice" : undefined;
     if (stream) {
       await handleStreamingRequest(
         res,
@@ -435,6 +441,7 @@ export function createOpenAICompatHandler(
         sessionKey,
         effectiveModel,
         abortController.signal,
+        { lane },
       );
     } else {
       await handleNonStreamingRequest(
@@ -443,6 +450,7 @@ export function createOpenAICompatHandler(
         sessionKey,
         effectiveModel,
         abortController.signal,
+        { lane },
       );
     }
 
