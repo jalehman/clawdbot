@@ -26,6 +26,14 @@ export { createOpenAICompatHandler } from "./openai-compat/index.js";
 export type { VoiceSessionEndHandlerDeps } from "./openai-compat/voice-session-end.js";
 export { createVoiceSessionEndHandler } from "./openai-compat/voice-session-end.js";
 
+// Re-export voice session pool functions for gateway initialization
+export {
+  initVoiceSessionPool,
+  stopVoiceSessionPool,
+  type VoiceSessionPoolConfig,
+  type PoolLogger,
+} from "./openai-compat/voice-session-pool.js";
+
 type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
 
 type HookDispatchers = {

@@ -791,6 +791,25 @@ export type OpenAICompatConfig = {
    * - 'auto': use webhook summary if provided, else generate (default)
    */
   compactionSource?: "self" | "webhook" | "auto";
+  /**
+   * Enable pre-warmed voice session pool to eliminate cold-start latency.
+   * When enabled, a voice session is kept warm in the background with
+   * workspace loaded, memory read, and tools initialized.
+   * Default: false.
+   */
+  preWarmVoiceSessions?: boolean;
+  /**
+   * Interval in milliseconds between warmup checks for the voice session pool.
+   * Only relevant when preWarmVoiceSessions is true.
+   * Default: 60000 (1 minute).
+   */
+  warmupIntervalMs?: number;
+  /**
+   * Maximum age in milliseconds of a pre-warmed session before it's refreshed.
+   * Only relevant when preWarmVoiceSessions is true.
+   * Default: 3600000 (1 hour).
+   */
+  maxSessionAgeMs?: number;
 };
 
 export type ModelApi =

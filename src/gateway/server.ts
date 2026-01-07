@@ -136,6 +136,8 @@ import {
   createHooksRequestHandler,
   createOpenAICompatHandler,
   createVoiceSessionEndHandler,
+  initVoiceSessionPool,
+  stopVoiceSessionPool,
 } from "./server-http.js";
 import { handleGatewayRequest } from "./server-methods.js";
 import { createProviderManager } from "./server-providers.js";
@@ -619,6 +621,16 @@ export async function startGatewayServer(
       error: (msg: string) => logOpenAI.error(msg),
     },
     // TODO: Wire up generateSummary callback when LLM summarization is ready
+  });
+
+  // Initialize pre-warmed voice session pool (if enabled in config)
+  initVoiceSessionPool({
+    getConfig: loadConfig,
+    log: {
+      info: (msg: string) => logOpenAI.info(msg),
+      warn: (msg: string) => logOpenAI.warn(msg),
+      error: (msg: string) => logOpenAI.error(msg),
+    },
   });
 
   const httpServer: HttpServer = createGatewayHttpServer({
@@ -1929,6 +1941,7 @@ export async function startGatewayServer(
         }
       }
       clients.clear();
+      stopVoiceSessionPool();
       await configReloader.stop().catch(() => {});
       if (browserControl) {
         await browserControl.stop().catch(() => {});

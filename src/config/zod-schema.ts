@@ -1177,6 +1177,12 @@ export const ClawdbotSchema = z.object({
       defaultSessionKey: z.string().optional(),
       voiceModel: z.string().optional(),
       autoCompact: z.boolean().optional(),
+      compactionSource: z
+        .union([z.literal("self"), z.literal("webhook"), z.literal("auto")])
+        .optional(),
+      preWarmVoiceSessions: z.boolean().optional(),
+      warmupIntervalMs: z.number().int().positive().optional(),
+      maxSessionAgeMs: z.number().int().positive().optional(),
     })
     .optional(),
   skills: z
