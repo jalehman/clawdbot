@@ -779,7 +779,7 @@ export type OpenAICompatConfig = {
   apiKey?: string;
   /** Default session key for API requests (e.g., agent:main:openai-compat). */
   defaultSessionKey?: string;
-  /** Model to use for voice sessions (default: claude-3-5-haiku-latest). */
+  /** Model to use for voice sessions (default: claude-haiku-4-5). */
   voiceModel?: string;
   /** Whether to auto-compact voice session on disconnect (default: true). */
   autoCompact?: boolean;

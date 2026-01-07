@@ -102,7 +102,9 @@ describe("getOrCreateVoiceSession", () => {
     expect(session.voiceSessionId).toMatch(/^voice-/);
     expect(session.mainSessionKey).toBe("agent:main:test");
     expect(session.ephemeralSessionKey).toContain("agent:main:test:voice:");
+    // Default model is now Haiku 4.5
     expect(session.model).toBe(DEFAULT_VOICE_MODEL);
+    expect(session.model).toBe("claude-haiku-4-5");
     expect(session.turnCount).toBe(1);
   });
 

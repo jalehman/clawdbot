@@ -20,7 +20,7 @@ import {
 import type { ClawdbotConfig } from "../../config/types.js";
 
 /** Default model for voice sessions - fast model for low latency. */
-export const DEFAULT_VOICE_MODEL = "claude-3-5-haiku-latest";
+export const DEFAULT_VOICE_MODEL = "claude-haiku-4-5";
 
 /**
  * Copy transcript from main session to ephemeral voice session.

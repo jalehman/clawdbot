@@ -179,7 +179,7 @@ const FIELD_HELP: Record<string, string> = {
   "openaiCompat.defaultSessionKey":
     "Default session key for API requests (e.g., agent:main:openai-compat).",
   "openaiCompat.voiceModel":
-    "Model to use for voice sessions (default: claude-3-5-haiku-latest). Should be a fast model for low latency.",
+    "Model to use for voice sessions (default: claude-haiku-4-5). Should be a fast model for low latency.",
   "openaiCompat.autoCompact":
     "Whether to auto-compact voice sessions on disconnect (default: true). Writes a summary to the main session.",
 };
