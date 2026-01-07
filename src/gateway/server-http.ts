@@ -28,10 +28,14 @@ export { createVoiceSessionEndHandler } from "./openai-compat/voice-session-end.
 
 // Re-export voice session pool functions for gateway initialization
 export {
+  acquirePreWarmedSessionWithSync,
   initVoiceSessionPool,
-  stopVoiceSessionPool,
-  type VoiceSessionPoolConfig,
+  isPoolEnabled,
   type PoolLogger,
+  type PreWarmedSession,
+  stopVoiceSessionPool,
+  toVoiceSessionInfo,
+  type VoiceSessionPoolConfig,
 } from "./openai-compat/voice-session-pool.js";
 
 type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;

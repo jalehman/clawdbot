@@ -33,6 +33,11 @@ import {
   isVoiceSessionHeader,
   type VoiceSessionInfo,
 } from "./voice-session.js";
+import {
+  acquirePreWarmedSessionWithSync,
+  isPoolEnabled,
+  toVoiceSessionInfo,
+} from "./voice-session-pool.js";
 
 export type OpenAICompatConfig = {
   apiKey?: string;
@@ -370,17 +375,36 @@ export function createOpenAICompatHandler(
     // Fork to voice session if in voice mode
     if (isVoiceMode) {
       try {
-        voiceSession = await getOrCreateVoiceSession({
-          mainSessionKey: baseSessionKey,
-          voiceSessionId: voiceSessionIdFromHeader,
-          config: cfg,
-          log,
-        });
-        sessionKey = voiceSession.ephemeralSessionKey;
-        effectiveModel = voiceSession.model;
-        log.info(
-          `Voice session ${voiceSession.voiceSessionId}: routing to ${sessionKey} with model ${effectiveModel}`,
-        );
+        // Try to use a pre-warmed session first (if pool is enabled)
+        if (isPoolEnabled()) {
+          const preWarmed = await acquirePreWarmedSessionWithSync(
+            baseSessionKey,
+            cfg,
+          );
+          if (preWarmed) {
+            voiceSession = toVoiceSessionInfo(preWarmed);
+            sessionKey = voiceSession.ephemeralSessionKey;
+            effectiveModel = voiceSession.model;
+            log.info(
+              `Voice session ${voiceSession.voiceSessionId}: using pre-warmed session ${sessionKey} with model ${effectiveModel}`,
+            );
+          }
+        }
+
+        // Fall back to creating on-demand if no pre-warmed session available
+        if (!voiceSession) {
+          voiceSession = await getOrCreateVoiceSession({
+            mainSessionKey: baseSessionKey,
+            voiceSessionId: voiceSessionIdFromHeader,
+            config: cfg,
+            log,
+          });
+          sessionKey = voiceSession.ephemeralSessionKey;
+          effectiveModel = voiceSession.model;
+          log.info(
+            `Voice session ${voiceSession.voiceSessionId}: routing to ${sessionKey} with model ${effectiveModel}`,
+          );
+        }
       } catch (err) {
         log.warn(
           `Failed to create voice session, falling back to main: ${err}`,

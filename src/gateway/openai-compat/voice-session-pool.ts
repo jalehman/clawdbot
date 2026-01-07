@@ -169,6 +169,154 @@ async function copyMainSessionContext(params: {
 }
 
 /**
+ * Perform delta sync: append only new lines from main session to voice session.
+ * This is called when a call arrives to inject any messages added since warmup.
+ *
+ * @returns Object with deltaLines (number of new lines synced) and newHighWaterMark
+ */
+async function syncDelta(params: {
+  preWarmedSession: PreWarmedSession;
+  mainSessionId: string;
+  config: ClawdbotConfig;
+  log?: PoolLogger;
+}): Promise<{ deltaLines: number; newHighWaterMark: number; newHash: string }> {
+  const { preWarmedSession, mainSessionId, log } = params;
+  const agentId = resolveAgentIdFromSessionKey(preWarmedSession.mainSessionKey);
+
+  const mainTranscriptPath = resolveSessionTranscriptPath(
+    mainSessionId,
+    agentId,
+  );
+  const ephemeralTranscriptPath = resolveSessionTranscriptPath(
+    preWarmedSession.ephemeralSessionId,
+    agentId,
+  );
+
+  if (!fs.existsSync(mainTranscriptPath)) {
+    log?.info("Delta sync: no main session transcript");
+    return {
+      deltaLines: 0,
+      newHighWaterMark: preWarmedSession.highWaterMark,
+      newHash: preWarmedSession.transcriptHash ?? "",
+    };
+  }
+
+  try {
+    const content = await fs.promises.readFile(mainTranscriptPath, "utf-8");
+    const lines = content.split("\n").filter((line) => line.trim());
+    const currentLineCount = lines.length;
+    const currentHash = computeTranscriptHash(content);
+
+    // Check if main session was compacted (hash changed AND line count decreased)
+    const previousHash = preWarmedSession.transcriptHash ?? "";
+    const wasCompacted =
+      previousHash !== "" &&
+      currentHash !== previousHash &&
+      currentLineCount < preWarmedSession.highWaterMark;
+
+    if (wasCompacted) {
+      // Compaction detected - need full refresh, not delta sync
+      // Return special marker so caller can handle this
+      log?.warn(
+        `Delta sync: compaction detected (${preWarmedSession.highWaterMark} -> ${currentLineCount} lines), needs full refresh`,
+      );
+      return {
+        deltaLines: -1, // Special marker indicating compaction
+        newHighWaterMark: currentLineCount,
+        newHash: currentHash,
+      };
+    }
+
+    // Calculate delta
+    const deltaLines = currentLineCount - preWarmedSession.highWaterMark;
+
+    if (deltaLines <= 0) {
+      log?.info(
+        `Delta sync: no new messages (${currentLineCount} lines, high-water mark ${preWarmedSession.highWaterMark})`,
+      );
+      return {
+        deltaLines: 0,
+        newHighWaterMark: preWarmedSession.highWaterMark,
+        newHash: currentHash,
+      };
+    }
+
+    // Get the new lines to append
+    const newLines = lines.slice(preWarmedSession.highWaterMark);
+    const deltaContent = `${newLines.join("\n")}\n`;
+
+    // Append to voice session transcript
+    await fs.promises.appendFile(ephemeralTranscriptPath, deltaContent);
+
+    log?.info(
+      `Delta sync: appended ${deltaLines} new messages to voice session ${preWarmedSession.id}`,
+    );
+
+    return {
+      deltaLines,
+      newHighWaterMark: currentLineCount,
+      newHash: currentHash,
+    };
+  } catch (err) {
+    log?.warn(`Delta sync failed: ${err}`);
+    return {
+      deltaLines: 0,
+      newHighWaterMark: preWarmedSession.highWaterMark,
+      newHash: preWarmedSession.transcriptHash ?? "",
+    };
+  }
+}
+
+/**
+ * Acquire a pre-warmed session and perform delta sync for immediate use.
+ * This is the main entry point for using a pre-warmed session when a call arrives.
+ *
+ * @returns The session with delta sync completed, or null if no pre-warmed session available
+ */
+export async function acquirePreWarmedSessionWithSync(
+  mainSessionKey: string,
+  config: ClawdbotConfig,
+): Promise<PreWarmedSession | null> {
+  const session = acquirePreWarmedSession(mainSessionKey);
+  if (!session) {
+    return null;
+  }
+
+  // Get main session ID for delta sync
+  const storePath = resolveStorePath(config.session?.store);
+  const store = loadSessionStore(storePath);
+  const mainSession = store[mainSessionKey];
+
+  if (!mainSession?.sessionId) {
+    logRef?.info(
+      `acquirePreWarmedSessionWithSync: no main session found for ${mainSessionKey}`,
+    );
+    return session;
+  }
+
+  // Perform delta sync
+  const result = await syncDelta({
+    preWarmedSession: session,
+    mainSessionId: mainSession.sessionId,
+    config,
+    log: logRef ?? undefined,
+  });
+
+  // Update session state with new high-water mark
+  session.highWaterMark = result.newHighWaterMark;
+  session.transcriptHash = result.newHash;
+
+  // If compaction was detected (-1 delta lines), caller should handle refresh
+  if (result.deltaLines === -1) {
+    logRef?.warn(
+      `acquirePreWarmedSessionWithSync: compaction detected for ${mainSessionKey}, session may need refresh`,
+    );
+  }
+
+  return session;
+}
+
+/**
  * Create a new pre-warmed session for a main session key.
  */
 async function createPreWarmedSession(
