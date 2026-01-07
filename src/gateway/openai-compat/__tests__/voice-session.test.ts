@@ -2,7 +2,10 @@
  * Tests for voice session forking and management.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClawdbotConfig } from "../../../config/types.js";
 import {
   clearVoiceSessions,
@@ -21,6 +24,10 @@ vi.mock("../../../config/sessions.js", () => ({
   loadSessionStore: vi.fn(() => ({})),
   saveSessionStore: vi.fn(async () => {}),
   resolveStorePath: vi.fn(() => "/mock/store/path"),
+  resolveAgentIdFromSessionKey: vi.fn(() => "clawd"),
+  resolveSessionTranscriptPath: vi.fn(
+    (sessionId: string) => `/tmp/clawdbot-test-sessions/${sessionId}.jsonl`,
+  ),
 }));
 
 /**
@@ -389,5 +396,150 @@ describe("clearVoiceSessions", () => {
     clearVoiceSessions();
 
     expect(listActiveVoiceSessions()).toHaveLength(0);
+  });
+});
+
+describe("voice session context continuity", () => {
+  const testDir = "/tmp/clawdbot-test-sessions";
+  const mainSessionId = "main-session-uuid-123";
+
+  beforeEach(async () => {
+    clearVoiceSessions();
+    // Create test directory and clean up any existing files
+    await fs.promises.mkdir(testDir, { recursive: true });
+    // Clean up any leftover test files
+    const files = await fs.promises.readdir(testDir).catch(() => []);
+    for (const file of files) {
+      await fs.promises.unlink(path.join(testDir, file)).catch(() => {});
+    }
+  });
+
+  afterEach(async () => {
+    // Clean up test files
+    const files = await fs.promises.readdir(testDir).catch(() => []);
+    for (const file of files) {
+      await fs.promises.unlink(path.join(testDir, file)).catch(() => {});
+    }
+  });
+
+  it("copies main session transcript to voice session", async () => {
+    // Create a mock main session transcript
+    const mainTranscriptPath = path.join(testDir, `${mainSessionId}.jsonl`);
+    const transcriptContent = [
+      JSON.stringify({ message: { role: "user", content: "Hello" } }),
+      JSON.stringify({
+        message: { role: "assistant", content: "Hi there!" },
+      }),
+      JSON.stringify({
+        message: { role: "user", content: "What was I asking about?" },
+      }),
+    ].join("\n");
+    await fs.promises.writeFile(mainTranscriptPath, transcriptContent);
+
+    // Mock loadSessionStore to return a main session with the sessionId
+    const sessions = await import("../../../config/sessions.js");
+    vi.mocked(sessions.loadSessionStore).mockReturnValue({
+      "agent:main:context-test": {
+        sessionId: mainSessionId,
+        updatedAt: Date.now(),
+      },
+    });
+
+    const config = createMockConfig();
+    const logInfo = vi.fn();
+    const session = await getOrCreateVoiceSession({
+      mainSessionKey: "agent:main:context-test",
+      voiceSessionId: "voice-context-test",
+      config,
+      log: { info: logInfo },
+    });
+
+    // Check that the ephemeral session transcript was created
+    const ephemeralTranscriptPath = path.join(
+      testDir,
+      `${session.ephemeralSessionId}.jsonl`,
+    );
+    const ephemeralContent = await fs.promises
+      .readFile(ephemeralTranscriptPath, "utf-8")
+      .catch(() => "");
+
+    expect(ephemeralContent).toBe(transcriptContent);
+    expect(logInfo).toHaveBeenCalledWith(
+      expect.stringContaining("Copied main session context"),
+    );
+  });
+
+  it("handles empty main session gracefully", async () => {
+    // Mock loadSessionStore to return a main session without a transcript
+    const sessions = await import("../../../config/sessions.js");
+    vi.mocked(sessions.loadSessionStore).mockReturnValue({
+      "agent:main:empty-test": {
+        sessionId: "nonexistent-session-uuid",
+        updatedAt: Date.now(),
+      },
+    });
+
+    const config = createMockConfig();
+    const logInfo = vi.fn();
+
+    // This should not throw
+    const session = await getOrCreateVoiceSession({
+      mainSessionKey: "agent:main:empty-test",
+      voiceSessionId: "voice-empty-test",
+      config,
+      log: { info: logInfo },
+    });
+
+    expect(session.voiceSessionId).toBe("voice-empty-test");
+    expect(logInfo).toHaveBeenCalledWith(
+      expect.stringContaining("No main session transcript to copy"),
+    );
+  });
+
+  it("handles main session without sessionId", async () => {
+    // Mock loadSessionStore to return a main session without sessionId
+    const sessions = await import("../../../config/sessions.js");
+    vi.mocked(sessions.loadSessionStore).mockReturnValue({
+      "agent:main:no-id-test": {
+        updatedAt: Date.now(),
+        // No sessionId field
+      },
+    });
+
+    const config = createMockConfig();
+    const logInfo = vi.fn();
+
+    // This should not throw
+    const session = await getOrCreateVoiceSession({
+      mainSessionKey: "agent:main:no-id-test",
+      voiceSessionId: "voice-no-id-test",
+      config,
+      log: { info: logInfo },
+    });
+
+    expect(session.voiceSessionId).toBe("voice-no-id-test");
+    // Should not attempt to copy context since there's no sessionId
+    expect(logInfo).not.toHaveBeenCalledWith(
+      expect.stringContaining("Copied main session context"),
+    );
+    expect(logInfo).not.toHaveBeenCalledWith(
+      expect.stringContaining("No main session transcript"),
+    );
+  });
+
+  it("creates new session without main session entry", async () => {
+    // Mock loadSessionStore to return empty store
+    const sessions = await import("../../../config/sessions.js");
+    vi.mocked(sessions.loadSessionStore).mockReturnValue({});
+
+    const config = createMockConfig();
+    const session = await getOrCreateVoiceSession({
+      mainSessionKey: "agent:main:new-test",
+      voiceSessionId: "voice-new-test",
+      config,
+    });
+
+    expect(session.voiceSessionId).toBe("voice-new-test");
+    expect(session.turnCount).toBe(1);
   });
 });
