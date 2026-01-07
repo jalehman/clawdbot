@@ -1171,6 +1171,14 @@ export const ClawdbotSchema = z.object({
         .optional(),
     })
     .optional(),
+  openaiCompat: z
+    .object({
+      apiKey: z.string().optional(),
+      defaultSessionKey: z.string().optional(),
+      voiceModel: z.string().optional(),
+      autoCompact: z.boolean().optional(),
+    })
+    .optional(),
   skills: z
     .object({
       allowBundled: z.array(z.string()).optional(),

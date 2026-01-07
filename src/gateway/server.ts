@@ -88,6 +88,7 @@ import {
   runtimeForLogger,
 } from "../logging.js";
 import { setCommandLaneConcurrency } from "../process/command-queue.js";
+import { defaultRuntime } from "../runtime.js";
 import { runOnboardingWizard } from "../wizard/onboarding.js";
 import type { WizardSession } from "../wizard/session.js";
 import {
@@ -133,6 +134,8 @@ import {
   attachGatewayUpgradeHandler,
   createGatewayHttpServer,
   createHooksRequestHandler,
+  createOpenAICompatHandler,
+  createVoiceSessionEndHandler,
 } from "./server-http.js";
 import { handleGatewayRequest } from "./server-methods.js";
 import { createProviderManager } from "./server-providers.js";
@@ -395,6 +398,9 @@ export async function startGatewayServer(
 
   const cfgAtStart = loadConfig();
   await autoMigrateLegacyState({ cfg: cfgAtStart, log });
+
+  // Create deps early so it's available for all handlers
+  const deps = createDefaultDeps();
   const bindMode = opts.bind ?? cfgAtStart.gateway?.bind ?? "loopback";
   const bindHost = opts.host ?? resolveGatewayBindHost(bindMode);
   if (!bindHost) {
@@ -591,11 +597,37 @@ export async function startGatewayServer(
     dispatchWakeHook,
   });
 
+  // Create OpenAI-compatible API handler
+  const logOpenAI = log.child("openai-compat");
+  const handleOpenAICompatRequest = createOpenAICompatHandler({
+    getConfig: loadConfig,
+    deps,
+    runtime: defaultRuntime,
+    log: {
+      info: (msg: string) => logOpenAI.info(msg),
+      warn: (msg: string) => logOpenAI.warn(msg),
+      error: (msg: string) => logOpenAI.error(msg),
+    },
+  });
+
+  // Create voice session end handler (uses same auth as OpenAI compat)
+  const handleVoiceSessionEndRequest = createVoiceSessionEndHandler({
+    getConfig: loadConfig,
+    log: {
+      info: (msg: string) => logOpenAI.info(msg),
+      warn: (msg: string) => logOpenAI.warn(msg),
+      error: (msg: string) => logOpenAI.error(msg),
+    },
+    // TODO: Wire up generateSummary callback when LLM summarization is ready
+  });
+
   const httpServer: HttpServer = createGatewayHttpServer({
     canvasHost,
     controlUiEnabled,
     controlUiBasePath,
     handleHooksRequest,
+    handleOpenAICompatRequest,
+    handleVoiceSessionEndRequest,
   });
   let bonjourStop: (() => Promise<void>) | null = null;
   let bridge: Awaited<ReturnType<typeof startNodeBridgeServer>> | null = null;
@@ -686,7 +718,6 @@ export async function startGatewayServer(
   const cronLogger = getChildLogger({
     module: "cron",
   });
-  const deps = createDefaultDeps();
   const buildCronService = (cfg: ReturnType<typeof loadConfig>) => {
     const storePath = resolveCronStorePath(cfg.cron?.store);
     const cronEnabled =

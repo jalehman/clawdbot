@@ -49,6 +49,7 @@ const GROUP_LABELS: Record<string, string> = {
   discovery: "Discovery",
   presence: "Presence",
   voicewake: "Voice Wake",
+  openaiCompat: "OpenAI-Compatible API",
 };
 
 const GROUP_ORDER: Record<string, number> = {
@@ -76,6 +77,7 @@ const GROUP_ORDER: Record<string, number> = {
   discovery: 200,
   presence: 210,
   voicewake: 220,
+  openaiCompat: 225,
   logging: 900,
 };
 
@@ -118,6 +120,10 @@ const FIELD_LABELS: Record<string, string> = {
   "slack.appToken": "Slack App Token",
   "signal.account": "Signal Account",
   "imessage.cliPath": "iMessage CLI Path",
+  "openaiCompat.apiKey": "OpenAI-Compatible API Key",
+  "openaiCompat.defaultSessionKey": "Default Session Key",
+  "openaiCompat.voiceModel": "Voice Model",
+  "openaiCompat.autoCompact": "Auto-Compact Voice Sessions",
 };
 
 const FIELD_HELP: Record<string, string> = {
@@ -168,6 +174,16 @@ const FIELD_HELP: Record<string, string> = {
     'Direct message access control ("pairing" recommended). "open" requires discord.dm.allowFrom=["*"].',
   "slack.dm.policy":
     'Direct message access control ("pairing" recommended). "open" requires slack.dm.allowFrom=["*"].',
+  "openaiCompat.apiKey":
+    "Bearer token for OpenAI-compatible API. Required to enable the /v1/chat/completions endpoint.",
+  "openaiCompat.defaultSessionKey":
+    "Default session key for API requests (e.g., agent:main:openai-compat).",
+  "openaiCompat.voiceModel":
+    "Model to use for voice sessions (default: claude-haiku-4-5). Should be a fast model for low latency.",
+  "openaiCompat.autoCompact":
+    "Whether to auto-compact voice sessions on disconnect (default: true). Writes a summary to the main session.",
+  "openaiCompat.compactionSource":
+    "How to source the summary for compaction: 'self' (generate via LLM), 'webhook' (require in request), 'auto' (prefer webhook, fallback to self). Default: 'auto'.",
 };
 
 const FIELD_PLACEHOLDERS: Record<string, string> = {

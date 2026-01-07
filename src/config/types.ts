@@ -774,6 +774,25 @@ export type SkillsConfig = {
   entries?: Record<string, SkillConfig>;
 };
 
+export type OpenAICompatConfig = {
+  /** API key (bearer token) for OpenAI-compatible endpoint. Required to enable the endpoint. */
+  apiKey?: string;
+  /** Default session key for API requests (e.g., agent:main:openai-compat). */
+  defaultSessionKey?: string;
+  /** Model to use for voice sessions (default: claude-haiku-4-5). */
+  voiceModel?: string;
+  /** Whether to auto-compact voice session on disconnect (default: true). */
+  autoCompact?: boolean;
+  /**
+   * How to source the summary for voice session compaction.
+   *
+   * - 'self': always generate our own summary via LLM
+   * - 'webhook': require summary in request, error if missing
+   * - 'auto': use webhook summary if provided, else generate (default)
+   */
+  compactionSource?: "self" | "webhook" | "auto";
+};
+
 export type ModelApi =
   | "openai-completions"
   | "openai-responses"
@@ -1079,6 +1098,7 @@ export type ClawdbotConfig = {
   canvasHost?: CanvasHostConfig;
   talk?: TalkConfig;
   gateway?: GatewayConfig;
+  openaiCompat?: OpenAICompatConfig;
 };
 
 export type ConfigValidationIssue = {

@@ -19,6 +19,13 @@ import {
 } from "./hooks.js";
 import { applyHookMappings } from "./hooks-mapping.js";
 
+export type { OpenAICompatHandlerDeps } from "./openai-compat/index.js";
+// Re-export OpenAI compat handler creator for convenience
+export { createOpenAICompatHandler } from "./openai-compat/index.js";
+
+export type { VoiceSessionEndHandlerDeps } from "./openai-compat/voice-session-end.js";
+export { createVoiceSessionEndHandler } from "./openai-compat/voice-session-end.js";
+
 type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
 
 type HookDispatchers = {
@@ -197,23 +204,45 @@ export function createHooksRequestHandler(
   };
 }
 
+export type OpenAICompatRequestHandler = (
+  req: IncomingMessage,
+  res: ServerResponse,
+) => Promise<boolean>;
+
+export type VoiceSessionEndRequestHandler = (
+  req: IncomingMessage,
+  res: ServerResponse,
+) => Promise<boolean>;
+
 export function createGatewayHttpServer(opts: {
   canvasHost: CanvasHostHandler | null;
   controlUiEnabled: boolean;
   controlUiBasePath: string;
   handleHooksRequest: HooksRequestHandler;
+  handleOpenAICompatRequest?: OpenAICompatRequestHandler | null;
+  handleVoiceSessionEndRequest?: VoiceSessionEndRequestHandler | null;
 }): HttpServer {
   const {
     canvasHost,
     controlUiEnabled,
     controlUiBasePath,
     handleHooksRequest,
+    handleOpenAICompatRequest,
+    handleVoiceSessionEndRequest,
   } = opts;
   const httpServer: HttpServer = createHttpServer((req, res) => {
     // Don't interfere with WebSocket upgrades; ws handles the 'upgrade' event.
     if (String(req.headers.upgrade ?? "").toLowerCase() === "websocket") return;
 
     void (async () => {
+      // OpenAI-compatible API takes priority (before hooks)
+      if (handleOpenAICompatRequest) {
+        if (await handleOpenAICompatRequest(req, res)) return;
+      }
+      // Voice session end endpoint (same API key as OpenAI compat)
+      if (handleVoiceSessionEndRequest) {
+        if (await handleVoiceSessionEndRequest(req, res)) return;
+      }
       if (await handleHooksRequest(req, res)) return;
       if (canvasHost) {
         if (await handleA2uiHttpRequest(req, res)) return;
