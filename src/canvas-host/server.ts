@@ -61,6 +61,12 @@ export type CanvasHostHandler = {
     socket: Duplex,
     head: Buffer,
   ) => boolean;
+  /** Broadcast A2UI JSONL messages to all connected web clients. */
+  broadcastA2UI: (jsonl: string) => void;
+  /** Broadcast A2UI reset to all connected web clients. */
+  broadcastA2UIReset: () => void;
+  /** Number of currently connected WebSocket clients. */
+  getClientCount: () => number;
   close: () => Promise<void>;
 };
 
@@ -217,6 +223,9 @@ async function prepareCanvasRoot(rootDir: string) {
   return rootReal;
 }
 
+/** Path for A2UI push POST endpoint. */
+export const A2UI_PUSH_PATH = "/__clawdbot/a2ui/push";
+
 export async function createCanvasHostHandler(
   opts: CanvasHostHandlerOpts,
 ): Promise<CanvasHostHandler> {
@@ -227,6 +236,9 @@ export async function createCanvasHostHandler(
       basePath,
       handleHttpRequest: async () => false,
       handleUpgrade: () => false,
+      broadcastA2UI: () => {},
+      broadcastA2UIReset: () => {},
+      getClientCount: () => 0,
       close: async () => {},
     };
   }
@@ -246,16 +258,33 @@ export async function createCanvasHostHandler(
     });
   }
 
-  let debounce: NodeJS.Timeout | null = null;
-  const broadcastReload = () => {
-    if (!liveReload) return;
+  // Broadcast a message to all connected WebSocket clients.
+  const broadcast = (message: string) => {
     for (const ws of sockets) {
       try {
-        ws.send("reload");
+        ws.send(message);
       } catch {
         // ignore
       }
     }
+  };
+
+  // Broadcast A2UI JSONL to all connected web clients.
+  const broadcastA2UI = (jsonl: string) => {
+    const payload = JSON.stringify({ type: "a2ui", jsonl });
+    broadcast(payload);
+  };
+
+  // Broadcast A2UI reset to all connected web clients.
+  const broadcastA2UIReset = () => {
+    const payload = JSON.stringify({ type: "a2ui_reset" });
+    broadcast(payload);
+  };
+
+  let debounce: NodeJS.Timeout | null = null;
+  const broadcastReload = () => {
+    if (!liveReload) return;
+    broadcast("reload");
   };
   const scheduleReload = () => {
     if (debounce) clearTimeout(debounce);
@@ -301,6 +330,16 @@ export async function createCanvasHostHandler(
     return true;
   };
 
+  // Helper to read request body as string.
+  const readBody = (req: IncomingMessage): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+      req.on("error", reject);
+    });
+  };
+
   const handleHttpRequest = async (
     req: IncomingMessage,
     res: ServerResponse,
@@ -310,6 +349,45 @@ export async function createCanvasHostHandler(
 
     try {
       const url = new URL(urlRaw, "http://localhost");
+
+      // Handle A2UI push POST endpoint: broadcasts A2UI messages to web clients.
+      if (url.pathname === A2UI_PUSH_PATH) {
+        if (req.method !== "POST") {
+          res.statusCode = 405;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ ok: false, error: "Method Not Allowed" }));
+          return true;
+        }
+        const body = await readBody(req);
+        if (!body.trim()) {
+          res.statusCode = 400;
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ ok: false, error: "Empty body" }));
+          return true;
+        }
+        try {
+          const parsed = JSON.parse(body);
+          // Support: { jsonl: "..." } or { action: "reset" }
+          if (parsed.action === "reset") {
+            broadcastA2UIReset();
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ ok: true, clients: sockets.size }));
+            return true;
+          }
+          const jsonl = typeof parsed.jsonl === "string" ? parsed.jsonl : body;
+          broadcastA2UI(jsonl);
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ ok: true, clients: sockets.size }));
+          return true;
+        } catch {
+          // If not valid JSON, treat entire body as JSONL.
+          broadcastA2UI(body);
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({ ok: true, clients: sockets.size }));
+          return true;
+        }
+      }
+
       if (url.pathname === CANVAS_WS_PATH) {
         res.statusCode = liveReload ? 426 : 404;
         res.setHeader("Content-Type", "text/plain; charset=utf-8");
@@ -382,6 +460,9 @@ export async function createCanvasHostHandler(
     basePath,
     handleHttpRequest,
     handleUpgrade,
+    broadcastA2UI,
+    broadcastA2UIReset,
+    getClientCount: () => sockets.size,
     close: async () => {
       if (debounce) clearTimeout(debounce);
       watcherClosed = true;

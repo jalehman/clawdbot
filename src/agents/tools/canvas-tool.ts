@@ -78,6 +78,12 @@ const CanvasToolSchema = Type.Union([
     node: Type.Optional(Type.String()),
     jsonl: Type.Optional(Type.String()),
     jsonlPath: Type.Optional(Type.String()),
+    /** Target "web" to push via canvas host WebSocket instead of gateway/node. */
+    target: Type.Optional(
+      Type.Union([Type.Literal("web"), Type.Literal("node")]),
+    ),
+    /** Canvas host URL for web target (default: http://localhost:3210). */
+    canvasHostUrl: Type.Optional(Type.String()),
   }),
   Type.Object({
     action: Type.Literal("a2ui_reset"),
@@ -85,6 +91,12 @@ const CanvasToolSchema = Type.Union([
     gatewayToken: Type.Optional(Type.String()),
     timeoutMs: Type.Optional(Type.Number()),
     node: Type.Optional(Type.String()),
+    /** Target "web" to reset via canvas host WebSocket instead of gateway/node. */
+    target: Type.Optional(
+      Type.Union([Type.Literal("web"), Type.Literal("node")]),
+    ),
+    /** Canvas host URL for web target (default: http://localhost:3210). */
+    canvasHostUrl: Type.Optional(Type.String()),
   }),
 ]);
 
@@ -214,12 +226,58 @@ export function createCanvasTool(): AnyAgentTool {
                 ? await fs.readFile(params.jsonlPath.trim(), "utf8")
                 : "";
           if (!jsonl.trim()) throw new Error("jsonl or jsonlPath required");
+
+          // If target is "web", POST to canvas host instead of gateway.
+          const target = readStringParam(params, "target", { trim: true });
+          if (target === "web") {
+            const canvasHostUrl =
+              readStringParam(params, "canvasHostUrl", {
+                trim: true,
+              }) || "http://localhost:3210";
+            const pushUrl = `${canvasHostUrl.replace(/\/+$/, "")}/__clawdbot/a2ui/push`;
+            const res = await fetch(pushUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ jsonl }),
+            });
+            if (!res.ok) {
+              const text = await res.text().catch(() => "");
+              throw new Error(`Canvas host push failed: ${res.status} ${text}`);
+            }
+            const result = await res.json();
+            return jsonResult({ ok: true, clients: result.clients ?? 0 });
+          }
+
           await invoke("canvas.a2ui.pushJSONL", { jsonl });
           return jsonResult({ ok: true });
         }
-        case "a2ui_reset":
+        case "a2ui_reset": {
+          // If target is "web", POST reset to canvas host instead of gateway.
+          const target = readStringParam(params, "target", { trim: true });
+          if (target === "web") {
+            const canvasHostUrl =
+              readStringParam(params, "canvasHostUrl", {
+                trim: true,
+              }) || "http://localhost:3210";
+            const pushUrl = `${canvasHostUrl.replace(/\/+$/, "")}/__clawdbot/a2ui/push`;
+            const res = await fetch(pushUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "reset" }),
+            });
+            if (!res.ok) {
+              const text = await res.text().catch(() => "");
+              throw new Error(
+                `Canvas host reset failed: ${res.status} ${text}`,
+              );
+            }
+            const result = await res.json();
+            return jsonResult({ ok: true, clients: result.clients ?? 0 });
+          }
+
           await invoke("canvas.a2ui.reset", undefined);
           return jsonResult({ ok: true });
+        }
         default:
           throw new Error(`Unknown action: ${action}`);
       }

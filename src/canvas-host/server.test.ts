@@ -12,7 +12,11 @@ import {
   CANVAS_WS_PATH,
   injectCanvasLiveReload,
 } from "./a2ui.js";
-import { createCanvasHostHandler, startCanvasHost } from "./server.js";
+import {
+  A2UI_PUSH_PATH,
+  createCanvasHostHandler,
+  startCanvasHost,
+} from "./server.js";
 
 describe("canvas host", () => {
   it("injects live reload script", () => {
@@ -263,5 +267,177 @@ describe("canvas host", () => {
       await server.close();
       await fs.rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it("broadcasts A2UI messages via POST endpoint to WebSocket clients", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-canvas-"));
+
+    const server = await startCanvasHost({
+      runtime: defaultRuntime,
+      rootDir: dir,
+      port: 0,
+      listenHost: "127.0.0.1",
+      allowInTests: true,
+    });
+
+    try {
+      // Connect a WebSocket client.
+      const ws = new WebSocket(
+        `ws://127.0.0.1:${server.port}${CANVAS_WS_PATH}`,
+      );
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("ws open timeout")),
+          2000,
+        );
+        ws.on("open", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+        ws.on("error", (err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+      });
+
+      // Set up message listener.
+      const msgPromise = new Promise<string>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("a2ui message timeout")),
+          4000,
+        );
+        ws.on("message", (data) => {
+          clearTimeout(timer);
+          resolve(rawDataToString(data));
+        });
+      });
+
+      // POST A2UI JSONL to the push endpoint.
+      const jsonl = '{"type":"component","id":"test","data":{}}';
+      const pushRes = await fetch(
+        `http://127.0.0.1:${server.port}${A2UI_PUSH_PATH}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jsonl }),
+        },
+      );
+      expect(pushRes.status).toBe(200);
+      const pushBody = await pushRes.json();
+      expect(pushBody.ok).toBe(true);
+      expect(pushBody.clients).toBe(1);
+
+      // Verify WebSocket received the A2UI message.
+      const received = await msgPromise;
+      const parsed = JSON.parse(received);
+      expect(parsed.type).toBe("a2ui");
+      expect(parsed.jsonl).toBe(jsonl);
+
+      ws.close();
+    } finally {
+      await server.close();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("broadcasts A2UI reset via POST endpoint to WebSocket clients", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-canvas-"));
+
+    const server = await startCanvasHost({
+      runtime: defaultRuntime,
+      rootDir: dir,
+      port: 0,
+      listenHost: "127.0.0.1",
+      allowInTests: true,
+    });
+
+    try {
+      // Connect a WebSocket client.
+      const ws = new WebSocket(
+        `ws://127.0.0.1:${server.port}${CANVAS_WS_PATH}`,
+      );
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("ws open timeout")),
+          2000,
+        );
+        ws.on("open", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+        ws.on("error", (err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+      });
+
+      // Set up message listener.
+      const msgPromise = new Promise<string>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("a2ui reset message timeout")),
+          4000,
+        );
+        ws.on("message", (data) => {
+          clearTimeout(timer);
+          resolve(rawDataToString(data));
+        });
+      });
+
+      // POST reset action to the push endpoint.
+      const pushRes = await fetch(
+        `http://127.0.0.1:${server.port}${A2UI_PUSH_PATH}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "reset" }),
+        },
+      );
+      expect(pushRes.status).toBe(200);
+      const pushBody = await pushRes.json();
+      expect(pushBody.ok).toBe(true);
+
+      // Verify WebSocket received the reset message.
+      const received = await msgPromise;
+      const parsed = JSON.parse(received);
+      expect(parsed.type).toBe("a2ui_reset");
+
+      ws.close();
+    } finally {
+      await server.close();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects non-POST requests to A2UI push endpoint", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-canvas-"));
+
+    const server = await startCanvasHost({
+      runtime: defaultRuntime,
+      rootDir: dir,
+      port: 0,
+      listenHost: "127.0.0.1",
+      allowInTests: true,
+    });
+
+    try {
+      const getRes = await fetch(
+        `http://127.0.0.1:${server.port}${A2UI_PUSH_PATH}`,
+      );
+      expect(getRes.status).toBe(405);
+      const body = await getRes.json();
+      expect(body.ok).toBe(false);
+      expect(body.error).toBe("Method Not Allowed");
+    } finally {
+      await server.close();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("injects A2UI message handler in live reload script", () => {
+    const out = injectCanvasLiveReload("<html><body>Hello</body></html>");
+    // Check that A2UI WebSocket message handling is included.
+    expect(out).toContain("handleA2UIMessage");
+    expect(out).toContain("handleA2UIReset");
+    expect(out).toContain("clawdbotA2UI");
   });
 });

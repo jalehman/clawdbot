@@ -100,6 +100,7 @@ export function injectCanvasLiveReload(html: string): string {
   // Works on:
   // - iOS: window.webkit.messageHandlers.clawdbotCanvasA2UIAction.postMessage(...)
   // - Android: window.clawdbotCanvasA2UIAction.postMessage(...)
+  // - Web: WebSocket bridge (no native handler)
   const actionHandlerName = "clawdbotCanvasA2UIAction";
   function postToNode(payload) {
     try {
@@ -131,11 +132,56 @@ export function injectCanvasLiveReload(html: string): string {
   globalThis.clawdbotPostMessage = postToNode;
   globalThis.clawdbotSendUserAction = sendUserAction;
 
+  // Handle incoming A2UI messages from WebSocket bridge.
+  // Message format: JSON with { type: "a2ui", messages: [...] } or { type: "a2ui", jsonl: "..." }
+  function handleA2UIMessage(data) {
+    try {
+      const parsed = typeof data === "string" ? JSON.parse(data) : data;
+      if (parsed.type !== "a2ui") return false;
+      const a2ui = globalThis.clawdbotA2UI;
+      if (!a2ui) return false;
+      // Support both pre-parsed messages array and JSONL string.
+      if (Array.isArray(parsed.messages)) {
+        a2ui.applyMessages(parsed.messages);
+        return true;
+      }
+      if (typeof parsed.jsonl === "string") {
+        const lines = parsed.jsonl.split("\\n").filter((l) => l.trim());
+        const messages = lines.map((l) => JSON.parse(l));
+        a2ui.applyMessages(messages);
+        return true;
+      }
+    } catch {}
+    return false;
+  }
+
+  // Handle A2UI reset command.
+  function handleA2UIReset(data) {
+    try {
+      const parsed = typeof data === "string" ? JSON.parse(data) : data;
+      if (parsed.type !== "a2ui_reset") return false;
+      const a2ui = globalThis.clawdbotA2UI;
+      if (a2ui && typeof a2ui.reset === "function") {
+        a2ui.reset();
+        return true;
+      }
+    } catch {}
+    return false;
+  }
+
   try {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(proto + "://" + location.host + ${JSON.stringify(CANVAS_WS_PATH)});
     ws.onmessage = (ev) => {
-      if (String(ev.data || "") === "reload") location.reload();
+      const data = String(ev.data || "");
+      // Handle simple reload command.
+      if (data === "reload") {
+        location.reload();
+        return;
+      }
+      // Try to handle A2UI messages or reset.
+      if (handleA2UIMessage(data)) return;
+      if (handleA2UIReset(data)) return;
     };
   } catch {}
 })();
