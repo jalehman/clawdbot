@@ -18,6 +18,7 @@ import {
   listActiveVoiceSessions,
   type VoiceSessionInfo,
 } from "./voice-session.js";
+import { releasePreWarmedSession } from "./voice-session-pool.js";
 
 /** Request body for ending a voice session. */
 export type VoiceSessionEndRequest = {
@@ -284,6 +285,15 @@ export function createVoiceSessionEndHandler(deps: VoiceSessionEndHandlerDeps) {
         `Voice session ${session.voiceSessionId} ended successfully (${duration}, ${session.turnCount} turns)`,
       );
       sendJson(res, 200, response);
+
+      // Trigger async session rotation if this was a pre-warmed session.
+      // Pre-warmed session IDs start with "prewarm-".
+      if (session.voiceSessionId.startsWith("prewarm-")) {
+        // Fire-and-forget: don't block the response
+        releasePreWarmedSession(session.voiceSessionId).catch((err) => {
+          log.warn(`Failed to rotate pre-warmed session: ${err}`);
+        });
+      }
     } catch (err) {
       log.error(`Failed to end voice session: ${err}`);
       sendJson(res, 500, {
