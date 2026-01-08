@@ -76,34 +76,6 @@ Example: "Let me check..." [tool calls] "You have three meetings tomorrow: a sta
 
 `;
 
-/**
- * Buffer words to stream immediately for voice mode.
- * These fill silence while the agent processes tool calls.
- * All end with ellipsis to signal continuation.
- */
-export const VOICE_BUFFER_WORDS = [
-  "Let me check on that...",
-  "One moment...",
-  "Let me look into that...",
-  "Give me just a second...",
-  "Let me see...",
-  "Hang on...",
-  "Let me find that for you...",
-  "One sec...",
-  "Hmm...",
-  "Um...",
-  "Hmm, let me see...",
-  "Um, one moment...",
-  "Hmm, let me check...",
-];
-
-/**
- * Get a random buffer word for voice mode.
- */
-export function getRandomBufferWord(): string {
-  return VOICE_BUFFER_WORDS[Math.floor(Math.random() * VOICE_BUFFER_WORDS.length)];
-}
-
 export type OpenAICompatConfig = {
   apiKey?: string;
   defaultSessionKey?: string;
@@ -182,22 +154,7 @@ export function createOpenAICompatHandler(
     const keepaliveIntervalMs = opts?.isVoiceMode ? 1000 : 0;
     const sseWriter = createSSEWriter({ res, model, keepaliveIntervalMs });
 
-    // For voice mode, immediately stream a buffer word to fill silence
-    // while the agent processes tool calls.
-    // IMPORTANT: Track agent text separately from buffer word injection.
-    // The agent's evt.data.text is accumulated text starting from 0,
-    // NOT including our buffer word. Don't confuse the two!
-    if (opts?.isVoiceMode) {
-      const bufferWord = getRandomBufferWord();
-      const t1 = performance.now();
-      log.info(
-        `[LATENCY:${runId}] t1: Buffer word sent (+${(t1 - t0).toFixed(2)}ms): "${bufferWord}"`,
-      );
-      sseWriter.writeContentChunk(bufferWord + " ");
-      // Don't add to agentLastText - buffer is separate from agent output
-    }
-
-    // Track agent's accumulated text for delta calculation (starts at 0)
+    // Track agent's accumulated text for delta calculation
     let agentLastText = "";
     let firstAgentEventTime: number | null = null;
     let firstChunkSentTime: number | null = null;
@@ -221,8 +178,6 @@ export function createOpenAICompatHandler(
 
         const newText = evt.data.text;
         // Calculate delta (new content since agent's last update)
-        // Note: agentLastText tracks the agent's accumulated text only,
-        // NOT including our injected buffer word
         if (newText.length > agentLastText.length) {
           const delta = newText.slice(agentLastText.length);
           agentLastText = newText;
@@ -288,6 +243,7 @@ export function createOpenAICompatHandler(
           abortSignal,
           lane: opts?.lane,
           extraSystemPrompt: opts?.extraSystemPrompt,
+          requestStartTime: t0,
         },
         runtime,
         deps,
@@ -324,6 +280,7 @@ export function createOpenAICompatHandler(
     opts?: { lane?: string; extraSystemPrompt?: string },
   ): Promise<void> {
     const runId = randomUUID();
+    const t0 = performance.now();
     const sessionId = randomUUID();
     const completionId = `chatcmpl-${randomUUID().replace(/-/g, "").slice(0, 24)}`;
     const created = Math.floor(Date.now() / 1000);
@@ -380,6 +337,7 @@ export function createOpenAICompatHandler(
           abortSignal,
           lane: opts?.lane,
           extraSystemPrompt: opts?.extraSystemPrompt,
+          requestStartTime: t0,
         },
         runtime,
         deps,
