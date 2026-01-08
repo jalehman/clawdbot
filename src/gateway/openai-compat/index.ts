@@ -164,6 +164,9 @@ export function createOpenAICompatHandler(
     opts?: { lane?: string; extraSystemPrompt?: string; isVoiceMode?: boolean },
   ): Promise<void> {
     const runId = randomUUID();
+    const t0 = performance.now();
+    log.info(`[LATENCY:${runId}] t0: Request received`);
+
     // Look up session ID from store - voice sessions must use their pre-warmed session
     const cfg = getConfig();
     const storePath = resolveStorePath(cfg.session?.store);
@@ -186,13 +189,18 @@ export function createOpenAICompatHandler(
     // NOT including our buffer word. Don't confuse the two!
     if (opts?.isVoiceMode) {
       const bufferWord = getRandomBufferWord();
-      log.info(`Voice mode: streaming buffer word "${bufferWord}"`);
+      const t1 = performance.now();
+      log.info(
+        `[LATENCY:${runId}] t1: Buffer word sent (+${(t1 - t0).toFixed(2)}ms): "${bufferWord}"`,
+      );
       sseWriter.writeContentChunk(bufferWord + " ");
       // Don't add to agentLastText - buffer is separate from agent output
     }
 
     // Track agent's accumulated text for delta calculation (starts at 0)
     let agentLastText = "";
+    let firstAgentEventTime: number | null = null;
+    let firstChunkSentTime: number | null = null;
 
     // Register run context for event routing
     registerAgentRunContext(runId, { sessionKey });
@@ -204,6 +212,13 @@ export function createOpenAICompatHandler(
 
       // Handle streaming text from agent
       if (evt.stream === "assistant" && typeof evt.data?.text === "string") {
+        if (firstAgentEventTime === null) {
+          firstAgentEventTime = performance.now();
+          log.info(
+            `[LATENCY:${runId}] t3: First agent event (+${(firstAgentEventTime - t0).toFixed(2)}ms)`,
+          );
+        }
+
         const newText = evt.data.text;
         // Calculate delta (new content since agent's last update)
         // Note: agentLastText tracks the agent's accumulated text only,
@@ -212,6 +227,13 @@ export function createOpenAICompatHandler(
           const delta = newText.slice(agentLastText.length);
           agentLastText = newText;
           sseWriter.writeContentChunk(delta);
+
+          if (firstChunkSentTime === null) {
+            firstChunkSentTime = performance.now();
+            log.info(
+              `[LATENCY:${runId}] t4: First chunk sent (+${(firstChunkSentTime - t0).toFixed(2)}ms, delta from agent event: +${(firstChunkSentTime - firstAgentEventTime).toFixed(2)}ms)`,
+            );
+          }
         }
       }
 
@@ -253,8 +275,9 @@ export function createOpenAICompatHandler(
 
     try {
       // Run the agent
+      const t2 = performance.now();
       log.info(
-        `Calling agentCommand: sessionId=${sessionId} runId=${runId} lane=${opts?.lane ?? "none"} extraPrompt=${opts?.extraSystemPrompt ? "yes" : "no"} msg=${message.slice(0, 30)}...`,
+        `[LATENCY:${runId}] t2: Calling agentCommand (+${(t2 - t0).toFixed(2)}ms): sessionId=${sessionId} lane=${opts?.lane ?? "none"} extraPrompt=${opts?.extraSystemPrompt ? "yes" : "no"} msg=${message.slice(0, 30)}...`,
       );
       await agentCommand(
         {
@@ -269,7 +292,10 @@ export function createOpenAICompatHandler(
         runtime,
         deps,
       );
-      log.info(`agentCommand completed: runId=${runId}`);
+      const tEnd = performance.now();
+      log.info(
+        `[LATENCY:${runId}] tEnd: agentCommand completed (+${(tEnd - t0).toFixed(2)}ms, agent duration: ${(tEnd - t2).toFixed(2)}ms)`,
+      );
 
       // Agent completed - ensure stream is closed
       if (!sseWriter.isClosed()) {

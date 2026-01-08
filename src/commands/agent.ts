@@ -231,6 +231,10 @@ export async function agentCommand(
   let sessionEntry = resolvedSessionEntry;
   const runId = opts.runId?.trim() || sessionId;
 
+  // Latency tracking: mark agent command start
+  const cmdT0 = performance.now();
+  runtime.log(`[LATENCY:${runId}] agentCmd t0: Command entry`);
+
   if (sessionKey) {
     registerAgentRunContext(runId, { sessionKey });
   }
@@ -393,6 +397,12 @@ export async function agentCommand(
         if (!raw) return undefined;
         return raw === "imsg" ? "imessage" : raw;
       })();
+
+    const cmdT1 = performance.now();
+    runtime.log(
+      `[LATENCY:${runId}] agentCmd t1: About to call runWithModelFallback (+${(cmdT1 - cmdT0).toFixed(2)}ms)`,
+    );
+
     const fallbackResult = await runWithModelFallback({
       cfg,
       provider,

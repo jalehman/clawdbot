@@ -131,6 +131,7 @@ export function subscribeEmbeddedPiSession(params: {
   let lastStreamedReasoning: string | undefined;
   let lastBlockReplyText: string | undefined;
   let assistantTextBaseline = 0;
+  let firstEmitTime: number | null = null; // Track first event emission for latency
   let compactionInFlight = false;
   let pendingCompactionRetry = 0;
   let compactionRetryResolve: (() => void) | undefined;
@@ -498,6 +499,15 @@ export function subscribeEmbeddedPiSession(params: {
               lastStreamedAssistant = next;
               const { text: cleanedText, mediaUrls } =
                 splitMediaFromOutput(next);
+
+              // Track first emission for latency measurement
+              if (firstEmitTime === null) {
+                firstEmitTime = performance.now();
+                log.info(
+                  `[LATENCY:${params.runId}] firstEmit: First agent text event emitted`,
+                );
+              }
+
               emitAgentEvent({
                 runId: params.runId,
                 stream: "assistant",

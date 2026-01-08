@@ -993,16 +993,24 @@ export async function runEmbeddedPiAgent(params: {
           let promptError: unknown = null;
           try {
             const promptStartedAt = Date.now();
+            const promptT0 = performance.now();
             log.debug(
               `embedded run prompt start: runId=${params.runId} sessionId=${params.sessionId}`,
+            );
+            log.info(
+              `[LATENCY:${params.runId}] apiCall t0: Calling session.prompt()`,
             );
             try {
               await session.prompt(params.prompt);
             } catch (err) {
               promptError = err;
             } finally {
+              const promptT1 = performance.now();
               log.debug(
                 `embedded run prompt end: runId=${params.runId} sessionId=${params.sessionId} durationMs=${Date.now() - promptStartedAt}`,
+              );
+              log.info(
+                `[LATENCY:${params.runId}] apiCall t1: session.prompt() returned (+${(promptT1 - promptT0).toFixed(2)}ms)`,
               );
             }
             try {
