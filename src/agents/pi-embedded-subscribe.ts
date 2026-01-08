@@ -114,6 +114,8 @@ export function subscribeEmbeddedPiSession(params: {
     data: Record<string, unknown>;
   }) => void;
   enforceFinalTag?: boolean;
+  /** Original request start time (performance.now()) for latency tracking. */
+  requestStartTime?: number;
 }) {
   const assistantTexts: string[] = [];
   const toolMetas: Array<{ toolName?: string; meta?: string }> = [];
@@ -503,8 +505,11 @@ export function subscribeEmbeddedPiSession(params: {
               // Track first emission for latency measurement
               if (firstEmitTime === null) {
                 firstEmitTime = performance.now();
+                const emitDelta = params.requestStartTime
+                  ? ` (+${(firstEmitTime - params.requestStartTime).toFixed(2)}ms from request)`
+                  : "";
                 log.info(
-                  `[LATENCY:${params.runId}] firstEmit: First agent text event emitted`,
+                  `[LATENCY:${params.runId}] firstEmit: First agent text event emitted${emitDelta}`,
                 );
               }
 

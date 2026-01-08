@@ -684,6 +684,8 @@ export async function runEmbeddedPiAgent(params: {
   extraSystemPrompt?: string;
   ownerNumbers?: string[];
   enforceFinalTag?: boolean;
+  /** Original request start time (performance.now()) for latency tracking. */
+  requestStartTime?: number;
 }): Promise<EmbeddedPiRunResult> {
   const sessionLane = resolveSessionLane(
     params.sessionKey?.trim() || params.sessionId,
@@ -939,6 +941,7 @@ export async function runEmbeddedPiAgent(params: {
             onPartialReply: params.onPartialReply,
             onAgentEvent: params.onAgentEvent,
             enforceFinalTag: params.enforceFinalTag,
+            requestStartTime: params.requestStartTime,
           });
           const {
             assistantTexts,
@@ -991,14 +994,18 @@ export async function runEmbeddedPiAgent(params: {
             }
           }
           let promptError: unknown = null;
+          const reqT0 = params.requestStartTime ?? performance.now();
           try {
             const promptStartedAt = Date.now();
             const promptT0 = performance.now();
             log.debug(
               `embedded run prompt start: runId=${params.runId} sessionId=${params.sessionId}`,
             );
+            const setupDelta = params.requestStartTime
+              ? ` (+${(promptT0 - reqT0).toFixed(2)}ms from request)`
+              : "";
             log.info(
-              `[LATENCY:${params.runId}] apiCall t0: Calling session.prompt()`,
+              `[LATENCY:${params.runId}] apiCall t0: Calling session.prompt()${setupDelta}`,
             );
             try {
               await session.prompt(params.prompt);
@@ -1009,8 +1016,11 @@ export async function runEmbeddedPiAgent(params: {
               log.debug(
                 `embedded run prompt end: runId=${params.runId} sessionId=${params.sessionId} durationMs=${Date.now() - promptStartedAt}`,
               );
+              const apiDelta = params.requestStartTime
+                ? `, +${(promptT1 - reqT0).toFixed(2)}ms from request`
+                : "";
               log.info(
-                `[LATENCY:${params.runId}] apiCall t1: session.prompt() returned (+${(promptT1 - promptT0).toFixed(2)}ms)`,
+                `[LATENCY:${params.runId}] apiCall t1: session.prompt() returned (api: ${(promptT1 - promptT0).toFixed(2)}ms${apiDelta})`,
               );
             }
             try {

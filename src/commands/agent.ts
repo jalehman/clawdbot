@@ -75,6 +75,8 @@ type AgentCommandOpts = {
   lane?: string;
   runId?: string;
   extraSystemPrompt?: string;
+  /** Original request start time (performance.now()) for latency tracking. */
+  requestStartTime?: number;
 };
 
 type SessionResolution = {
@@ -233,7 +235,11 @@ export async function agentCommand(
 
   // Latency tracking: mark agent command start
   const cmdT0 = performance.now();
-  runtime.log(`[LATENCY:${runId}] agentCmd t0: Command entry`);
+  const reqT0 = opts.requestStartTime ?? cmdT0;
+  const delta = opts.requestStartTime
+    ? ` (+${(cmdT0 - reqT0).toFixed(2)}ms)`
+    : "";
+  runtime.log(`[LATENCY:${runId}] agentCmd t0: Command entry${delta}`);
 
   if (sessionKey) {
     registerAgentRunContext(runId, { sessionKey });
@@ -427,6 +433,7 @@ export async function agentCommand(
           lane: opts.lane,
           abortSignal: opts.abortSignal,
           extraSystemPrompt: opts.extraSystemPrompt,
+          requestStartTime: reqT0,
           onAgentEvent: (evt) => {
             if (
               evt.stream === "lifecycle" &&
