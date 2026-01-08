@@ -154,6 +154,13 @@ export function createOpenAICompatHandler(
     const keepaliveIntervalMs = opts?.isVoiceMode ? 1000 : 0;
     const sseWriter = createSSEWriter({ res, model, keepaliveIntervalMs });
 
+    // For voice mode, send role chunk immediately to prime ElevenLabs' TTS pipeline.
+    // Without this, there's a ~3 second gap before first content arrives, and ElevenLabs
+    // may have playback initialization latency that causes early content to be dropped.
+    if (opts?.isVoiceMode) {
+      sseWriter.writeRoleChunk();
+    }
+
     // Track agent's accumulated text for delta calculation
     let agentLastText = "";
     let firstAgentEventTime: number | null = null;
