@@ -1,6 +1,10 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import {
   codingTools,
   createEditTool,
+  createFindTool,
+  createGrepTool,
   createReadTool,
   createWriteTool,
   readTool,
@@ -27,6 +31,7 @@ import {
 } from "./pi-tools.policy.js";
 import {
   assertRequiredParams,
+  assertSandboxPath,
   CLAUDE_PARAM_GROUPS,
   createClawdbotReadTool,
   createSandboxedEditTool,
@@ -34,6 +39,7 @@ import {
   createSandboxedWriteTool,
   normalizeToolParams,
   patchToolSchemaForClaudeCompatibility,
+  wrapSandboxPathGuard,
   wrapToolParamNormalization,
 } from "./pi-tools.read.js";
 import { cleanToolSchemaForGemini, normalizeToolParameters } from "./pi-tools.schema.js";
@@ -46,6 +52,75 @@ import {
   resolveToolProfilePolicy,
 } from "./tool-policy.js";
 import { getPluginToolMeta } from "../plugins/tools.js";
+
+// Claude Code OAuth tool profile types and schemas
+type ClaudeCodeToolProfile = "claude-code";
+
+const CLAUDE_CODE_BASH_SCHEMA = {
+  type: "object",
+  properties: {
+    command: { type: "string", description: "Bash command to execute" },
+    description: { type: "string", description: "Reason for running the command" },
+  },
+  required: ["command"],
+} as const;
+
+const CLAUDE_CODE_READ_SCHEMA = {
+  type: "object",
+  properties: {
+    file_path: { type: "string", description: "Path to the file to read" },
+    offset: {
+      type: "number",
+      description: "Line number to start reading from (1-indexed)",
+    },
+    limit: { type: "number", description: "Maximum number of lines to read" },
+  },
+  required: ["file_path"],
+} as const;
+
+const CLAUDE_CODE_WRITE_SCHEMA = {
+  type: "object",
+  properties: {
+    file_path: { type: "string", description: "Path to the file to write" },
+    content: { type: "string", description: "Content to write" },
+  },
+  required: ["file_path", "content"],
+} as const;
+
+const CLAUDE_CODE_EDIT_SCHEMA = {
+  type: "object",
+  properties: {
+    file_path: { type: "string", description: "Path to the file to edit" },
+    old_string: { type: "string", description: "Text to replace" },
+    new_string: { type: "string", description: "Replacement text" },
+    replace_all: { type: "boolean", description: "Replace all occurrences" },
+  },
+  required: ["file_path", "old_string", "new_string"],
+} as const;
+
+const CLAUDE_CODE_GLOB_SCHEMA = {
+  type: "object",
+  properties: {
+    pattern: { type: "string", description: "Glob pattern" },
+    path: { type: "string", description: "Directory to search" },
+    limit: { type: "number", description: "Max results" },
+  },
+  required: ["pattern"],
+} as const;
+
+const CLAUDE_CODE_GREP_SCHEMA = {
+  type: "object",
+  properties: {
+    pattern: { type: "string", description: "Search pattern" },
+    path: { type: "string", description: "Directory or file to search" },
+    output_mode: {
+      type: "string",
+      description: "Output mode (content|files_with_matches)",
+    },
+    head_limit: { type: "number", description: "Limit number of results" },
+  },
+  required: ["pattern"],
+} as const;
 
 function isOpenAIProvider(provider?: string) {
   const normalized = provider?.trim().toLowerCase();
@@ -90,6 +165,229 @@ function resolveExecConfig(cfg: ClawdbotConfig | undefined) {
   };
 }
 
+// Wraps a tool with Claude Code-compatible name/schema and input mapping.
+function wrapClaudeCodeTool(params: {
+  base: AnyAgentTool;
+  name: string;
+  schema: Record<string, unknown>;
+  mapInput: (input: Record<string, unknown>) => Record<string, unknown>;
+}): AnyAgentTool {
+  return {
+    ...params.base,
+    name: params.name,
+    label: params.name,
+    parameters: params.schema,
+    execute: (toolCallId, args, signal, onUpdate) => {
+      const record =
+        args && typeof args === "object"
+          ? (args as Record<string, unknown>)
+          : {};
+      return params.base.execute(
+        toolCallId,
+        params.mapInput(record),
+        signal,
+        onUpdate,
+      );
+    },
+  };
+}
+
+// Wraps edit with Claude Code schema and adds a replace_all fallback.
+function wrapClaudeCodeEditTool(params: {
+  base: AnyAgentTool;
+  sandboxRoot?: string;
+}): AnyAgentTool {
+  return {
+    ...params.base,
+    name: "Edit",
+    label: "Edit",
+    parameters: CLAUDE_CODE_EDIT_SCHEMA,
+    execute: async (toolCallId, args, signal, onUpdate) => {
+      const record =
+        args && typeof args === "object"
+          ? (args as Record<string, unknown>)
+          : {};
+      const filePath =
+        typeof record.file_path === "string" ? record.file_path : "";
+      const oldString =
+        typeof record.old_string === "string" ? record.old_string : "";
+      const newString =
+        typeof record.new_string === "string" ? record.new_string : "";
+      const replaceAll = record.replace_all === true;
+
+      // Default to the base edit tool unless replace_all is requested.
+      if (!replaceAll) {
+        return params.base.execute(
+          toolCallId,
+          { path: filePath, oldText: oldString, newText: newString },
+          signal,
+          onUpdate,
+        );
+      }
+
+      // Simple replace-all fallback for Claude Code compatibility.
+      if (!filePath.trim()) {
+        throw new Error("Edit requires file_path.");
+      }
+      if (!oldString) {
+        throw new Error("Edit requires old_string.");
+      }
+      if (typeof record.new_string !== "string") {
+        throw new Error("Edit requires new_string.");
+      }
+      if (signal?.aborted) {
+        throw new Error("Operation aborted");
+      }
+      if (params.sandboxRoot) {
+        await assertSandboxPath({
+          filePath,
+          cwd: params.sandboxRoot,
+          root: params.sandboxRoot,
+        });
+      }
+
+      const absolutePath = path.resolve(process.cwd(), filePath);
+      const rawContent = await fs.readFile(absolutePath, "utf8");
+      if (signal?.aborted) {
+        throw new Error("Operation aborted");
+      }
+      const bom = rawContent.startsWith("\uFEFF") ? "\uFEFF" : "";
+      const content = bom ? rawContent.slice(1) : rawContent;
+      if (!content.includes(oldString)) {
+        throw new Error(
+          `Could not find the exact text in ${filePath}. The old text must match exactly including all whitespace and newlines.`,
+        );
+      }
+      const replaced = content.split(oldString).join(newString);
+      if (signal?.aborted) {
+        throw new Error("Operation aborted");
+      }
+      await fs.writeFile(absolutePath, `${bom}${replaced}`, "utf8");
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Successfully replaced text in ${filePath}.`,
+          },
+        ],
+        details: undefined,
+      };
+    },
+  };
+}
+
+// Builds the restricted Claude Code tool set with CC-compatible names/schemas.
+function createClaudeCodeCompatibilityTools(
+  options?: {
+    exec?: ExecToolDefaults & ProcessToolDefaults;
+    sandbox?: SandboxContext | null;
+  },
+): AnyAgentTool[] {
+  const sandbox = options?.sandbox?.enabled ? options.sandbox : undefined;
+  const sandboxRoot = sandbox?.workspaceDir;
+  const allowWorkspaceWrites = sandbox?.workspaceAccess !== "ro";
+
+  // Build base tools with the same sandbox rules as the default tool set.
+  const readBase = sandboxRoot
+    ? createSandboxedReadTool(sandboxRoot)
+    : createClawdbotReadTool(createReadTool(process.cwd()) as unknown as AnyAgentTool);
+  const editBase = allowWorkspaceWrites
+    ? sandboxRoot
+      ? createSandboxedEditTool(sandboxRoot)
+      : (createEditTool(process.cwd()) as unknown as AnyAgentTool)
+    : null;
+  const writeBase = allowWorkspaceWrites
+    ? sandboxRoot
+      ? createSandboxedWriteTool(sandboxRoot)
+      : (createWriteTool(process.cwd()) as unknown as AnyAgentTool)
+    : null;
+  const globBase = sandboxRoot
+    ? wrapSandboxPathGuard(
+        createFindTool(sandboxRoot) as unknown as AnyAgentTool,
+        sandboxRoot,
+      )
+    : (createFindTool(process.cwd()) as unknown as AnyAgentTool);
+  const grepBase = sandboxRoot
+    ? wrapSandboxPathGuard(
+        createGrepTool(sandboxRoot) as unknown as AnyAgentTool,
+        sandboxRoot,
+      )
+    : (createGrepTool(process.cwd()) as unknown as AnyAgentTool);
+  const bashBase = createExecTool({
+    ...options?.exec,
+    sandbox: sandbox
+      ? {
+          containerName: sandbox.containerName,
+          workspaceDir: sandbox.workspaceDir,
+          containerWorkdir: sandbox.containerWorkdir,
+          env: sandbox.docker.env,
+        }
+      : undefined,
+  });
+
+  // Expose only the Claude Code tool names and schemas.
+  const tools: AnyAgentTool[] = [
+    wrapClaudeCodeTool({
+      base: bashBase as unknown as AnyAgentTool,
+      name: "Bash",
+      schema: CLAUDE_CODE_BASH_SCHEMA,
+      mapInput: (record) => ({
+        command: typeof record.command === "string" ? record.command : "",
+      }),
+    }),
+    wrapClaudeCodeTool({
+      base: readBase,
+      name: "Read",
+      schema: CLAUDE_CODE_READ_SCHEMA,
+      mapInput: (record) => ({
+        path: typeof record.file_path === "string" ? record.file_path : "",
+        offset: typeof record.offset === "number" ? record.offset : undefined,
+        limit: typeof record.limit === "number" ? record.limit : undefined,
+      }),
+    }),
+    ...(editBase
+      ? [wrapClaudeCodeEditTool({ base: editBase, sandboxRoot })]
+      : []),
+    ...(writeBase
+      ? [
+          wrapClaudeCodeTool({
+            base: writeBase,
+            name: "Write",
+            schema: CLAUDE_CODE_WRITE_SCHEMA,
+            mapInput: (record) => ({
+              path:
+                typeof record.file_path === "string" ? record.file_path : "",
+              content: typeof record.content === "string" ? record.content : "",
+            }),
+          }),
+        ]
+      : []),
+    wrapClaudeCodeTool({
+      base: globBase,
+      name: "Glob",
+      schema: CLAUDE_CODE_GLOB_SCHEMA,
+      mapInput: (record) => ({
+        pattern: typeof record.pattern === "string" ? record.pattern : "",
+        path: typeof record.path === "string" ? record.path : undefined,
+        limit: typeof record.limit === "number" ? record.limit : undefined,
+      }),
+    }),
+    wrapClaudeCodeTool({
+      base: grepBase,
+      name: "Grep",
+      schema: CLAUDE_CODE_GREP_SCHEMA,
+      mapInput: (record) => ({
+        pattern: typeof record.pattern === "string" ? record.pattern : "",
+        path: typeof record.path === "string" ? record.path : undefined,
+        limit:
+          typeof record.head_limit === "number" ? record.head_limit : undefined,
+      }),
+    }),
+  ];
+
+  return tools;
+}
+
 export const __testing = {
   cleanToolSchemaForGemini,
   normalizeToolParams,
@@ -122,6 +420,8 @@ export function createClawdbotCodingTools(options?: {
    * tool-name blocking quirks.
    */
   modelAuthMode?: ModelAuthMode;
+  /** Tool profile for Claude Code OAuth compatibility. */
+  toolProfile?: ClaudeCodeToolProfile;
   /** Current channel ID for auto-threading (Slack). */
   currentChannelId?: string;
   /** Current thread timestamp for auto-threading (Slack). */
@@ -135,6 +435,32 @@ export function createClawdbotCodingTools(options?: {
 }): AnyAgentTool[] {
   const execToolName = "exec";
   const sandbox = options?.sandbox?.enabled ? options.sandbox : undefined;
+
+  // Claude Code OAuth tool profile: restricted tool set with CC-compatible names/schemas.
+  if (options?.toolProfile === "claude-code") {
+    const tools = createClaudeCodeCompatibilityTools({
+      exec: options?.exec,
+      sandbox,
+    });
+    const globallyFiltered =
+      options?.config?.agents?.defaults?.tools &&
+      (options.config.agents.defaults.tools.allow?.length ||
+        options.config.agents.defaults.tools.deny?.length)
+        ? filterToolsByPolicy(tools, options.config.agents.defaults.tools)
+        : tools;
+    const sandboxed = sandbox
+      ? filterToolsByPolicy(globallyFiltered, sandbox.tools)
+      : globallyFiltered;
+    const subagentFiltered =
+      isSubagentSessionKey(options?.sessionKey) && options?.sessionKey
+        ? filterToolsByPolicy(
+            sandboxed,
+            resolveSubagentToolPolicy(options.config),
+          )
+        : sandboxed;
+    return subagentFiltered.map(normalizeToolParameters);
+  }
+
   const {
     agentId,
     globalPolicy,
@@ -186,20 +512,20 @@ export function createClawdbotCodingTools(options?: {
         return [createSandboxedReadTool(sandboxRoot)];
       }
       const freshReadTool = createReadTool(workspaceRoot);
-      return [createClawdbotReadTool(freshReadTool)];
+      return [createClawdbotReadTool(freshReadTool as unknown as AnyAgentTool)];
     }
     if (tool.name === "bash" || tool.name === execToolName) return [];
     if (tool.name === "write") {
       if (sandboxRoot) return [];
       // Wrap with param normalization for Claude Code compatibility
       return [
-        wrapToolParamNormalization(createWriteTool(workspaceRoot), CLAUDE_PARAM_GROUPS.write),
+        wrapToolParamNormalization(createWriteTool(workspaceRoot) as unknown as AnyAgentTool, CLAUDE_PARAM_GROUPS.write),
       ];
     }
     if (tool.name === "edit") {
       if (sandboxRoot) return [];
       // Wrap with param normalization for Claude Code compatibility
-      return [wrapToolParamNormalization(createEditTool(workspaceRoot), CLAUDE_PARAM_GROUPS.edit)];
+      return [wrapToolParamNormalization(createEditTool(workspaceRoot) as unknown as AnyAgentTool, CLAUDE_PARAM_GROUPS.edit)];
     }
     return [tool as AnyAgentTool];
   });
