@@ -200,6 +200,11 @@ export function resolveModelAuthMode(
   return "unknown";
 }
 
+/** Returns true when the API key looks like a Claude Code OAuth token. */
+export function isClaudeCodeOAuthToken(apiKey: string): boolean {
+  return apiKey.trim().startsWith("sk-ant-oat");
+}
+
 export async function getApiKeyForModel(params: {
   model: Model<Api>;
   cfg?: ClawdbotConfig;

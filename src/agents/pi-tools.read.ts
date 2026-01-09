@@ -4,6 +4,7 @@ import { createEditTool, createReadTool, createWriteTool } from "@mariozechner/p
 import { detectMime } from "../media/mime.js";
 import type { AnyAgentTool } from "./pi-tools.types.js";
 import { assertSandboxPath } from "./sandbox-paths.js";
+export { assertSandboxPath } from "./sandbox-paths.js";
 import { sanitizeToolResultImages } from "./tool-images.js";
 
 // NOTE(steipete): Upstream read now does file-magic MIME detection; we keep the wrapper
@@ -230,7 +231,7 @@ export function wrapToolParamNormalization(
   };
 }
 
-function wrapSandboxPathGuard(tool: AnyAgentTool, root: string): AnyAgentTool {
+export function wrapSandboxPathGuard(tool: AnyAgentTool, root: string): AnyAgentTool {
   return {
     ...tool,
     execute: async (toolCallId, args, signal, onUpdate) => {
