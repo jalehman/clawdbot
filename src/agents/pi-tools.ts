@@ -143,7 +143,7 @@ function isApplyPatchAllowedForModel(params: {
   });
 }
 
-// Wraps a tool with Claude Code-compatible name/schema and input mapping.
+// Wraps a tool with Claude Code-compatible schema and input mapping.
 function wrapClaudeCodeTool(params: {
   base: AnyAgentTool;
   name: string;
@@ -177,8 +177,8 @@ function wrapClaudeCodeEditTool(params: {
 }): AnyAgentTool {
   return {
     ...params.base,
-    name: "Edit",
-    label: "Edit",
+    name: "edit",
+    label: "edit",
     parameters: CLAUDE_CODE_EDIT_SCHEMA,
     execute: async (toolCallId, args, signal, onUpdate) => {
       const record =
@@ -307,7 +307,7 @@ function createClaudeCodeCompatibilityTools(
   const tools: AnyAgentTool[] = [
     wrapClaudeCodeTool({
       base: bashBase as unknown as AnyAgentTool,
-      name: "Bash",
+      name: "bash",
       schema: CLAUDE_CODE_BASH_SCHEMA,
       mapInput: (record) => ({
         command: typeof record.command === "string" ? record.command : "",
@@ -315,7 +315,7 @@ function createClaudeCodeCompatibilityTools(
     }),
     wrapClaudeCodeTool({
       base: readBase,
-      name: "Read",
+      name: "read",
       schema: CLAUDE_CODE_READ_SCHEMA,
       mapInput: (record) => ({
         path: typeof record.file_path === "string" ? record.file_path : "",
@@ -330,7 +330,7 @@ function createClaudeCodeCompatibilityTools(
       ? [
           wrapClaudeCodeTool({
             base: writeBase,
-            name: "Write",
+            name: "write",
             schema: CLAUDE_CODE_WRITE_SCHEMA,
             mapInput: (record) => ({
               path:
@@ -342,7 +342,7 @@ function createClaudeCodeCompatibilityTools(
       : []),
     wrapClaudeCodeTool({
       base: globBase,
-      name: "Glob",
+      name: "find",
       schema: CLAUDE_CODE_GLOB_SCHEMA,
       mapInput: (record) => ({
         pattern: typeof record.pattern === "string" ? record.pattern : "",
@@ -352,7 +352,7 @@ function createClaudeCodeCompatibilityTools(
     }),
     wrapClaudeCodeTool({
       base: grepBase,
-      name: "Grep",
+      name: "grep",
       schema: CLAUDE_CODE_GREP_SCHEMA,
       mapInput: (record) => ({
         pattern: typeof record.pattern === "string" ? record.pattern : "",
