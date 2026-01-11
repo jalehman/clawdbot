@@ -251,12 +251,12 @@ describe("createClawdbotCodingTools", () => {
   it("exposes Claude Code tool schema when enabled", () => {
     const tools = createClawdbotCodingTools({ toolProfile: "claude-code" });
     expect(tools.map((tool) => tool.name)).toEqual([
-      "Bash",
-      "Read",
-      "Edit",
-      "Write",
-      "Glob",
-      "Grep",
+      "bash",
+      "read",
+      "edit",
+      "write",
+      "find",
+      "grep",
     ]);
 
     const getSchema = (name: string) => {
@@ -268,25 +268,25 @@ describe("createClawdbotCodingTools", () => {
       };
     };
 
-    const bashSchema = getSchema("Bash");
+    const bashSchema = getSchema("bash");
     expect(Object.keys(bashSchema.properties ?? {}).sort()).toEqual(
       ["command", "description"].sort(),
     );
     expect(bashSchema.required ?? []).toEqual(["command"]);
 
-    const readSchema = getSchema("Read");
+    const readSchema = getSchema("read");
     expect(Object.keys(readSchema.properties ?? {}).sort()).toEqual(
       ["file_path", "limit", "offset"].sort(),
     );
     expect(readSchema.required ?? []).toEqual(["file_path"]);
 
-    const writeSchema = getSchema("Write");
+    const writeSchema = getSchema("write");
     expect(Object.keys(writeSchema.properties ?? {}).sort()).toEqual(
       ["content", "file_path"].sort(),
     );
     expect(writeSchema.required ?? []).toEqual(["file_path", "content"]);
 
-    const editSchema = getSchema("Edit");
+    const editSchema = getSchema("edit");
     expect(Object.keys(editSchema.properties ?? {}).sort()).toEqual(
       ["file_path", "new_string", "old_string", "replace_all"].sort(),
     );
@@ -296,13 +296,13 @@ describe("createClawdbotCodingTools", () => {
       "new_string",
     ]);
 
-    const globSchema = getSchema("Glob");
+    const globSchema = getSchema("find");
     expect(Object.keys(globSchema.properties ?? {}).sort()).toEqual(
       ["limit", "path", "pattern"].sort(),
     );
     expect(globSchema.required ?? []).toEqual(["pattern"]);
 
-    const grepSchema = getSchema("Grep");
+    const grepSchema = getSchema("grep");
     expect(Object.keys(grepSchema.properties ?? {}).sort()).toEqual(
       ["head_limit", "output_mode", "path", "pattern"].sort(),
     );
