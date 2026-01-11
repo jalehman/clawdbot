@@ -401,7 +401,9 @@ export async function runEmbeddedAttempt(
         model: params.model,
         thinkingLevel: mapThinkingLevel(params.thinkLevel),
         systemPrompt,
-        tools: builtInTools,
+        // After pi-coding-agent 0.42.2, empty tools array means no active tools.
+        // Passing undefined lets SDK use defaults while customTools still override.
+        tools: undefined,
         customTools: allCustomTools,
         sessionManager,
         settingsManager,
