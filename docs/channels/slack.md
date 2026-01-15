@@ -114,6 +114,7 @@ Example with userTokenReadOnly explicitly set (allow user token writes):
 ### History context
 - `channels.slack.historyLimit` (or `channels.slack.accounts.*.historyLimit`) controls how many recent channel/group messages are wrapped into the prompt.
 - Falls back to `messages.groupChat.historyLimit`. Set `0` to disable (default 50).
+- DM history can be limited with `channels.slack.dmHistoryLimit` (user turns). Per-user overrides: `channels.slack.dms["<user_id>"].historyLimit`.
 
 ## HTTP mode (Events API)
 Use HTTP webhook mode when your Gateway is reachable by Slack over HTTPS (typical for server deployments).

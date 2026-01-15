@@ -162,9 +162,11 @@ export async function handleSlackAction(
           to,
           context,
         );
+        const writeToken = writeOpts?.token;
         const result = await sendSlackMessage(to, content, {
           ...writeOpts,
           mediaUrl: mediaUrl ?? undefined,
+          ...(writeToken ? { token: writeToken } : {}),
           threadTs: threadTs ?? undefined,
         });
 
@@ -219,6 +221,7 @@ export async function handleSlackAction(
           limit,
           before: before ?? undefined,
           after: after ?? undefined,
+          ...(readOpts?.token ? { token: readOpts.token } : {}),
         });
         const messages = result.messages.map((message) =>
           withNormalizedTimestamp(
@@ -260,7 +263,7 @@ export async function handleSlackAction(
       }
       return jsonResult({ ok: true });
     }
-    const pins = writeOpts
+    const pins = readOpts
       ? await listSlackPins(channelId, readOpts)
       : await listSlackPins(channelId);
     const normalizedPins = pins.map((pin) => {
@@ -280,7 +283,7 @@ export async function handleSlackAction(
       throw new Error("Slack member info is disabled.");
     }
     const userId = readStringParam(params, "userId", { required: true });
-    const info = writeOpts
+    const info = readOpts
       ? await getSlackMemberInfo(userId, readOpts)
       : await getSlackMemberInfo(userId);
     return jsonResult({ ok: true, info });
