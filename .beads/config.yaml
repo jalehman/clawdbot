@@ -60,3 +60,8 @@
 # - linear.api-key
 # - github.org
 # - github.repo
+
+# Use fork for beads sync (jalehman's fork)
+sync-branch: "beads-sync"
+
+sync.remote: "fork"
