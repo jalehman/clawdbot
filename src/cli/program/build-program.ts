@@ -4,6 +4,7 @@ import { createProgramContext } from "./context.js";
 import { configureProgramHelp } from "./help.js";
 import { registerPreActionHooks } from "./preaction.js";
 import { registerAgentCommands } from "./register.agent.js";
+import { registerAuthCommand } from "./register.auth.js";
 import { registerConfigureCommand } from "./register.configure.js";
 import { registerMaintenanceCommands } from "./register.maintenance.js";
 import { registerMessageCommands } from "./register.message.js";
@@ -21,6 +22,7 @@ export function buildProgram() {
 
   registerSetupCommand(program);
   registerOnboardCommand(program);
+  registerAuthCommand(program);
   registerConfigureCommand(program);
   registerMaintenanceCommands(program);
   registerMessageCommands(program, ctx);
