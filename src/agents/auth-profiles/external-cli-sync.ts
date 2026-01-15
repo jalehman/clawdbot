@@ -108,9 +108,11 @@ export function syncExternalCliCredentials(
     }
 
     // Also update if credential type changed (token -> oauth upgrade)
+    // But only if the OAuth credentials are actually fresh - don't overwrite
+    // a valid token with stale OAuth from a previous account.
     if (existing && existing.type !== claudeCreds.type) {
-      // Prefer oauth over token (enables auto-refresh)
-      if (claudeCreds.type === "oauth") {
+      // Prefer oauth over token (enables auto-refresh), but only if fresh
+      if (claudeCreds.type === "oauth" && claudeCredsExpires > now) {
         shouldUpdate = true;
         isEqual = false;
       }
