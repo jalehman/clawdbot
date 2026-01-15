@@ -416,23 +416,20 @@ export function createClawdbotCodingTools(options?: {
       exec: options?.exec,
       sandbox,
     });
-    const globallyFiltered =
-      options?.config?.agents?.defaults?.tools &&
-      (options.config.agents.defaults.tools.allow?.length ||
-        options.config.agents.defaults.tools.deny?.length)
-        ? filterToolsByPolicy(tools, options.config.agents.defaults.tools)
-        : tools;
-    const sandboxed = sandbox
-      ? filterToolsByPolicy(globallyFiltered, sandbox.tools)
-      : globallyFiltered;
-    const subagentFiltered =
-      isSubagentSessionKey(options?.sessionKey) && options?.sessionKey
-        ? filterToolsByPolicy(
-            sandboxed,
-            resolveSubagentToolPolicy(options.config),
-          )
-        : sandboxed;
-    return subagentFiltered.map(normalizeToolParameters);
+    // Use the same policy resolution as the main tool profile path.
+    const { globalPolicy, agentPolicy } = resolveEffectiveToolPolicy({
+      config: options?.config,
+      sessionKey: options?.sessionKey,
+      modelProvider: options?.modelProvider,
+    });
+    let filtered = tools;
+    if (globalPolicy) filtered = filterToolsByPolicy(filtered, globalPolicy);
+    if (agentPolicy) filtered = filterToolsByPolicy(filtered, agentPolicy);
+    if (sandbox) filtered = filterToolsByPolicy(filtered, sandbox.tools);
+    if (isSubagentSessionKey(options?.sessionKey) && options?.sessionKey) {
+      filtered = filterToolsByPolicy(filtered, resolveSubagentToolPolicy(options.config));
+    }
+    return filtered.map(normalizeToolParameters);
   }
 
   const {
