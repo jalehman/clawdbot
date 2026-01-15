@@ -10,6 +10,7 @@ import { registerBrowserCli } from "../browser-cli.js";
 import { registerConfigCli } from "../config-cli.js";
 import { registerMemoryCli, runMemoryStatus } from "../memory-cli.js";
 import { registerAgentCommands } from "./register.agent.js";
+import { registerAuthCommand } from "./register.auth.js";
 import { registerConfigureCommand } from "./register.configure.js";
 import { registerMaintenanceCommands } from "./register.maintenance.js";
 import { registerMessageCommands } from "./register.message.js";
@@ -111,6 +112,10 @@ export const commandRegistry: CommandRegistration[] = [
   {
     id: "onboard",
     register: ({ program }) => registerOnboardCommand(program),
+  },
+  {
+    id: "auth",
+    register: ({ program }) => registerAuthCommand(program),
   },
   {
     id: "configure",
