@@ -57,6 +57,7 @@ Text + native (when enabled):
 - `/status` (show current status; includes a short provider usage/quota line when available)
 - `/context [list|detail|json]` (explain “context”; `detail` shows per-file + per-tool + per-skill + system prompt size)
 - `/usage` (alias: `/status`)
+- `/auth-profile [next|<profileId>|clear]` (show or switch auth profile; alias: `/auth`)
 - `/whoami` (show your sender id; alias: `/id`)
 - `/config show|get|set|unset` (persist config to disk, owner-only; requires `commands.config: true`)
 - `/debug show|set|unset|reset` (runtime overrides, owner-only; requires `commands.debug: true`)

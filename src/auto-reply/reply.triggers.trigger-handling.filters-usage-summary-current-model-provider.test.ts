@@ -141,7 +141,7 @@ describe("trigger handling", () => {
       expect(String(replies[0]?.text ?? "")).toContain("Model:");
     });
   });
-  it("emits /usage once (alias of /status)", async () => {
+  it("emits /usage once (dedicated usage reply)", async () => {
     await withTempHome(async (home) => {
       const blockReplies: Array<{ text?: string }> = [];
       const res = await getReplyFromConfig(
@@ -162,7 +162,8 @@ describe("trigger handling", () => {
       const replies = res ? (Array.isArray(res) ? res : [res]) : [];
       expect(blockReplies.length).toBe(0);
       expect(replies.length).toBe(1);
-      expect(String(replies[0]?.text ?? "")).toContain("Model:");
+      // /usage now returns dedicated usage output (not the same as /status)
+      expect(String(replies[0]?.text ?? "")).toContain("Usage:");
     });
   });
   it("sends one inline status and still returns agent reply for mixed text", async () => {
