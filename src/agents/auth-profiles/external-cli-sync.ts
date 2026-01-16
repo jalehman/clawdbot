@@ -139,7 +139,7 @@ export function syncExternalCliCredentials(
     if (existing && existing.type !== claudeCreds.type) {
       // Prefer oauth over token (enables auto-refresh), but only if fresh
       if (claudeCreds.type === "oauth" && claudeCredsExpires > now + EXTERNAL_CLI_NEAR_EXPIRY_MS) {
-        const existingExpires = existing.type === "token" ? existing.expires ?? 0 : existing.expires;
+        const existingExpires = "expires" in existing ? existing.expires ?? 0 : 0;
         // Only upgrade if token isn't dramatically fresher (e.g., 1-year token vs 30-min OAuth)
         // A token expiring > 30 days later is likely just-created; don't replace with old OAuth
         const expiryDiff = existingExpires - claudeCredsExpires;
