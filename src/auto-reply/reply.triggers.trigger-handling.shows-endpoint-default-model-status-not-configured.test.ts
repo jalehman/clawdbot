@@ -106,7 +106,6 @@ describe("trigger handling", () => {
           Provider: "telegram",
           Surface: "telegram",
           SessionKey: "telegram:slash:111",
-          CommandAuthorized: true,
         },
         {},
         cfg,
@@ -138,7 +137,6 @@ describe("trigger handling", () => {
           Provider: "telegram",
           Surface: "telegram",
           SessionKey: "telegram:slash:111",
-          CommandAuthorized: true,
         },
         {},
         cfg,
@@ -158,7 +156,6 @@ describe("trigger handling", () => {
           Body: "  [Dec 5] /restart",
           From: "+1001",
           To: "+2000",
-          CommandAuthorized: true,
         },
         {},
         makeCfg(home),
@@ -176,7 +173,6 @@ describe("trigger handling", () => {
           Body: "/restart",
           From: "+1001",
           To: "+2000",
-          CommandAuthorized: true,
         },
         {},
         cfg,
@@ -193,13 +189,29 @@ describe("trigger handling", () => {
           Body: "/status",
           From: "+1002",
           To: "+2000",
-          CommandAuthorized: true,
         },
         {},
         makeCfg(home),
       );
       const text = Array.isArray(res) ? res[0]?.text : res?.text;
       expect(text).toContain("Clawdbot");
+      expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
+    });
+  });
+  it("reports usage via /usage without invoking the agent", async () => {
+    await withTempHome(async (home) => {
+      const res = await getReplyFromConfig(
+        {
+          Body: "/usage",
+          From: "+1002",
+          To: "+2000",
+        },
+        {},
+        makeCfg(home),
+      );
+      const text = Array.isArray(res) ? res[0]?.text : res?.text;
+      // /usage now returns dedicated usage output (not status)
+      expect(text).toContain("Usage:");
       expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
     });
   });

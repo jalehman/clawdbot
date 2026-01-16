@@ -62,6 +62,8 @@ Text + native (when enabled):
 - `/status` (show current status; includes provider usage/quota for the current model provider when available)
 - `/allowlist` (list/add/remove allowlist entries)
 - `/context [list|detail|json]` (explain “context”; `detail` shows per-file + per-tool + per-skill + system prompt size)
+- `/usage` (alias: `/status`)
+- `/auth-profile [next|<profileId>|clear]` (show or switch auth profile; alias: `/auth`)
 - `/whoami` (show your sender id; alias: `/id`)
 - `/subagents list|stop|log|info|send` (inspect, stop, log, or message sub-agent runs for the current session)
 - `/config show|get|set|unset` (persist config to disk, owner-only; requires `commands.config: true`)
