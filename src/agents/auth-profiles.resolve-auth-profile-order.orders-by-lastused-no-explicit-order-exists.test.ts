@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveAuthProfileOrder } from "./auth-profiles.js";
+import { CLAUDE_CLI_PROFILE_ID, resolveAuthProfileOrder } from "./auth-profiles.js";
 
 describe("resolveAuthProfileOrder", () => {
   const _store: AuthProfileStore = {
@@ -92,5 +92,34 @@ describe("resolveAuthProfileOrder", () => {
       provider: "anthropic",
     });
     expect(order).toEqual(["anthropic:ready", "anthropic:cool2", "anthropic:cool1"]);
+  });
+  it("deprioritizes CLI oauth profiles within the same provider", () => {
+    const order = resolveAuthProfileOrder({
+      store: {
+        version: 1,
+        profiles: {
+          [CLAUDE_CLI_PROFILE_ID]: {
+            type: "oauth",
+            provider: "anthropic",
+            access: "cli-access",
+            refresh: "cli-refresh",
+            expires: Date.now() + 60_000,
+          },
+          "anthropic:default": {
+            type: "oauth",
+            provider: "anthropic",
+            access: "new-access",
+            refresh: "new-refresh",
+            expires: Date.now() + 60_000,
+          },
+        },
+        usageStats: {
+          [CLAUDE_CLI_PROFILE_ID]: { lastUsed: 0 },
+          "anthropic:default": { lastUsed: 100 },
+        },
+      },
+      provider: "anthropic",
+    });
+    expect(order).toEqual(["anthropic:default", CLAUDE_CLI_PROFILE_ID]);
   });
 });
