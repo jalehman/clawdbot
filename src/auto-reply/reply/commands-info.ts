@@ -1,6 +1,6 @@
 import { logVerbose } from "../../globals.js";
 import { buildCommandsMessage, buildHelpMessage } from "../status.js";
-import { buildStatusReply } from "./commands-status.js";
+import { buildStatusReply, buildUsageReply } from "./commands-status.js";
 import { buildContextReply } from "./commands-context-report.js";
 import type { CommandHandler } from "./commands-types.js";
 
@@ -44,6 +44,17 @@ export const handleStatusCommand: CommandHandler = async (params, allowTextComma
       `Ignoring /status from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
     );
     return { shouldContinue: false };
+  }
+  const isUsageCommand = params.command.rawBodyNormalized.startsWith("/usage");
+  if (isUsageCommand) {
+    const reply = await buildUsageReply({
+      cfg: params.cfg,
+      command: params.command,
+      sessionEntry: params.sessionEntry,
+      sessionKey: params.sessionKey,
+      provider: params.provider,
+    });
+    return { shouldContinue: false, reply };
   }
   const reply = await buildStatusReply({
     cfg: params.cfg,

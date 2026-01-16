@@ -1,6 +1,7 @@
 import { logVerbose } from "../../globals.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { shouldHandleTextCommands } from "../commands-registry.js";
+import { handleAuthProfileCommand } from "./commands-auth-profile.js";
 import { handleBashCommand } from "./commands-bash.js";
 import { handleCompactCommand } from "./commands-compact.js";
 import { handleConfigCommand, handleDebugCommand } from "./commands-config.js";
@@ -25,6 +26,7 @@ import type {
 } from "./commands-types.js";
 
 const HANDLERS: CommandHandler[] = [
+  handleAuthProfileCommand,
   handleBashCommand,
   handleActivationCommand,
   handleSendPolicyCommand,
