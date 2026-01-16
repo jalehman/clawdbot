@@ -4,7 +4,19 @@ export type CommandArgsFormatter = (values: CommandArgValues) => string | undefi
 
 function normalizeArgValue(value: unknown): string | undefined {
   if (value == null) return undefined;
-  const text = typeof value === "string" ? value.trim() : String(value).trim();
+  let text: string;
+  if (typeof value === "string") {
+    text = value.trim();
+  } else if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    text = String(value).trim();
+  } else if (typeof value === "symbol") {
+    text = value.toString().trim();
+  } else if (typeof value === "function") {
+    text = value.toString().trim();
+  } else {
+    // Objects and arrays
+    text = JSON.stringify(value);
+  }
   return text ? text : undefined;
 }
 

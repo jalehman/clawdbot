@@ -137,7 +137,12 @@ function formatPositionalArgs(
   for (const definition of definitions) {
     const value = values[definition.name];
     if (value == null) continue;
-    const rendered = typeof value === "string" ? value.trim() : String(value);
+    let rendered: string;
+    if (typeof value === "string") {
+      rendered = value.trim();
+    } else {
+      rendered = String(value);
+    }
     if (!rendered) continue;
     parts.push(rendered);
     if (definition.captureRemaining) break;

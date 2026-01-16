@@ -1,6 +1,7 @@
 import type { ReasoningLevel, ThinkLevel } from "../auto-reply/thinking.js";
 import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import { listDeliverableMessageChannels } from "../utils/message-channel.js";
+import type { ResolvedTimeFormat } from "./date-time.js";
 import type { EmbeddedContextFile } from "./pi-embedded-helpers.js";
 
 export function buildAgentSystemPrompt(params: {
@@ -15,6 +16,7 @@ export function buildAgentSystemPrompt(params: {
   modelAliasLines?: string[];
   userTimezone?: string;
   userTime?: string;
+  userTimeFormat?: ResolvedTimeFormat;
   contextFiles?: EmbeddedContextFile[];
   skillsPrompt?: string;
   heartbeatPrompt?: string;
@@ -42,6 +44,11 @@ export function buildAgentSystemPrompt(params: {
       allowed: boolean;
       defaultLevel: "on" | "off";
     };
+  };
+  /** Reaction guidance for the agent (for Telegram minimal/extensive modes). */
+  reactionGuidance?: {
+    level: "minimal" | "extensive";
+    channel: string;
   };
 }) {
   const coreToolSummaries: Record<string, string> = {
@@ -307,17 +314,21 @@ export function buildAgentSystemPrompt(params: {
     ownerLine ? "## User Identity" : "",
     ownerLine ?? "",
     ownerLine ? "" : "",
+    ...(userTimezone || userTime
+      ? [
+          "## Current Date & Time",
+          userTime
+            ? `${userTime} (${userTimezone ?? "unknown"})`
+            : `Time zone: ${userTimezone}. Current time unknown; assume UTC for date/time references.`,
+          params.userTimeFormat
+            ? `Time format: ${params.userTimeFormat === "24" ? "24-hour" : "12-hour"}`
+            : "",
+          "",
+        ]
+      : []),
     "## Workspace Files (injected)",
     "These user-editable files are loaded by Clawdbot and included below in Project Context.",
     "",
-    userTimezone || userTime
-      ? `Time: assume UTC unless stated. User time zone: ${
-          userTimezone ?? "unknown"
-        }. Current user time (local, 24-hour): ${userTime ?? "unknown"} (${
-          userTimezone ?? "unknown"
-        }).`
-      : "",
-    userTimezone || userTime ? "" : "",
     "## Reply Tags",
     "To request a native reply/quote on supported surfaces, include one tag in your reply:",
     "- [[reply_to_current]] replies to the triggering message.",
@@ -350,6 +361,29 @@ export function buildAgentSystemPrompt(params: {
 
   if (extraSystemPrompt) {
     lines.push("## Group Chat Context", extraSystemPrompt, "");
+  }
+  if (params.reactionGuidance) {
+    const { level, channel } = params.reactionGuidance;
+    const guidanceText =
+      level === "minimal"
+        ? [
+            `Reactions are enabled for ${channel} in MINIMAL mode.`,
+            "React ONLY when truly relevant:",
+            "- Acknowledge important user requests or confirmations",
+            "- Express genuine sentiment (humor, appreciation) sparingly",
+            "- Avoid reacting to routine messages or your own replies",
+            "Guideline: at most 1 reaction per 5-10 exchanges.",
+          ].join("\n")
+        : [
+            `Reactions are enabled for ${channel} in EXTENSIVE mode.`,
+            "Feel free to react liberally:",
+            "- Acknowledge messages with appropriate emojis",
+            "- Express sentiment and personality through reactions",
+            "- React to interesting content, humor, or notable events",
+            "- Use reactions to confirm understanding or agreement",
+            "Guideline: react whenever it feels natural.",
+          ].join("\n");
+    lines.push("## Reactions", guidanceText, "");
   }
   if (reasoningHint) {
     lines.push("## Reasoning Format", reasoningHint, "");

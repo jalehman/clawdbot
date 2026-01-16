@@ -145,6 +145,13 @@ export const CHAT_COMMANDS: ChatCommandDefinition[] = (() => {
       textAlias: "/whoami",
     }),
     defineChatCommand({
+      key: "auth-profile",
+      nativeName: "auth_profile",
+      description: "Show or set the active auth profile.",
+      textAliases: ["/auth-profile", "/auth"],
+      acceptsArgs: true,
+    }),
+    defineChatCommand({
       key: "config",
       nativeName: "config",
       description: "Show or set config values.",

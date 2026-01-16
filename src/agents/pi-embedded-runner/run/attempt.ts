@@ -9,6 +9,7 @@ import { createAgentSession, SessionManager, SettingsManager } from "@mariozechn
 import { resolveHeartbeatPrompt } from "../../../auto-reply/heartbeat.js";
 import { resolveChannelCapabilities } from "../../../config/channel-capabilities.js";
 import { getMachineDisplayName } from "../../../infra/machine-name.js";
+import { resolveTelegramReactionLevel } from "../../../telegram/reaction-level.js";
 import { normalizeMessageChannel } from "../../../utils/message-channel.js";
 import { isReasoningTagProvider } from "../../../utils/provider-utils.js";
 import { resolveUserPath } from "../../../utils.js";
@@ -57,12 +58,8 @@ import { prewarmSessionFile, trackSessionManagerAccess } from "../session-manage
 import { prepareSessionManagerForRun } from "../session-manager-init.js";
 import { buildEmbeddedSystemPrompt, createSystemPromptOverride } from "../system-prompt.js";
 import { splitSdkTools } from "../tool-split.js";
-import {
-  formatUserTime,
-  mapThinkingLevel,
-  resolveExecToolDefaults,
-  resolveUserTimezone,
-} from "../utils.js";
+import { formatUserTime, resolveUserTimeFormat, resolveUserTimezone } from "../../date-time.js";
+import { mapThinkingLevel, resolveExecToolDefaults } from "../utils.js";
 import { resolveSandboxRuntimeStatus } from "../../sandbox/runtime-status.js";
 
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
@@ -161,6 +158,17 @@ export async function runEmbeddedAttempt(
           accountId: params.agentAccountId,
         }) ?? [])
       : undefined;
+    const reactionGuidance =
+      runtimeChannel === "telegram" && params.config
+        ? (() => {
+            const resolved = resolveTelegramReactionLevel({
+              cfg: params.config,
+              accountId: params.agentAccountId ?? undefined,
+            });
+            const level = resolved.agentReactionGuidance;
+            return level ? { level, channel: "Telegram" } : undefined;
+          })()
+        : undefined;
     const runtimeInfo = {
       host: machineName,
       os: `${os.type()} ${os.release()}`,
@@ -174,7 +182,8 @@ export async function runEmbeddedAttempt(
     const sandboxInfo = buildEmbeddedSandboxInfo(sandbox, params.bashElevated);
     const reasoningTagHint = isReasoningTagProvider(params.provider);
     const userTimezone = resolveUserTimezone(params.config?.agents?.defaults?.userTimezone);
-    const userTime = formatUserTime(new Date(), userTimezone);
+    const userTimeFormat = resolveUserTimeFormat(params.config?.agents?.defaults?.timeFormat);
+    const userTime = formatUserTime(new Date(), userTimezone, userTimeFormat);
     const { defaultAgentId, sessionAgentId } = resolveSessionAgentIds({
       sessionKey: params.sessionKey,
       config: params.config,
@@ -192,12 +201,14 @@ export async function runEmbeddedAttempt(
         ? resolveHeartbeatPrompt(params.config?.agents?.defaults?.heartbeat?.prompt)
         : undefined,
       skillsPrompt,
+      reactionGuidance,
       runtimeInfo,
       sandboxInfo,
       tools,
       modelAliasLines: buildModelAliasLines(params.config),
       userTimezone,
       userTime,
+      userTimeFormat,
       contextFiles,
     });
     const systemPromptReport = buildSystemPromptReport({
@@ -305,6 +316,7 @@ export async function runEmbeddedAttempt(
         const prior = await sanitizeSessionHistory({
           messages: activeSession.messages,
           modelApi: params.model.api,
+          modelId: params.modelId,
           sessionManager,
           sessionId: params.sessionId,
         });

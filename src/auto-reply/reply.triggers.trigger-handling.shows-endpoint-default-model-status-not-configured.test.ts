@@ -198,7 +198,7 @@ describe("trigger handling", () => {
       expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
     });
   });
-  it("reports status via /usage without invoking the agent", async () => {
+  it("reports usage via /usage without invoking the agent", async () => {
     await withTempHome(async (home) => {
       const res = await getReplyFromConfig(
         {
@@ -210,7 +210,8 @@ describe("trigger handling", () => {
         makeCfg(home),
       );
       const text = Array.isArray(res) ? res[0]?.text : res?.text;
-      expect(text).toContain("Clawdbot");
+      // /usage now returns dedicated usage output (not status)
+      expect(text).toContain("Usage:");
       expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
     });
   });

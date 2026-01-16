@@ -1,4 +1,5 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { ResolvedTimeFormat } from "../date-time.js";
 import type { EmbeddedContextFile } from "../pi-embedded-helpers.js";
 import { buildAgentSystemPrompt } from "../system-prompt.js";
 import { buildToolSummaryMap } from "../tool-summaries.js";
@@ -14,6 +15,10 @@ export function buildEmbeddedSystemPrompt(params: {
   reasoningTagHint: boolean;
   heartbeatPrompt?: string;
   skillsPrompt?: string;
+  reactionGuidance?: {
+    level: "minimal" | "extensive";
+    channel: string;
+  };
   runtimeInfo: {
     host: string;
     os: string;
@@ -29,6 +34,7 @@ export function buildEmbeddedSystemPrompt(params: {
   modelAliasLines: string[];
   userTimezone: string;
   userTime?: string;
+  userTimeFormat?: ResolvedTimeFormat;
   contextFiles?: EmbeddedContextFile[];
 }): string {
   return buildAgentSystemPrompt({
@@ -40,6 +46,7 @@ export function buildEmbeddedSystemPrompt(params: {
     reasoningTagHint: params.reasoningTagHint,
     heartbeatPrompt: params.heartbeatPrompt,
     skillsPrompt: params.skillsPrompt,
+    reactionGuidance: params.reactionGuidance,
     runtimeInfo: params.runtimeInfo,
     sandboxInfo: params.sandboxInfo,
     toolNames: params.tools.map((tool) => tool.name),
@@ -47,6 +54,7 @@ export function buildEmbeddedSystemPrompt(params: {
     modelAliasLines: params.modelAliasLines,
     userTimezone: params.userTimezone,
     userTime: params.userTime,
+    userTimeFormat: params.userTimeFormat,
     contextFiles: params.contextFiles,
   });
 }

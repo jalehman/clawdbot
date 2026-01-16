@@ -1,5 +1,6 @@
 import type { ClawdbotConfig } from "../../config/config.js";
 import { normalizeProviderId } from "../model-selection.js";
+import { CLAUDE_CLI_PROFILE_ID, CODEX_CLI_PROFILE_ID } from "./constants.js";
 import { listProfilesForProvider } from "./profiles.js";
 import type { AuthProfileStore } from "./types.js";
 import { isProfileInCooldown } from "./usage.js";
@@ -138,6 +139,8 @@ export function resolveAuthProfileOrder(params: {
 
 function orderProfilesByMode(order: string[], store: AuthProfileStore): string[] {
   const now = Date.now();
+  const isCliProfileId = (profileId: string) =>
+    profileId === CLAUDE_CLI_PROFILE_ID || profileId === CODEX_CLI_PROFILE_ID;
 
   // Partition into available and in-cooldown
   const available: string[] = [];
@@ -156,16 +159,19 @@ function orderProfilesByMode(order: string[], store: AuthProfileStore): string[]
   const scored = available.map((profileId) => {
     const type = store.profiles[profileId]?.type;
     const typeScore = type === "oauth" ? 0 : type === "token" ? 1 : type === "api_key" ? 2 : 3;
+    const cliPenalty = isCliProfileId(profileId) ? 1 : 0;
     const lastUsed = store.usageStats?.[profileId]?.lastUsed ?? 0;
-    return { profileId, typeScore, lastUsed };
+    return { profileId, typeScore, cliPenalty, lastUsed };
   });
 
   // Primary sort: type preference (oauth > token > api_key).
-  // Secondary sort: lastUsed (oldest first for round-robin within type).
+  // Secondary sort: prefer non-CLI profiles within a type.
+  // Tertiary sort: lastUsed (oldest first for round-robin within type).
   const sorted = scored
     .sort((a, b) => {
       // First by type (oauth > token > api_key)
       if (a.typeScore !== b.typeScore) return a.typeScore - b.typeScore;
+      if (a.cliPenalty !== b.cliPenalty) return a.cliPenalty - b.cliPenalty;
       // Then by lastUsed (oldest first)
       return a.lastUsed - b.lastUsed;
     })

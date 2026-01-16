@@ -822,6 +822,31 @@ Controls how inbound messages behave when an agent run is already active.
 }
 ```
 
+### `messages.inbound`
+
+Debounce rapid inbound messages from the **same sender** so multiple back-to-back
+messages become a single agent turn. Debouncing is scoped per channel + conversation
+and uses the most recent message for reply threading/IDs.
+
+```json5
+{
+  messages: {
+    inbound: {
+      debounceMs: 2000, // 0 disables
+      byChannel: {
+        whatsapp: 5000,
+        slack: 1500,
+        discord: 1500
+      }
+    }
+  }
+}
+```
+
+Notes:
+- Debounce batches **text-only** messages; media/attachments flush immediately.
+- Control commands (e.g. `/queue`, `/new`) bypass debouncing so they stay standalone.
+
 ### `commands` (chat command handling)
 
 Controls how chat commands are enabled across connectors.
@@ -1208,6 +1233,17 @@ message envelopes). If unset, Clawdbot uses the host timezone at runtime.
 ```json5
 {
   agents: { defaults: { userTimezone: "America/Chicago" } }
+}
+```
+
+### `agents.defaults.timeFormat`
+
+Controls the **time format** shown in the system prompt’s Current Date & Time section.
+Default: `auto` (OS preference).
+
+```json5
+{
+  agents: { defaults: { timeFormat: "auto" } } // auto | 12 | 24
 }
 ```
 
@@ -2512,7 +2548,7 @@ Requires full Gateway restart:
 
 ### Multi-instance isolation
 
-To run multiple gateways on one host, isolate per-instance state + config and use unique ports:
+To run multiple gateways on one host (for redundancy or a rescue bot), isolate per-instance state + config and use unique ports:
 - `CLAWDBOT_CONFIG_PATH` (per-instance config)
 - `CLAWDBOT_STATE_DIR` (sessions/creds)
 - `agents.defaults.workspace` (memories)
