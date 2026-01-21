@@ -22,10 +22,11 @@ type AuthProfileCommand =
 function parseAuthProfileCommand(raw: string): AuthProfileCommand | null {
   const trimmed = raw.trim();
   const lowered = trimmed.toLowerCase();
-  if (!lowered.startsWith("/auth-profile") && !lowered.startsWith("/auth")) return null;
+  if (!lowered.startsWith("/auth-profile") && !lowered.startsWith("/auth_profile") && !lowered.startsWith("/auth")) return null;
   // Parse "/auth-profile <action|profileId>" with light validation and common aliases.
   const rest = trimmed
     .replace(/^\/auth-profile\b/i, "")
+    .replace(/^\/auth_profile\b/i, "")
     .replace(/^\/auth\b/i, "")
     .trim();
   if (!rest) return { action: "show" };
