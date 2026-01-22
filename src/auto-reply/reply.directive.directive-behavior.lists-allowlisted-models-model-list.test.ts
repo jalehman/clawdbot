@@ -60,13 +60,13 @@ describe("directive behavior", () => {
     vi.restoreAllMocks();
   });
 
-  it("lists allowlisted models on /model list", async () => {
+  it("lists allowlisted models on /models <provider>", async () => {
     await withTempHome(async (home) => {
       vi.mocked(runEmbeddedPiAgent).mockReset();
       const storePath = path.join(home, "sessions.json");
 
-      const res = await getReplyFromConfig(
-        { Body: "/model list", From: "+1222", To: "+1222", CommandAuthorized: true },
+      const resAnthropic = await getReplyFromConfig(
+        { Body: "/models anthropic", From: "+1222", To: "+1222", CommandAuthorized: true },
         {},
         {
           agents: {
@@ -83,10 +83,34 @@ describe("directive behavior", () => {
         },
       );
 
-      const text = Array.isArray(res) ? res[0]?.text : res?.text;
-      expect(text).toContain("Pick: /model <#> or /model <provider/model>");
-      expect(text).toContain("anthropic/claude-opus-4-5");
-      expect(text).toContain("openai/gpt-4.1-mini");
+      const anthropicText = Array.isArray(resAnthropic)
+        ? resAnthropic[0]?.text
+        : resAnthropic?.text;
+      expect(anthropicText).toContain("Models (anthropic)");
+      expect(anthropicText).toContain("anthropic/claude-opus-4-5");
+      expect(anthropicText).not.toContain("claude-sonnet-4-1");
+
+      const resOpenai = await getReplyFromConfig(
+        { Body: "/models openai", From: "+1222", To: "+1222", CommandAuthorized: true },
+        {},
+        {
+          agents: {
+            defaults: {
+              model: { primary: "anthropic/claude-opus-4-5" },
+              workspace: path.join(home, "clawd"),
+              models: {
+                "anthropic/claude-opus-4-5": {},
+                "openai/gpt-4.1-mini": {},
+              },
+            },
+          },
+          session: { store: storePath },
+        },
+      );
+
+      const openaiText = Array.isArray(resOpenai) ? resOpenai[0]?.text : resOpenai?.text;
+      expect(openaiText).toContain("Models (openai)");
+      expect(openaiText).toContain("openai/gpt-4.1-mini");
       expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
     });
   });
@@ -97,7 +121,7 @@ describe("directive behavior", () => {
       const storePath = path.join(home, "sessions.json");
 
       const res = await getReplyFromConfig(
-        { Body: "/model", From: "+1222", To: "+1222", CommandAuthorized: true },
+        { Body: "/models openai", From: "+1222", To: "+1222", CommandAuthorized: true },
         {},
         {
           agents: {
@@ -115,8 +139,6 @@ describe("directive behavior", () => {
       );
 
       const text = Array.isArray(res) ? res[0]?.text : res?.text;
-      expect(text).toContain("Pick: /model <#> or /model <provider/model>");
-      expect(text).toContain("anthropic/claude-opus-4-5");
       expect(text).toContain("openai/gpt-4.1-mini");
       expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
     });
@@ -132,7 +154,7 @@ describe("directive behavior", () => {
       const storePath = path.join(home, "sessions.json");
 
       const res = await getReplyFromConfig(
-        { Body: "/model list", From: "+1222", To: "+1222", CommandAuthorized: true },
+        { Body: "/models xai", From: "+1222", To: "+1222", CommandAuthorized: true },
         {},
         {
           agents: {
@@ -150,9 +172,6 @@ describe("directive behavior", () => {
       );
 
       const text = Array.isArray(res) ? res[0]?.text : res?.text;
-      expect(text).toContain("anthropic/claude-opus-4-5");
-      expect(text).toContain("openai/gpt-4.1-mini");
-      expect(text).toContain("minimax/MiniMax-M2.1");
       expect(text).toContain("xai/grok-4");
       expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
     });
@@ -173,7 +192,7 @@ describe("directive behavior", () => {
       const storePath = path.join(home, "sessions.json");
 
       const res = await getReplyFromConfig(
-        { Body: "/model list", From: "+1222", To: "+1222", CommandAuthorized: true },
+        { Body: "/models minimax", From: "+1222", To: "+1222", CommandAuthorized: true },
         {},
         {
           agents: {
@@ -202,19 +221,17 @@ describe("directive behavior", () => {
       );
 
       const text = Array.isArray(res) ? res[0]?.text : res?.text;
-      expect(text).toContain("anthropic/claude-opus-4-5");
-      expect(text).toContain("openai/gpt-4.1-mini");
       expect(text).toContain("minimax/MiniMax-M2.1");
       expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
     });
   });
-  it("does not repeat missing auth labels on /model list", async () => {
+  it("does not repeat missing auth labels on /model status", async () => {
     await withTempHome(async (home) => {
       vi.mocked(runEmbeddedPiAgent).mockReset();
       const storePath = path.join(home, "sessions.json");
 
       const res = await getReplyFromConfig(
-        { Body: "/model list", From: "+1222", To: "+1222", CommandAuthorized: true },
+        { Body: "/model status", From: "+1222", To: "+1222", CommandAuthorized: true },
         {},
         {
           agents: {

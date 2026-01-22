@@ -105,6 +105,7 @@ describe("trigger handling", () => {
           To: "+2000",
           Provider: "whatsapp",
           SenderE164: "+1000",
+          CommandAuthorized: true,
         },
         {},
         makeCfg(home),
@@ -127,6 +128,7 @@ describe("trigger handling", () => {
           To: "+2000",
           Provider: "whatsapp",
           SenderE164: "+1000",
+          CommandAuthorized: true,
         },
         {
           onBlockReply: async (payload) => {
@@ -151,6 +153,7 @@ describe("trigger handling", () => {
           To: "+2000",
           Provider: "whatsapp",
           SenderE164: "+1000",
+          CommandAuthorized: true,
         },
         {
           onBlockReply: async (payload) => {
@@ -162,8 +165,7 @@ describe("trigger handling", () => {
       const replies = res ? (Array.isArray(res) ? res : [res]) : [];
       expect(blockReplies.length).toBe(0);
       expect(replies.length).toBe(1);
-      // /usage now returns dedicated usage output (not the same as /status)
-      expect(String(replies[0]?.text ?? "")).toContain("Usage:");
+      expect(String(replies[0]?.text ?? "")).toContain("Usage footer: tokens.");
     });
   });
   it("sends one inline status and still returns agent reply for mixed text", async () => {
@@ -183,6 +185,7 @@ describe("trigger handling", () => {
           To: "+2000",
           Provider: "whatsapp",
           SenderE164: "+1002",
+          CommandAuthorized: true,
         },
         {
           onBlockReply: async (payload) => {
@@ -207,6 +210,7 @@ describe("trigger handling", () => {
           Body: "[Dec 5 10:00] stop",
           From: "+1000",
           To: "+2000",
+          CommandAuthorized: true,
         },
         {},
         makeCfg(home),
@@ -223,6 +227,7 @@ describe("trigger handling", () => {
           Body: "/stop",
           From: "+1003",
           To: "+2000",
+          CommandAuthorized: true,
         },
         {},
         makeCfg(home),

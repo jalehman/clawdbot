@@ -70,7 +70,7 @@ describe("createClawdbotCodingTools", () => {
     expect(Array.isArray(action?.enum)).toBe(true);
     expect(action?.enum).toContain("act");
 
-    const format = parameters.properties?.format as
+    const format = parameters.properties?.snapshotFormat as
       | {
           type?: unknown;
           enum?: unknown[];
@@ -131,19 +131,9 @@ describe("createClawdbotCodingTools", () => {
 
   it("preserves action enums in normalized schemas", () => {
     const tools = createClawdbotCodingTools();
-    const toolNames = [
-      "browser",
-      "canvas",
-      "nodes",
-      "cron",
-      "gateway",
-      "message",
-    ];
+    const toolNames = ["browser", "canvas", "nodes", "cron", "gateway", "message"];
 
-    const collectActionValues = (
-      schema: unknown,
-      values: Set<string>,
-    ): void => {
+    const collectActionValues = (schema: unknown, values: Set<string>): void => {
       if (!schema || typeof schema !== "object") return;
       const record = schema as Record<string, unknown>;
       if (typeof record.const === "string") values.add(record.const);
@@ -207,9 +197,7 @@ describe("createClawdbotCodingTools", () => {
       modelProvider: "anthropic",
       modelId: "claude-opus-4-5",
     });
-    expect(anthropicTools.some((tool) => tool.name === "apply_patch")).toBe(
-      false,
-    );
+    expect(anthropicTools.some((tool) => tool.name === "apply_patch")).toBe(false);
   });
 
   it("respects apply_patch allowModels", () => {
@@ -290,11 +278,7 @@ describe("createClawdbotCodingTools", () => {
     expect(Object.keys(editSchema.properties ?? {}).sort()).toEqual(
       ["file_path", "new_string", "old_string", "replace_all"].sort(),
     );
-    expect(editSchema.required ?? []).toEqual([
-      "file_path",
-      "old_string",
-      "new_string",
-    ]);
+    expect(editSchema.required ?? []).toEqual(["file_path", "old_string", "new_string"]);
 
     const globSchema = getSchema("find");
     expect(Object.keys(globSchema.properties ?? {}).sort()).toEqual(
@@ -484,9 +468,7 @@ describe("createClawdbotCodingTools", () => {
         path: imagePath,
       });
 
-      expect(result?.content?.some((block) => block.type === "image")).toBe(
-        true,
-      );
+      expect(result?.content?.some((block) => block.type === "image")).toBe(true);
       const text = result?.content?.find((block) => block.type === "text") as
         | { text?: string }
         | undefined;
@@ -515,16 +497,12 @@ describe("createClawdbotCodingTools", () => {
         path: textPath,
       });
 
-      expect(result?.content?.some((block) => block.type === "image")).toBe(
-        false,
-      );
-      const textBlocks = result?.content?.filter(
-        (block) => block.type === "text",
-      ) as Array<{ text?: string }> | undefined;
+      expect(result?.content?.some((block) => block.type === "image")).toBe(false);
+      const textBlocks = result?.content?.filter((block) => block.type === "text") as
+        | Array<{ text?: string }>
+        | undefined;
       expect(textBlocks?.length ?? 0).toBeGreaterThan(0);
-      const combinedText = textBlocks
-        ?.map((block) => block.text ?? "")
-        .join("\n");
+      const combinedText = textBlocks?.map((block) => block.text ?? "").join("\n");
       expect(combinedText).toContain(contents);
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true });
@@ -575,9 +553,7 @@ describe("createClawdbotCodingTools", () => {
         execute,
       };
 
-      const wrapped = __testing.wrapToolParamNormalization(tool, [
-        { keys: ["path", "file_path"] },
-      ]);
+      const wrapped = __testing.wrapToolParamNormalization(tool, [{ keys: ["path", "file_path"] }]);
 
       await wrapped.execute("tool-1", { file_path: "foo.txt", content: "x" });
       expect(execute).toHaveBeenCalledWith(
@@ -590,9 +566,9 @@ describe("createClawdbotCodingTools", () => {
       await expect(wrapped.execute("tool-2", { content: "x" })).rejects.toThrow(
         /Missing required parameter/,
       );
-      await expect(
-        wrapped.execute("tool-3", { file_path: "   ", content: "x" }),
-      ).rejects.toThrow(/Missing required parameter/);
+      await expect(wrapped.execute("tool-3", { file_path: "   ", content: "x" })).rejects.toThrow(
+        /Missing required parameter/,
+      );
     });
   });
 
@@ -746,10 +722,7 @@ describe("createClawdbotCodingTools", () => {
       "maxProperties",
     ]);
 
-    const findUnsupportedKeywords = (
-      schema: unknown,
-      path: string,
-    ): string[] => {
+    const findUnsupportedKeywords = (schema: unknown, path: string): string[] => {
       const found: string[] = [];
       if (!schema || typeof schema !== "object") return found;
       if (Array.isArray(schema)) {
@@ -768,9 +741,7 @@ describe("createClawdbotCodingTools", () => {
           : undefined;
       if (properties) {
         for (const [key, value] of Object.entries(properties)) {
-          found.push(
-            ...findUnsupportedKeywords(value, `${path}.properties.${key}`),
-          );
+          found.push(...findUnsupportedKeywords(value, `${path}.properties.${key}`));
         }
       }
 
@@ -787,10 +758,7 @@ describe("createClawdbotCodingTools", () => {
     };
 
     for (const tool of tools) {
-      const violations = findUnsupportedKeywords(
-        tool.parameters,
-        `${tool.name}.parameters`,
-      );
+      const violations = findUnsupportedKeywords(tool.parameters, `${tool.name}.parameters`);
       expect(violations).toEqual([]);
     }
   });
@@ -813,12 +781,10 @@ describe("createClawdbotCodingTools", () => {
         path: testFile,
       });
 
-      const textBlocks = result?.content?.filter(
-        (block) => block.type === "text",
-      ) as Array<{ text?: string }> | undefined;
-      const combinedText = textBlocks
-        ?.map((block) => block.text ?? "")
-        .join("\n");
+      const textBlocks = result?.content?.filter((block) => block.type === "text") as
+        | Array<{ text?: string }>
+        | undefined;
+      const combinedText = textBlocks?.map((block) => block.text ?? "").join("\n");
       expect(combinedText).toContain(testContent);
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true });
@@ -905,12 +871,10 @@ describe("createClawdbotCodingTools", () => {
         file_path: filePath,
       });
 
-      const textBlocks = result?.content?.filter(
-        (block) => block.type === "text",
-      ) as Array<{ text?: string }> | undefined;
-      const combinedText = textBlocks
-        ?.map((block) => block.text ?? "")
-        .join("\n");
+      const textBlocks = result?.content?.filter((block) => block.type === "text") as
+        | Array<{ text?: string }>
+        | undefined;
+      const combinedText = textBlocks?.map((block) => block.text ?? "").join("\n");
       expect(combinedText).toContain("hello universe");
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true });
@@ -952,9 +916,7 @@ describe("createClawdbotCodingTools", () => {
       const readTool = tools.find((tool) => tool.name === "read");
       expect(readTool).toBeDefined();
 
-      await expect(
-        readTool?.execute("tool-sbx-1", { file_path: outsidePath }),
-      ).rejects.toThrow();
+      await expect(readTool?.execute("tool-sbx-1", { file_path: outsidePath })).rejects.toThrow();
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true });
       await fs.rm(outsidePath, { force: true });

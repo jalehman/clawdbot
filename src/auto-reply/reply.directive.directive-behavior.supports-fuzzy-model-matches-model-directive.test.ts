@@ -60,57 +60,17 @@ describe("directive behavior", () => {
     vi.restoreAllMocks();
   });
 
-  it("supports fuzzy model matches on /model directive", async () => {
+  it("suggests fuzzy model matches on /model directive", async () => {
     await withTempHome(async (home) => {
       vi.mocked(runEmbeddedPiAgent).mockReset();
       const storePath = path.join(home, "sessions.json");
 
-      await getReplyFromConfig(
-        { Body: "/model kimi", From: "+1222", To: "+1222", CommandAuthorized: true },
-        {},
+      const res = await getReplyFromConfig(
         {
-          agents: {
-            defaults: {
-              model: { primary: "anthropic/claude-opus-4-5" },
-              workspace: path.join(home, "clawd"),
-              models: {
-                "anthropic/claude-opus-4-5": {},
-                "moonshot/kimi-k2-0905-preview": {},
-              },
-            },
-          },
-          models: {
-            mode: "merge",
-            providers: {
-              moonshot: {
-                baseUrl: "https://api.moonshot.ai/v1",
-                apiKey: "sk-test",
-                api: "openai-completions",
-                models: [{ id: "kimi-k2-0905-preview", name: "Kimi K2" }],
-              },
-            },
-          },
-          session: { store: storePath },
-        },
-      );
-
-      assertModelSelection(storePath, {
-        model: "kimi-k2-0905-preview",
-        provider: "moonshot",
-      });
-      expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
-    });
-  });
-  it("resolves provider-less exact model ids via fuzzy matching when unambiguous", async () => {
-    await withTempHome(async (home) => {
-      vi.mocked(runEmbeddedPiAgent).mockReset();
-      const storePath = path.join(home, "sessions.json");
-
-      await getReplyFromConfig(
-        {
-          Body: "/model kimi-k2-0905-preview",
+          Body: "/model kimi",
           From: "+1222",
           To: "+1222",
+          SessionKey: MAIN_SESSION_KEY,
           CommandAuthorized: true,
         },
         {},
@@ -140,20 +100,27 @@ describe("directive behavior", () => {
         },
       );
 
-      assertModelSelection(storePath, {
-        model: "kimi-k2-0905-preview",
-        provider: "moonshot",
-      });
+      const text = Array.isArray(res) ? res[0]?.text : res?.text;
+      expect(text).toContain("Unrecognized model: kimi");
+      expect(text).toContain("Did you mean: moonshot/kimi-k2-0905-preview");
+      expect(text).toContain("Try: /model moonshot/kimi-k2-0905-preview");
+      assertModelSelection(storePath);
       expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
     });
   });
-  it("supports fuzzy matches within a provider on /model provider/model", async () => {
+  it("suggests provider when model id is unambiguous", async () => {
     await withTempHome(async (home) => {
       vi.mocked(runEmbeddedPiAgent).mockReset();
       const storePath = path.join(home, "sessions.json");
 
-      await getReplyFromConfig(
-        { Body: "/model moonshot/kimi", From: "+1222", To: "+1222", CommandAuthorized: true },
+      const res = await getReplyFromConfig(
+        {
+          Body: "/model kimi-k2-0905-preview",
+          From: "+1222",
+          To: "+1222",
+          SessionKey: MAIN_SESSION_KEY,
+          CommandAuthorized: true,
+        },
         {},
         {
           agents: {
@@ -181,10 +148,59 @@ describe("directive behavior", () => {
         },
       );
 
-      assertModelSelection(storePath, {
-        model: "kimi-k2-0905-preview",
-        provider: "moonshot",
-      });
+      const text = Array.isArray(res) ? res[0]?.text : res?.text;
+      expect(text).toContain("Unrecognized model: kimi-k2-0905-preview");
+      expect(text).toContain("Did you mean: moonshot/kimi-k2-0905-preview");
+      expect(text).toContain("Try: /model moonshot/kimi-k2-0905-preview");
+      assertModelSelection(storePath);
+      expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
+    });
+  });
+  it("suggests provider-scoped fuzzy matches on /model provider/model", async () => {
+    await withTempHome(async (home) => {
+      vi.mocked(runEmbeddedPiAgent).mockReset();
+      const storePath = path.join(home, "sessions.json");
+
+      const res = await getReplyFromConfig(
+        {
+          Body: "/model moonshot/kimi",
+          From: "+1222",
+          To: "+1222",
+          SessionKey: MAIN_SESSION_KEY,
+          CommandAuthorized: true,
+        },
+        {},
+        {
+          agents: {
+            defaults: {
+              model: { primary: "anthropic/claude-opus-4-5" },
+              workspace: path.join(home, "clawd"),
+              models: {
+                "anthropic/claude-opus-4-5": {},
+                "moonshot/kimi-k2-0905-preview": {},
+              },
+            },
+          },
+          models: {
+            mode: "merge",
+            providers: {
+              moonshot: {
+                baseUrl: "https://api.moonshot.ai/v1",
+                apiKey: "sk-test",
+                api: "openai-completions",
+                models: [{ id: "kimi-k2-0905-preview", name: "Kimi K2" }],
+              },
+            },
+          },
+          session: { store: storePath },
+        },
+      );
+
+      const text = Array.isArray(res) ? res[0]?.text : res?.text;
+      expect(text).toContain("Unrecognized model: moonshot/kimi");
+      expect(text).toContain("Did you mean: moonshot/kimi-k2-0905-preview");
+      expect(text).toContain("Try: /model moonshot/kimi-k2-0905-preview");
+      assertModelSelection(storePath);
       expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
     });
   });
@@ -194,7 +210,13 @@ describe("directive behavior", () => {
       const storePath = path.join(home, "sessions.json");
 
       await getReplyFromConfig(
-        { Body: "/model minimax", From: "+1222", To: "+1222", CommandAuthorized: true },
+        {
+          Body: "/model minimax",
+          From: "+1222",
+          To: "+1222",
+          SessionKey: MAIN_SESSION_KEY,
+          CommandAuthorized: true,
+        },
         {},
         {
           agents: {
@@ -239,7 +261,13 @@ describe("directive behavior", () => {
       const storePath = path.join(home, "sessions.json");
 
       await getReplyFromConfig(
-        { Body: "/model minimax/m2.1", From: "+1222", To: "+1222", CommandAuthorized: true },
+        {
+          Body: "/model minimax/m2.1",
+          From: "+1222",
+          To: "+1222",
+          SessionKey: MAIN_SESSION_KEY,
+          CommandAuthorized: true,
+        },
         {},
         {
           agents: {

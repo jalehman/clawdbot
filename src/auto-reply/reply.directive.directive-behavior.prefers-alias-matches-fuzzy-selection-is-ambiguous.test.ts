@@ -62,13 +62,19 @@ describe("directive behavior", () => {
     vi.restoreAllMocks();
   });
 
-  it("prefers alias matches when fuzzy selection is ambiguous", async () => {
+  it("prefers alias matches when suggesting fuzzy selections", async () => {
     await withTempHome(async (home) => {
       vi.mocked(runEmbeddedPiAgent).mockReset();
       const storePath = path.join(home, "sessions.json");
 
-      await getReplyFromConfig(
-        { Body: "/model ki", From: "+1222", To: "+1222", CommandAuthorized: true },
+      const res = await getReplyFromConfig(
+        {
+          Body: "/model ki",
+          From: "+1222",
+          To: "+1222",
+          SessionKey: MAIN_SESSION_KEY,
+          CommandAuthorized: true,
+        },
         {},
         {
           agents: {
@@ -103,10 +109,11 @@ describe("directive behavior", () => {
         },
       );
 
-      assertModelSelection(storePath, {
-        model: "kimi-k2-0905-preview",
-        provider: "moonshot",
-      });
+      const text = Array.isArray(res) ? res[0]?.text : res?.text;
+      expect(text).toContain("Unrecognized model: ki");
+      expect(text).toContain("Did you mean: moonshot/kimi-k2-0905-preview");
+      expect(text).toContain("Try: /model moonshot/kimi-k2-0905-preview");
+      assertModelSelection(storePath);
       expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
     });
   });
