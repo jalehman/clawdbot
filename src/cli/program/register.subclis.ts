@@ -45,6 +45,14 @@ const entries: SubCliEntry[] = [
     },
   },
   {
+    name: "gateway-daemon",
+    description: "Compatibility alias for `gateway run`",
+    register: async (program) => {
+      const mod = await import("../gateway-cli/register-daemon.js");
+      mod.registerGatewayDaemonCli(program);
+    },
+  },
+  {
     name: "logs",
     description: "Gateway logs",
     register: async (program) => {
