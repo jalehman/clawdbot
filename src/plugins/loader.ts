@@ -10,6 +10,7 @@ import type {
   PluginDiagnostic,
   PluginLogger,
 } from "./types.js";
+import { DEFAULT_CONTEXT_ENGINE_ID, selectContextEngine } from "../context-engine/index.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { resolveUserPath } from "../utils.js";
 import { clearPluginCommands } from "./commands.js";
@@ -155,6 +156,7 @@ function createPluginRecord(params: {
     cliCommands: [],
     services: [],
     commands: [],
+    contextEngineIds: [],
     httpHandlers: 0,
     hookCount: 0,
     configSchema: params.configSchema,
@@ -165,6 +167,33 @@ function createPluginRecord(params: {
 
 function pushDiagnostics(diagnostics: PluginDiagnostic[], append: PluginDiagnostic[]) {
   diagnostics.push(...append);
+}
+
+function validateConfiguredContextEngine(params: {
+  cfg: OpenClawConfig;
+  registry: PluginRegistry;
+}) {
+  const requestedId = params.cfg.contextEngine?.engine?.trim();
+  if (!requestedId || requestedId === DEFAULT_CONTEXT_ENGINE_ID) {
+    return;
+  }
+  try {
+    const selection = selectContextEngine(requestedId);
+    if (!selection.fallback) {
+      return;
+    }
+    params.registry.diagnostics.push({
+      level: "warn",
+      message:
+        selection.warning ??
+        `Context engine "${requestedId}" failed to initialize; falling back to "${DEFAULT_CONTEXT_ENGINE_ID}".`,
+    });
+  } catch (err) {
+    params.registry.diagnostics.push({
+      level: "error",
+      message: `context engine "${requestedId}" could not be initialized: ${String(err)}`,
+    });
+  }
 }
 
 export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegistry {
@@ -445,6 +474,10 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
       level: "warn",
       message: `memory slot plugin not found or not marked as memory: ${memorySlot}`,
     });
+  }
+
+  if (!validateOnly) {
+    validateConfiguredContextEngine({ cfg, registry });
   }
 
   if (cacheEnabled) {

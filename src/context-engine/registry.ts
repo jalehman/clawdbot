@@ -63,18 +63,51 @@ export type ContextEngineSelection = {
  */
 export function selectContextEngine(requestedId?: string | null): ContextEngineSelection {
   const trimmed = requestedId?.trim() || undefined;
+  const defaultFactory = engines.get(DEFAULT_CONTEXT_ENGINE_ID);
 
   // --- happy path: requested engine exists ---
   if (trimmed && engines.has(trimmed)) {
-    return {
-      engine: engines.get(trimmed)!(),
-      resolvedId: trimmed,
-      fallback: false,
-    };
+    try {
+      return {
+        engine: engines.get(trimmed)!(),
+        resolvedId: trimmed,
+        fallback: false,
+      };
+    } catch (err) {
+      if (!defaultFactory) {
+        throw new Error(
+          `Context engine "${trimmed}" failed to initialize (${String(err)}) and fallback ` +
+            `engine "${DEFAULT_CONTEXT_ENGINE_ID}" is not registered. ` +
+            `Ensure the legacy context engine adapter is loaded at startup.`,
+          { cause: err },
+        );
+      }
+      if (trimmed === DEFAULT_CONTEXT_ENGINE_ID) {
+        throw new Error(
+          `Context engine "${DEFAULT_CONTEXT_ENGINE_ID}" failed to initialize: ${String(err)}`,
+          { cause: err },
+        );
+      }
+      try {
+        return {
+          engine: defaultFactory(),
+          resolvedId: DEFAULT_CONTEXT_ENGINE_ID,
+          fallback: true,
+          warning:
+            `Context engine "${trimmed}" failed to initialize (${String(err)}); ` +
+            `falling back to "${DEFAULT_CONTEXT_ENGINE_ID}".`,
+        };
+      } catch (fallbackErr) {
+        throw new Error(
+          `Context engine "${trimmed}" failed to initialize (${String(err)}) and fallback ` +
+            `engine "${DEFAULT_CONTEXT_ENGINE_ID}" also failed (${String(fallbackErr)}).`,
+          { cause: fallbackErr },
+        );
+      }
+    }
   }
 
   // --- fallback to default ---
-  const defaultFactory = engines.get(DEFAULT_CONTEXT_ENGINE_ID);
   if (!defaultFactory) {
     throw new Error(
       `No context engine registered for "${trimmed ?? "(none)"}" and the default ` +
@@ -87,12 +120,19 @@ export function selectContextEngine(requestedId?: string | null): ContextEngineS
     ? `Context engine "${trimmed}" is not registered; falling back to "${DEFAULT_CONTEXT_ENGINE_ID}".`
     : undefined;
 
-  return {
-    engine: defaultFactory(),
-    resolvedId: DEFAULT_CONTEXT_ENGINE_ID,
-    fallback: !!trimmed,
-    warning,
-  };
+  try {
+    return {
+      engine: defaultFactory(),
+      resolvedId: DEFAULT_CONTEXT_ENGINE_ID,
+      fallback: !!trimmed,
+      warning,
+    };
+  } catch (err) {
+    throw new Error(
+      `Context engine "${DEFAULT_CONTEXT_ENGINE_ID}" failed to initialize: ${String(err)}`,
+      { cause: err },
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

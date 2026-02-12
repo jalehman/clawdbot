@@ -3,6 +3,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import {
+  DEFAULT_CONTEXT_ENGINE_ID,
+  clearContextEngineRegistry,
+  registerContextEngine,
+  registeredContextEngineIds,
+} from "../context-engine/index.js";
 import { loadOpenClawPlugins } from "./loader.js";
 
 type TempPlugin = { dir: string; file: string; id: string };
@@ -10,6 +16,15 @@ type TempPlugin = { dir: string; file: string; id: string };
 const tempDirs: string[] = [];
 const prevBundledDir = process.env.OPENCLAW_BUNDLED_PLUGINS_DIR;
 const EMPTY_PLUGIN_SCHEMA = { type: "object", additionalProperties: false, properties: {} };
+
+function legacyEngine() {
+  return {
+    id: DEFAULT_CONTEXT_ENGINE_ID,
+    ingest: async (params: { messages: unknown[] }) => ({ messages: params.messages }),
+    assemble: async (params: { messages: unknown[] }) => ({ messages: params.messages }),
+    compact: async () => ({ ok: true, compacted: false }),
+  };
+}
 
 function makeTempDir() {
   const dir = path.join(os.tmpdir(), `openclaw-plugin-${randomUUID()}`);
@@ -44,6 +59,7 @@ function writePlugin(params: {
 }
 
 afterEach(() => {
+  clearContextEngineRegistry();
   for (const dir of tempDirs.splice(0)) {
     try {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -374,6 +390,95 @@ describe("loadOpenClawPlugins", () => {
     expect(route?.path).toBe("/demo");
     const httpPlugin = registry.plugins.find((entry) => entry.id === "http-route-demo");
     expect(httpPlugin?.httpHandlers).toBe(1);
+  });
+
+  it("registers context engines via plugin API", () => {
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
+    const plugin = writePlugin({
+      id: "context-engine-ok",
+      body: `export default { id: "context-engine-ok", register(api) {
+  api.registerContextEngine("lcm", () => ({
+    id: "lcm",
+    ingest: async (params) => ({ messages: params.messages }),
+    assemble: async (params) => ({ messages: params.messages }),
+    compact: async () => ({ ok: true, compacted: false })
+  }));
+} };`,
+    });
+
+    const registry = loadOpenClawPlugins({
+      cache: false,
+      config: {
+        plugins: {
+          load: { paths: [plugin.file] },
+          allow: ["context-engine-ok"],
+        },
+      },
+    });
+
+    expect(registeredContextEngineIds()).toContain("lcm");
+    expect(registry.contextEngines.some((entry) => entry.id === "lcm")).toBe(true);
+    expect(
+      registry.plugins.find((entry) => entry.id === "context-engine-ok")?.contextEngineIds,
+    ).toContain("lcm");
+  });
+
+  it("adds fallback diagnostic when configured context engine is missing", () => {
+    registerContextEngine(DEFAULT_CONTEXT_ENGINE_ID, legacyEngine);
+
+    const registry = loadOpenClawPlugins({
+      cache: false,
+      config: {
+        plugins: { enabled: false },
+        contextEngine: {
+          engine: "missing-engine",
+        },
+      },
+    });
+
+    expect(
+      registry.diagnostics.some(
+        (diag) =>
+          diag.level === "warn" &&
+          diag.message.includes('Context engine "missing-engine" is not registered') &&
+          diag.message.includes(`"${DEFAULT_CONTEXT_ENGINE_ID}"`),
+      ),
+    ).toBe(true);
+  });
+
+  it("falls back to legacy when configured plugin context engine fails to initialize", () => {
+    registerContextEngine(DEFAULT_CONTEXT_ENGINE_ID, legacyEngine);
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
+    const plugin = writePlugin({
+      id: "context-engine-broken",
+      body: `export default { id: "context-engine-broken", register(api) {
+  api.registerContextEngine("broken-engine", () => {
+    throw new Error("boom");
+  });
+} };`,
+    });
+
+    const registry = loadOpenClawPlugins({
+      cache: false,
+      config: {
+        plugins: {
+          load: { paths: [plugin.file] },
+          allow: ["context-engine-broken"],
+        },
+        contextEngine: {
+          engine: "broken-engine",
+        },
+      },
+    });
+
+    expect(
+      registry.diagnostics.some(
+        (diag) =>
+          diag.level === "warn" &&
+          diag.message.includes('Context engine "broken-engine" failed to initialize') &&
+          diag.message.includes(`"${DEFAULT_CONTEXT_ENGINE_ID}"`),
+      ),
+    ).toBe(true);
   });
 
   it("respects explicit disable in config", () => {

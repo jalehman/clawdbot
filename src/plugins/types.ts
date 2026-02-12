@@ -9,6 +9,7 @@ import type { ChannelId, ChannelPlugin } from "../channels/plugins/types.js";
 import type { createVpsAwareOAuthHandlers } from "../commands/oauth-flow.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { ModelProviderConfig } from "../config/types.js";
+import type { ContextEngine } from "../context-engine/types.js";
 import type { GatewayRequestHandler } from "../gateway/server-methods/types.js";
 import type { InternalHookHandler } from "../hooks/internal-hooks.js";
 import type { HookEntry } from "../hooks/types.js";
@@ -74,6 +75,8 @@ export type OpenClawPluginToolOptions = {
   names?: string[];
   optional?: boolean;
 };
+
+export type OpenClawPluginContextEngineFactory = () => ContextEngine;
 
 export type OpenClawPluginHookOptions = {
   entry?: HookEntry;
@@ -267,6 +270,8 @@ export type OpenClawPluginApi = {
   registerCli: (registrar: OpenClawPluginCliRegistrar, opts?: { commands?: string[] }) => void;
   registerService: (service: OpenClawPluginService) => void;
   registerProvider: (provider: ProviderPlugin) => void;
+  /** Register a pluggable context engine implementation. */
+  registerContextEngine: (id: string, factory: OpenClawPluginContextEngineFactory) => void;
   /**
    * Register a custom command that bypasses the LLM agent.
    * Plugin commands are processed before built-in commands and before agent invocation.

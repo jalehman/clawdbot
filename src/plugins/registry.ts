@@ -2,6 +2,7 @@ import path from "node:path";
 import type { AnyAgentTool } from "../agents/tools/common.js";
 import type { ChannelDock } from "../channels/dock.js";
 import type { ChannelPlugin } from "../channels/plugins/types.js";
+import type { ContextEngine } from "../context-engine/types.js";
 import type {
   GatewayRequestHandler,
   GatewayRequestHandlers,
@@ -13,6 +14,7 @@ import type {
   OpenClawPluginChannelRegistration,
   OpenClawPluginCliRegistrar,
   OpenClawPluginCommandDefinition,
+  OpenClawPluginContextEngineFactory,
   OpenClawPluginHttpHandler,
   OpenClawPluginHttpRouteHandler,
   OpenClawPluginHookOptions,
@@ -29,6 +31,7 @@ import type {
   PluginHookHandlerMap,
   PluginHookRegistration as TypedPluginHookRegistration,
 } from "./types.js";
+import { registerContextEngine as registerRuntimeContextEngine } from "../context-engine/index.js";
 import { registerInternalHook } from "../hooks/internal-hooks.js";
 import { resolveUserPath } from "../utils.js";
 import { registerPluginCommand } from "./commands.js";
@@ -94,6 +97,13 @@ export type PluginCommandRegistration = {
   source: string;
 };
 
+export type PluginContextEngineRegistration = {
+  pluginId: string;
+  id: string;
+  factory: () => ContextEngine;
+  source: string;
+};
+
 export type PluginRecord = {
   id: string;
   name: string;
@@ -114,6 +124,7 @@ export type PluginRecord = {
   cliCommands: string[];
   services: string[];
   commands: string[];
+  contextEngineIds: string[];
   httpHandlers: number;
   hookCount: number;
   configSchema: boolean;
@@ -134,6 +145,7 @@ export type PluginRegistry = {
   cliRegistrars: PluginCliRegistration[];
   services: PluginServiceRegistration[];
   commands: PluginCommandRegistration[];
+  contextEngines: PluginContextEngineRegistration[];
   diagnostics: PluginDiagnostic[];
 };
 
@@ -157,6 +169,7 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
     cliRegistrars: [],
     services: [],
     commands: [],
+    contextEngines: [],
     diagnostics: [],
   };
   const coreGatewayMethods = new Set(Object.keys(registryParams.coreGatewayHandlers ?? {}));
@@ -442,6 +455,63 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
     });
   };
 
+  const registerContextEngine = (
+    record: PluginRecord,
+    id: string,
+    factory: OpenClawPluginContextEngineFactory,
+  ) => {
+    const trimmedId = id.trim();
+    if (!trimmedId) {
+      pushDiagnostic({
+        level: "error",
+        pluginId: record.id,
+        source: record.source,
+        message: "context engine registration missing id",
+      });
+      return;
+    }
+
+    const wrappedFactory = () => {
+      const engine = factory();
+      if (!engine || typeof engine !== "object") {
+        throw new Error(`context engine "${trimmedId}" did not return an object`);
+      }
+      if (engine.id !== trimmedId) {
+        throw new Error(
+          `context engine "${trimmedId}" returned id "${String(engine.id)}"; ids must match`,
+        );
+      }
+      if (
+        typeof engine.ingest !== "function" ||
+        typeof engine.assemble !== "function" ||
+        typeof engine.compact !== "function"
+      ) {
+        throw new Error(`context engine "${trimmedId}" is missing required methods`);
+      }
+      return engine;
+    };
+
+    try {
+      registerRuntimeContextEngine(trimmedId, wrappedFactory);
+    } catch (err) {
+      pushDiagnostic({
+        level: "error",
+        pluginId: record.id,
+        source: record.source,
+        message: `context engine registration failed (${trimmedId}): ${String(err)}`,
+      });
+      return;
+    }
+
+    record.contextEngineIds.push(trimmedId);
+    registry.contextEngines.push({
+      pluginId: record.id,
+      id: trimmedId,
+      factory: wrappedFactory,
+      source: record.source,
+    });
+  };
+
   const registerTypedHook = <K extends PluginHookName>(
     record: PluginRecord,
     hookName: K,
@@ -492,6 +562,7 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
       registerGatewayMethod: (method, handler) => registerGatewayMethod(record, method, handler),
       registerCli: (registrar, opts) => registerCli(record, registrar, opts),
       registerService: (service) => registerService(record, service),
+      registerContextEngine: (id, factory) => registerContextEngine(record, id, factory),
       registerCommand: (command) => registerCommand(record, command),
       resolvePath: (input: string) => resolveUserPath(input),
       on: (hookName, handler, opts) => registerTypedHook(record, hookName, handler, opts),
@@ -508,6 +579,7 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
     registerGatewayMethod,
     registerCli,
     registerService,
+    registerContextEngine,
     registerCommand,
     registerHook,
     registerTypedHook,
