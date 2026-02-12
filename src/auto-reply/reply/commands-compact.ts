@@ -1,10 +1,14 @@
 import {
   abortEmbeddedPiRun,
-  compactEmbeddedPiSession,
   isEmbeddedPiRunActive,
+  resolveEmbeddedSessionLane,
   waitForEmbeddedPiRunEnd,
 } from "../../agents/pi-embedded.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import {
+  ensureContextEnginesInitialized,
+  resolveContextEngine,
+} from "../../context-engine/index.js";
 import {
   resolveFreshSessionTotalTokens,
   resolveSessionFilePath,
@@ -12,6 +16,7 @@ import {
 } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
+import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { formatContextUsageShort, formatTokenCount } from "../status.js";
 import type { CommandHandler } from "./commands-types.js";
 import { stripMentions, stripStructuralPrefixes } from "./mentions.js";
@@ -75,38 +80,48 @@ export const handleCompactCommand: CommandHandler = async (params) => {
     agentId: params.agentId,
     isGroup: params.isGroup,
   });
-  const result = await compactEmbeddedPiSession({
+  ensureContextEnginesInitialized();
+  const contextEngine = await resolveContextEngine(params.cfg);
+  const sessionFile = resolveSessionFilePath(
     sessionId,
-    sessionKey: params.sessionKey,
-    messageChannel: params.command.channel,
-    groupId: params.sessionEntry.groupId,
-    groupChannel: params.sessionEntry.groupChannel,
-    groupSpace: params.sessionEntry.space,
-    spawnedBy: params.sessionEntry.spawnedBy,
-    sessionFile: resolveSessionFilePath(
+    params.sessionEntry,
+    resolveSessionFilePathOptions({
+      agentId: params.agentId,
+      storePath: params.storePath,
+    }),
+  );
+  const thinkLevel = params.resolvedThinkLevel ?? (await params.resolveDefaultThinkingLevel());
+  const sessionLane = resolveEmbeddedSessionLane(params.sessionKey || sessionId);
+  const result = await enqueueCommandInLane(sessionLane, () =>
+    contextEngine.compact({
       sessionId,
-      params.sessionEntry,
-      resolveSessionFilePathOptions({
-        agentId: params.agentId,
-        storePath: params.storePath,
-      }),
-    ),
-    workspaceDir: params.workspaceDir,
-    config: params.cfg,
-    skillsSnapshot: params.sessionEntry.skillsSnapshot,
-    provider: params.provider,
-    model: params.model,
-    thinkLevel: params.resolvedThinkLevel ?? (await params.resolveDefaultThinkingLevel()),
-    bashElevated: {
-      enabled: false,
-      allowed: false,
-      defaultLevel: "off",
-    },
-    customInstructions,
-    trigger: "manual",
-    senderIsOwner: params.command.senderIsOwner,
-    ownerNumbers: params.command.ownerList.length > 0 ? params.command.ownerList : undefined,
-  });
+      sessionFile,
+      customInstructions,
+      legacyParams: {
+        sessionKey: params.sessionKey,
+        messageChannel: params.command.channel,
+        messageProvider: params.command.channel,
+        groupId: params.sessionEntry.groupId,
+        groupChannel: params.sessionEntry.groupChannel,
+        groupSpace: params.sessionEntry.space,
+        spawnedBy: params.sessionEntry.spawnedBy,
+        workspaceDir: params.workspaceDir,
+        config: params.cfg,
+        skillsSnapshot: params.sessionEntry.skillsSnapshot,
+        provider: params.provider,
+        model: params.model,
+        thinkLevel,
+        bashElevated: {
+          enabled: false,
+          allowed: false,
+          defaultLevel: "off",
+        },
+        trigger: "manual",
+        senderIsOwner: params.command.senderIsOwner,
+        ownerNumbers: params.command.ownerList.length > 0 ? params.command.ownerList : undefined,
+      },
+    }),
+  );
 
   const compactLabel = result.ok
     ? result.compacted
