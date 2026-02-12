@@ -83,3 +83,5 @@ USER.md
 .agent/*.json
 !.agent/workflows/
 local/
+
+.pebbles
