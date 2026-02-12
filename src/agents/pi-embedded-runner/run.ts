@@ -11,6 +11,7 @@ import {
   markAuthProfileGood,
   markAuthProfileUsed,
 } from "../auth-profiles.js";
+import { resolveRuntimeContextEngine } from "../context-engine-selection.js";
 import {
   CONTEXT_WINDOW_HARD_MIN_TOKENS,
   CONTEXT_WINDOW_WARN_BELOW_TOKENS,
@@ -209,6 +210,20 @@ export async function runEmbeddedPiAgent(
       );
       if (!model) {
         throw new Error(error ?? `Unknown model: ${provider}/${modelId}`);
+      }
+      const contextEngineSelection = resolveRuntimeContextEngine({
+        config: params.config,
+        engine: params.contextEngine,
+      });
+      const contextEngine = contextEngineSelection.engine;
+      const requestedContextEngineId = params.config?.contextEngine?.engine?.trim();
+      if (contextEngineSelection.warning) {
+        log.warn(contextEngineSelection.warning);
+      }
+      if (!contextEngine && contextEngineSelection.error && requestedContextEngineId) {
+        log.warn(
+          `context engine "${requestedContextEngineId}" is unavailable; falling back to inline runtime context handling (${contextEngineSelection.error})`,
+        );
       }
 
       const ctxInfo = resolveContextWindowInfo({
@@ -439,6 +454,7 @@ export async function runEmbeddedPiAgent(
             workspaceDir: resolvedWorkspace,
             agentDir,
             config: params.config,
+            contextEngine,
             skillsSnapshot: params.skillsSnapshot,
             prompt,
             images: params.images,
@@ -543,6 +559,7 @@ export async function runEmbeddedPiAgent(
                 workspaceDir: resolvedWorkspace,
                 agentDir,
                 config: params.config,
+                contextEngine,
                 skillsSnapshot: params.skillsSnapshot,
                 senderIsOwner: params.senderIsOwner,
                 provider,

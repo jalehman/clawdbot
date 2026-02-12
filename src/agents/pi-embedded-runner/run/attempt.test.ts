@@ -1,7 +1,11 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { ImageContent } from "@mariozechner/pi-ai";
-import { describe, expect, it } from "vitest";
-import { injectHistoryImagesIntoMessages } from "./attempt.js";
+import { describe, expect, it, vi } from "vitest";
+import type { ContextEngine } from "../../../context-engine/types.js";
+import {
+  assembleSessionHistoryWithContextEngine,
+  injectHistoryImagesIntoMessages,
+} from "./attempt.js";
 
 describe("injectHistoryImagesIntoMessages", () => {
   const image: ImageContent = { type: "image", data: "abc", mimeType: "image/png" };
@@ -54,5 +58,53 @@ describe("injectHistoryImagesIntoMessages", () => {
 
     expect(didMutate).toBe(false);
     expect(messages[0]?.content).toBe("noop");
+  });
+});
+
+describe("assembleSessionHistoryWithContextEngine", () => {
+  it("routes ingest/assemble through the selected engine with history limits", async () => {
+    const ingest = vi.fn<ContextEngine["ingest"]>(async () => ({
+      messages: [{ role: "user", content: "normalized" } as AgentMessage],
+      meta: { fromIngest: true },
+    }));
+    const assemble = vi.fn<ContextEngine["assemble"]>(async () => ({
+      messages: [{ role: "user", content: "assembled" } as AgentMessage],
+      meta: { fromAssemble: true },
+    }));
+    const contextEngine: ContextEngine = {
+      id: "test-engine",
+      ingest,
+      assemble,
+      compact: async () => ({ ok: true, compacted: false }),
+    };
+
+    const result = await assembleSessionHistoryWithContextEngine({
+      contextEngine,
+      messages: [{ role: "user", content: "raw" } as AgentMessage],
+      provider: "anthropic",
+      modelId: "claude-sonnet",
+      sessionId: "session-1",
+      historyTurnLimit: 7,
+      ingestMeta: { sessionManager: { mock: true } },
+      assembleMeta: { sessionKey: "session-key" },
+    });
+
+    expect(ingest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "anthropic",
+        modelId: "claude-sonnet",
+        sessionId: "session-1",
+      }),
+    );
+    expect(assemble).toHaveBeenCalledWith(
+      expect.objectContaining({
+        historyTurnLimit: 7,
+        meta: {
+          fromIngest: true,
+          sessionKey: "session-key",
+        },
+      }),
+    );
+    expect(result).toEqual([{ role: "user", content: "assembled" }]);
   });
 });
