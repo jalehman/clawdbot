@@ -61,11 +61,21 @@ export type { ChannelConfigSchema, ChannelPlugin } from "../channels/plugins/typ
 export type {
   AnyAgentTool,
   OpenClawPluginApi,
+  OpenClawPluginContextEngineFactory,
   OpenClawPluginService,
   OpenClawPluginServiceContext,
   ProviderAuthContext,
   ProviderAuthResult,
 } from "../plugins/types.js";
+export type {
+  ContextEngine,
+  ContextAssembleParams,
+  ContextAssembleResult,
+  ContextCompactParams,
+  ContextCompactResult,
+  ContextIngestParams,
+  ContextIngestResult,
+} from "../context-engine/index.js";
 export type {
   GatewayRequestHandler,
   GatewayRequestHandlerOptions,

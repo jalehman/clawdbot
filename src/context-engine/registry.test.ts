@@ -72,6 +72,19 @@ describe("context-engine registry", () => {
       expect(result.warning).toMatch(/nonexistent.*not registered.*falling back/);
     });
 
+    it("falls back to default when requested engine throws during initialization", () => {
+      registerContextEngine(DEFAULT_CONTEXT_ENGINE_ID, () => stubEngine(DEFAULT_CONTEXT_ENGINE_ID));
+      registerContextEngine("broken", () => {
+        throw new Error("boom");
+      });
+
+      const result = selectContextEngine("broken");
+      expect(result.engine.id).toBe(DEFAULT_CONTEXT_ENGINE_ID);
+      expect(result.resolvedId).toBe(DEFAULT_CONTEXT_ENGINE_ID);
+      expect(result.fallback).toBe(true);
+      expect(result.warning).toMatch(/broken.*failed to initialize.*falling back/);
+    });
+
     it("falls back to default when requested id is undefined", () => {
       registerContextEngine(DEFAULT_CONTEXT_ENGINE_ID, () => stubEngine(DEFAULT_CONTEXT_ENGINE_ID));
 
