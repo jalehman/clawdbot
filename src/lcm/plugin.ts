@@ -1,6 +1,8 @@
 import { Type } from "@sinclair/typebox";
+import path from "node:path";
 import type { OpenClawPluginDefinition } from "../plugins/types.js";
 import type { ConversationId, LcmRuntime } from "./types.js";
+import { resolveStateDir } from "../config/paths.js";
 import {
   registerContextEngine,
   registeredContextEngineIds,
@@ -8,6 +10,9 @@ import {
   type ContextEngine,
 } from "../context-engine/index.js";
 import { LCM_PLUGIN_CONFIG_SCHEMA, resolveLcmConfig } from "./config.js";
+import { createConversationStore } from "./conversation-store.js";
+import { ingestCanonicalTranscript, resolveConversationId } from "./ingestion.js";
+import { createLcmStorageBackend } from "./storage/backend.js";
 import { createPlaceholderTokenEstimator } from "./token-estimator.js";
 
 /**
@@ -15,26 +20,62 @@ import { createPlaceholderTokenEstimator } from "./token-estimator.js";
  */
 export const LCM_CONTEXT_ENGINE_ID = "lcm";
 
-function createScaffoldRuntime(): LcmRuntime {
-  return {};
+type LcmPluginRuntime = LcmRuntime & {
+  ensureReady: () => Promise<void>;
+};
+
+function createScaffoldRuntime(): LcmPluginRuntime {
+  const storage = createLcmStorageBackend({
+    sqlite: {
+      dbPath: path.join(resolveStateDir(), "lcm", "lcm.sqlite"),
+    },
+  });
+  const store = createConversationStore({ storage });
+  let readyPromise: Promise<void> | null = null;
+  return {
+    store,
+    ensureReady() {
+      if (!readyPromise) {
+        readyPromise = storage.migrate();
+      }
+      return readyPromise;
+    },
+  };
 }
 
 /**
- * Build a no-op LCM context engine scaffold.
- *
- * Storage/compaction/retrieval are intentionally left for follow-up workers.
+ * Build an LCM context engine scaffold with canonical ingest persistence.
  */
-function createLcmContextEngine(runtime: LcmRuntime): ContextEngine {
+function createLcmContextEngine(runtime: LcmPluginRuntime): ContextEngine {
+  const tokenEstimator = createPlaceholderTokenEstimator();
   return {
     id: LCM_CONTEXT_ENGINE_ID,
     async ingest(params) {
+      await runtime.ensureReady();
+      const conversationId = resolveConversationId(params.sessionId, params.meta);
+      const messageChannel =
+        typeof params.meta?.messageChannel === "string" ? params.meta.messageChannel : undefined;
+      const result = runtime.store
+        ? await ingestCanonicalTranscript({
+            store: runtime.store,
+            tokenEstimator,
+            conversationId,
+            sessionId: params.sessionId,
+            channel: messageChannel,
+            provider: params.provider,
+            modelId: params.modelId,
+            messages: params.messages,
+          })
+        : null;
       return {
         messages: params.messages,
         meta: {
           ...params.meta,
           lcm: {
-            runtimeReady: Boolean(runtime.store && runtime.assembler),
+            runtimeReady: Boolean(runtime.store),
             phase: "ingest",
+            conversationId,
+            persistedMessages: result?.messageCount ?? 0,
           },
         },
       };
@@ -94,7 +135,6 @@ const lcmPlugin: OpenClawPluginDefinition = {
       config: api.config,
       pluginConfig: api.pluginConfig,
     });
-    const tokenEstimator = createPlaceholderTokenEstimator();
     const runtime = createScaffoldRuntime();
 
     if (!registeredContextEngineIds().includes(LCM_CONTEXT_ENGINE_ID)) {
@@ -131,7 +171,7 @@ const lcmPlugin: OpenClawPluginDefinition = {
               conversationId,
               limit,
               config: lcmConfig,
-              estimator: tokenEstimator.constructor.name,
+              estimator: "PlaceholderTokenEstimator",
             },
           };
         },

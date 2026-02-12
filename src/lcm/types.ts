@@ -148,13 +148,232 @@ export type RetrievalDescribeResult = {
 };
 
 /**
- * Storage abstraction for message/summary persistence.
+ * Canonical persisted message record in SQLite.
+ */
+export type StoredLcmMessage = {
+  messageId: MessageId;
+  conversationId: ConversationId;
+  ordinal: number;
+  role: MessageRole;
+  authorId?: string;
+  contentText: string;
+  payload: Record<string, unknown>;
+  createdAtMs: number;
+};
+
+/**
+ * Part kind stored for canonical message payload blocks.
+ */
+export type LcmMessagePartKind =
+  | "text"
+  | "image"
+  | "toolCall"
+  | "toolResult"
+  | "thinking"
+  | "json"
+  | "other";
+
+/**
+ * Canonical message part derived from rich AgentMessage content blocks.
+ */
+export type StoredLcmMessagePart = {
+  partId: string;
+  messageId: MessageId;
+  partIndex: number;
+  kind: LcmMessagePartKind;
+  mimeType?: string;
+  textContent?: string;
+  blobPath?: string;
+  tokenCount?: number;
+  payload: Record<string, unknown>;
+  createdAtMs: number;
+};
+
+/**
+ * Context item persisted in the active context graph.
+ */
+export type LcmContextItemType = "message" | "summary" | "note" | "artifact";
+
+/**
+ * Canonical context item row.
+ */
+export type LcmContextItem = {
+  itemId: string;
+  conversationId: ConversationId;
+  sourceMessageId?: MessageId;
+  itemType: LcmContextItemType;
+  depth: number;
+  title?: string;
+  body: string;
+  metadata: Record<string, unknown>;
+  tombstoned: boolean;
+  createdAtMs: number;
+  updatedAtMs: number;
+};
+
+/**
+ * Summary item specialization.
+ */
+export type LcmSummaryItem = LcmContextItem & {
+  itemType: "summary";
+};
+
+/**
+ * Create canonical message input.
+ */
+export type CreateMessageInput = {
+  messageId: MessageId;
+  conversationId: ConversationId;
+  sessionId: string;
+  channel?: string;
+  ordinal: number;
+  role: MessageRole;
+  authorId?: string;
+  contentText: string;
+  payload: Record<string, unknown>;
+  createdAtMs: number;
+};
+
+/**
+ * Create canonical message parts input.
+ */
+export type CreateMessagePartsInput = {
+  messageId: MessageId;
+  parts: StoredLcmMessagePart[];
+};
+
+/**
+ * Insert summary input.
+ */
+export type InsertSummaryInput = {
+  summaryId: SummaryId;
+  conversationId: ConversationId;
+  sourceMessageId?: MessageId;
+  depth?: number;
+  title?: string;
+  body: string;
+  metadata?: Record<string, unknown>;
+  createdAtMs: number;
+};
+
+/**
+ * Link summary to direct message parents.
+ */
+export type LinkSummaryToMessagesInput = {
+  conversationId: ConversationId;
+  summaryId: SummaryId;
+  messageIds: MessageId[];
+  relation?: string;
+  metadata?: Record<string, unknown>;
+  createdAtMs: number;
+};
+
+/**
+ * Link summary to parent summaries.
+ */
+export type LinkSummaryToParentsInput = {
+  summaryId: SummaryId;
+  parentSummaryIds: SummaryId[];
+  relation?: string;
+  metadata?: Record<string, unknown>;
+  createdAtMs: number;
+};
+
+/**
+ * Replace a context range with a summary and tombstone replaced items.
+ */
+export type ReplaceContextRangeWithSummaryInput = {
+  conversationId: ConversationId;
+  summaryId: SummaryId;
+  startItemId: string;
+  endItemId: string;
+  metadata?: Record<string, unknown>;
+  updatedAtMs: number;
+};
+
+/**
+ * Append a context message item tied to a canonical message.
+ */
+export type AppendContextMessageInput = {
+  itemId: string;
+  conversationId: ConversationId;
+  messageId: MessageId;
+  depth?: number;
+  title?: string;
+  body: string;
+  metadata?: Record<string, unknown>;
+  createdAtMs: number;
+};
+
+/**
+ * Context item query options.
+ */
+export type GetContextItemsInput = {
+  conversationId: ConversationId;
+  includeTombstoned?: boolean;
+  itemTypes?: LcmContextItemType[];
+  limit?: number;
+};
+
+/**
+ * Message search query.
+ */
+export type SearchMessagesInput = {
+  conversationId: ConversationId;
+  query: string;
+  limit?: number;
+};
+
+/**
+ * Summary search query.
+ */
+export type SearchSummariesInput = {
+  conversationId: ConversationId;
+  query: string;
+  limit?: number;
+};
+
+/**
+ * Canonical message search hit.
+ */
+export type LcmMessageSearchHit = {
+  messageId: MessageId;
+  conversationId: ConversationId;
+  ordinal: number;
+  role: MessageRole;
+  snippet: string;
+  createdAtMs: number;
+};
+
+/**
+ * Summary search hit from context-item graph.
+ */
+export type LcmSummarySearchHit = {
+  summaryId: SummaryId;
+  conversationId: ConversationId;
+  title?: string;
+  snippet: string;
+  score?: number;
+  createdAtMs: number;
+};
+
+/**
+ * Storage abstraction for canonical conversation ingestion + lineage graph.
  */
 export type ConversationStore = {
-  getMessages(conversationId: ConversationId): Promise<LcmMessage[]>;
-  appendMessages(conversationId: ConversationId, messages: LcmMessage[]): Promise<void>;
-  getSummaries(conversationId: ConversationId): Promise<LcmSummary[]>;
-  appendSummary(conversationId: ConversationId, summary: LcmSummary): Promise<void>;
+  createMessage(input: CreateMessageInput): Promise<StoredLcmMessage>;
+  createMessageParts(input: CreateMessagePartsInput): Promise<void>;
+  insertSummary(input: InsertSummaryInput): Promise<LcmSummaryItem>;
+  linkSummaryToMessages(input: LinkSummaryToMessagesInput): Promise<void>;
+  linkSummaryToParents(input: LinkSummaryToParentsInput): Promise<void>;
+  replaceContextRangeWithSummary(input: ReplaceContextRangeWithSummaryInput): Promise<number>;
+  appendContextMessage(input: AppendContextMessageInput): Promise<LcmContextItem>;
+  getContextItems(input: GetContextItemsInput): Promise<LcmContextItem[]>;
+  getSummary(summaryId: SummaryId): Promise<LcmSummaryItem | null>;
+  getSummaryChildren(summaryId: SummaryId): Promise<LcmSummaryItem[]>;
+  getSummaryMessages(summaryId: SummaryId, limit?: number): Promise<StoredLcmMessage[]>;
+  searchMessages(input: SearchMessagesInput): Promise<LcmMessageSearchHit[]>;
+  searchSummaries(input: SearchSummariesInput): Promise<LcmSummarySearchHit[]>;
 };
 
 /**
