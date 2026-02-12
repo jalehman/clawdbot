@@ -495,7 +495,7 @@ export async function compactEmbeddedPiSessionDirect(
               config: params.config,
             },
             compactMeta: {
-              session,
+              compactSession: session,
               estimateTokens,
             },
           });

@@ -42,7 +42,7 @@ describe("compactSessionWithContextEngine", () => {
       replaceMessages,
       ingestMeta: { sessionManager: { mock: true } },
       assembleMeta: { sessionKey: "session-key" },
-      compactMeta: { session: { mock: true } },
+      compactMeta: { compactSession: { mock: true } },
     });
 
     expect(ingest).toHaveBeenCalledWith(
