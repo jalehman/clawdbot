@@ -34,7 +34,7 @@ export type PluginConfigUiHint = {
   placeholder?: string;
 };
 
-export type PluginKind = "memory";
+export type PluginKind = "memory" | "context-engine";
 
 export type PluginConfigValidation =
   | { ok: true; value?: unknown }
