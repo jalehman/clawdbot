@@ -1,5 +1,7 @@
 import { Type } from "@sinclair/typebox";
+import crypto from "node:crypto";
 import path from "node:path";
+import type { OpenClawConfig } from "../config/config.js";
 import type { OpenClawPluginDefinition } from "../plugins/types.js";
 import type {
   ConversationId,
@@ -7,6 +9,13 @@ import type {
   RetrievalExpandInput,
   RetrievalGrepInput,
 } from "./types.js";
+import { AGENT_LANE_SUBAGENT } from "../agents/lanes.js";
+import { buildSubagentSystemPrompt } from "../agents/subagent-announce.js";
+import { readLatestAssistantReply } from "../agents/tools/agent-step.js";
+import {
+  resolveInternalSessionKey,
+  resolveMainSessionAlias,
+} from "../agents/tools/sessions-helpers.js";
 import { resolveStateDir } from "../config/paths.js";
 import {
   registerContextEngine,
@@ -14,10 +23,17 @@ import {
   type ContextCompactParams,
   type ContextEngine,
 } from "../context-engine/index.js";
+import { callGateway } from "../gateway/call.js";
+import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import { LCM_PLUGIN_CONFIG_SCHEMA, resolveLcmConfig } from "./config.js";
 import { createConversationStore } from "./conversation-store.js";
 import { ingestCanonicalTranscript, resolveConversationId } from "./ingestion.js";
+import { createLcmRetrievalEngine } from "./retrieval-engine.js";
 import { createLcmStorageBackend } from "./storage/backend.js";
+import {
+  SubagentExpansionOrchestrator,
+  type SubagentExpansionRunner,
+} from "./subagent-expansion.js";
 import { createPlaceholderTokenEstimator } from "./token-estimator.js";
 
 /**
@@ -35,10 +51,16 @@ function createScaffoldRuntime(): LcmPluginRuntime {
       dbPath: path.join(resolveStateDir(), "lcm", "lcm.sqlite"),
     },
   });
+  const tokenEstimator = createPlaceholderTokenEstimator();
   const store = createConversationStore({ storage });
+  const retrieval = createLcmRetrievalEngine({
+    backend: storage,
+    tokenEstimator,
+  });
   let readyPromise: Promise<void> | null = null;
   return {
     store,
+    retrieval,
     ensureReady() {
       if (!readyPromise) {
         readyPromise = storage.migrate();
@@ -153,6 +175,116 @@ function jsonToolResult(action: string, payload: unknown) {
   };
 }
 
+function normalizeModelSelection(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed || undefined;
+  }
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const primary = (value as { primary?: unknown }).primary;
+  if (typeof primary === "string" && primary.trim()) {
+    return primary.trim();
+  }
+  return undefined;
+}
+
+function resolveRequesterSessionKey(rawSessionKey: string | undefined, cfg: OpenClawConfig) {
+  const trimmed = rawSessionKey?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const { alias, mainKey } = resolveMainSessionAlias(cfg);
+  return resolveInternalSessionKey({ key: trimmed, alias, mainKey });
+}
+
+async function runLcmExpansionSubagentPass(params: {
+  requesterSessionKey: string;
+  requesterChannel?: string;
+  model?: string;
+  passIndex: number;
+  prompt: string;
+  question: string;
+  runTimeoutSeconds: number;
+}) {
+  const childSessionKey = `agent:${resolveAgentIdFromSessionKey(params.requesterSessionKey)}:subagent:${crypto.randomUUID()}`;
+  const idem = crypto.randomUUID();
+  let runId: string = idem;
+
+  try {
+    if (params.model) {
+      await callGateway({
+        method: "sessions.patch",
+        params: { key: childSessionKey, model: params.model },
+        timeoutMs: 10_000,
+      });
+    }
+
+    const childSystemPrompt = buildSubagentSystemPrompt({
+      requesterSessionKey: params.requesterSessionKey,
+      childSessionKey,
+      label: `LCM Deep Expand Pass ${params.passIndex}`,
+      task: params.question,
+    });
+
+    const response = await callGateway<{ runId?: string }>({
+      method: "agent",
+      params: {
+        message: params.prompt,
+        sessionKey: childSessionKey,
+        channel: params.requesterChannel,
+        deliver: false,
+        lane: AGENT_LANE_SUBAGENT,
+        spawnedBy: params.requesterSessionKey,
+        idempotencyKey: idem,
+        extraSystemPrompt: childSystemPrompt,
+        timeout: params.runTimeoutSeconds > 0 ? params.runTimeoutSeconds : undefined,
+        label: `LCM Deep Expand Pass ${params.passIndex}`,
+      },
+      timeoutMs: 10_000,
+    });
+    if (typeof response?.runId === "string" && response.runId) {
+      runId = response.runId;
+    }
+
+    const waitTimeoutMs = Math.max(1_000, params.runTimeoutSeconds * 1_000);
+    const wait = await callGateway<{ status?: string; error?: string }>({
+      method: "agent.wait",
+      params: {
+        runId,
+        timeoutMs: waitTimeoutMs,
+      },
+      timeoutMs: waitTimeoutMs + 2_000,
+    });
+    if (wait?.status === "timeout") {
+      throw new Error(`LCM subagent pass ${params.passIndex} timed out.`);
+    }
+    if (wait?.status === "error") {
+      throw new Error(wait.error || `LCM subagent pass ${params.passIndex} failed.`);
+    }
+
+    const reply = await readLatestAssistantReply({
+      sessionKey: childSessionKey,
+      limit: 120,
+    });
+    if (!reply?.trim()) {
+      throw new Error(`LCM subagent pass ${params.passIndex} produced no assistant output.`);
+    }
+    return reply;
+  } finally {
+    try {
+      await callGateway({
+        method: "sessions.delete",
+        params: { key: childSessionKey, deleteTranscript: true },
+        timeoutMs: 10_000,
+      });
+    } catch {
+      // best-effort cleanup
+    }
+  }
+}
+
 /**
  * LCM plugin entry point.
  *
@@ -194,6 +326,7 @@ const lcmPlugin: OpenClawPluginDefinition = {
           if (!runtime.retrieval) {
             return retrievalUnavailableResult("describe");
           }
+          await runtime.ensureReady();
 
           const input = params as { id?: string };
           const id = input.id?.trim();
@@ -238,6 +371,7 @@ const lcmPlugin: OpenClawPluginDefinition = {
           if (!runtime.retrieval) {
             return retrievalUnavailableResult("grep");
           }
+          await runtime.ensureReady();
 
           const input = params as {
             query: string;
@@ -283,6 +417,7 @@ const lcmPlugin: OpenClawPluginDefinition = {
           if (!runtime.retrieval) {
             return retrievalUnavailableResult("expand");
           }
+          await runtime.ensureReady();
 
           const input = params as {
             summaryId: string;
@@ -308,6 +443,135 @@ const lcmPlugin: OpenClawPluginDefinition = {
         },
       },
       { name: "lcm_expand", optional: true },
+    );
+
+    api.registerTool(
+      (toolContext) => ({
+        name: "lcm_expand_deep",
+        label: "LCM Expand Deep",
+        description:
+          "Run iterative deep expansion over summary ids with direct-or-subagent orchestration.",
+        parameters: Type.Object({
+          targetIds: Type.Array(
+            Type.String({
+              description: "Summary identifiers to expand from.",
+              minLength: 1,
+            }),
+            { minItems: 1, description: "Root summary ids for deep traversal." },
+          ),
+          question: Type.String({ description: "Focused question for deep traversal." }),
+          depth: Type.Optional(
+            Type.Number({ description: "Maximum traversal depth (policy-bounded)." }),
+          ),
+          tokenBudget: Type.Optional(
+            Type.Number({ description: "Total token budget across all expansion passes." }),
+          ),
+          maxPasses: Type.Optional(
+            Type.Number({ description: "Maximum iterative subagent expansion passes." }),
+          ),
+          includeMessages: Type.Optional(
+            Type.Boolean({
+              description: "Include raw canonical messages during direct (non-subagent) expansion.",
+            }),
+          ),
+          strategy: Type.Optional(
+            Type.String({
+              enum: ["auto", "direct", "subagent"],
+              description: "Strategy override; auto applies policy.",
+            }),
+          ),
+          model: Type.Optional(
+            Type.String({
+              description: "Subagent model override (provider/model or model id).",
+            }),
+          ),
+        }),
+        async execute(_toolCallId, params) {
+          if (!runtime.retrieval) {
+            return retrievalUnavailableResult("expand_deep");
+          }
+          await runtime.ensureReady();
+
+          const input = params as {
+            targetIds?: string[];
+            question?: string;
+            depth?: number;
+            tokenBudget?: number;
+            maxPasses?: number;
+            includeMessages?: boolean;
+            strategy?: "auto" | "direct" | "subagent";
+            model?: string;
+          };
+          const targetIds = (input.targetIds ?? []).map((value) => value.trim()).filter(Boolean);
+          if (targetIds.length === 0) {
+            throw new Error("targetIds must include at least one summary id.");
+          }
+          const question = input.question?.trim();
+          if (!question) {
+            throw new Error("question is required.");
+          }
+
+          const depth = toPositiveInt(input.depth, 3, 0, 8);
+          const tokenBudget = toPositiveInt(input.tokenBudget, 8_000, 1, 20_000);
+          const maxPasses = toPositiveInt(
+            input.maxPasses,
+            Math.max(1, Math.ceil(depth / 3)),
+            1,
+            12,
+          );
+          const requesterSessionKey = resolveRequesterSessionKey(
+            toolContext.sessionKey,
+            api.config,
+          );
+          const resolvedModel =
+            normalizeModelSelection(input.model) ??
+            normalizeModelSelection(api.config.agents?.defaults?.subagents?.model);
+
+          const runTimeoutSeconds = 90;
+          const runSubagent: SubagentExpansionRunner | undefined = requesterSessionKey
+            ? async (request) =>
+                await runLcmExpansionSubagentPass({
+                  requesterSessionKey,
+                  requesterChannel: toolContext.messageChannel,
+                  model: resolvedModel,
+                  passIndex: request.passIndex,
+                  prompt: request.prompt,
+                  question,
+                  runTimeoutSeconds,
+                })
+            : undefined;
+
+          const orchestrator = new SubagentExpansionOrchestrator({
+            retrieval: runtime.retrieval,
+            runSubagent,
+          });
+
+          const result = await orchestrator.expandDeep({
+            targetIds,
+            question,
+            depth,
+            tokenCap: tokenBudget,
+            maxPasses,
+            includeMessages: input.includeMessages ?? false,
+            strategy: input.strategy ?? "auto",
+          });
+
+          return jsonToolResult("expand_deep", {
+            strategy: result.strategy,
+            synthesis: result.synthesis,
+            citedIds: result.citedIds,
+            nextSummaryIds: result.nextSummaryIds,
+            truncated: result.truncated,
+            passCount: result.passCount,
+            depthUsed: result.depthUsed,
+            tokenBudgetUsed: result.tokenBudgetUsed,
+            warnings: result.warnings,
+            passes: result.passes,
+            model: resolvedModel,
+          });
+        },
+      }),
+      { name: "lcm_expand_deep", optional: true },
     );
   },
 };
