@@ -110,41 +110,158 @@ export type CompactionResult = {
 };
 
 /**
- * Free-text retrieval request.
+ * Describe target kinds supported by retrieval introspection.
  */
-export type RetrievalQuery = {
-  conversationId: ConversationId;
-  query: string;
-  limit?: number;
+export type RetrievalDescribeKind = "summary" | "file";
+
+/**
+ * Retrieval search modes.
+ */
+export type RetrievalGrepMode = "regex" | "full_text";
+
+/**
+ * Retrieval search scope selectors.
+ */
+export type RetrievalGrepScope = "messages" | "summaries" | "both";
+
+/**
+ * Lineage metadata for summary describe responses.
+ */
+export type RetrievalLineage = {
+  parentIds: string[];
+  childIds: string[];
 };
 
 /**
- * Summary expansion request.
+ * Source message range resolved from lineage traversal.
  */
-export type ExpansionQuery = {
-  conversationId: ConversationId;
-  summaryId: SummaryId;
-  limit?: number;
+export type RetrievalSourceMessageRange = {
+  startId: MessageId;
+  endId: MessageId;
+  count: number;
 };
 
 /**
- * Retrieval hit record.
+ * Summary describe payload.
  */
-export type RetrievalHit = {
-  messageId: MessageId;
-  score?: number;
-  snippet: string;
+export type RetrievalSummaryDescribeResult = {
+  id: SummaryId;
+  kind: "summary";
+  conversationId: ConversationId;
+  itemType: string;
+  title?: string;
+  tokenEstimate: number;
+  createdAt: string;
+  metadata: Record<string, unknown>;
+  lineage: RetrievalLineage;
+  sourceMessageRange?: RetrievalSourceMessageRange;
+};
+
+/**
+ * File describe payload.
+ */
+export type RetrievalFileDescribeResult = {
+  id: string;
+  kind: "file";
+  conversationId: ConversationId;
+  path: string;
+  fileName?: string;
+  mimeType?: string;
+  bytes?: number;
+  sha256?: string;
+  createdAt: string;
+  metadata: Record<string, unknown>;
+  relatedMessageId?: MessageId;
 };
 
 /**
  * Describe query output for retrieval introspection.
  */
-export type RetrievalDescribeResult = {
+export type RetrievalDescribeResult = RetrievalSummaryDescribeResult | RetrievalFileDescribeResult;
+
+/**
+ * Grep query input.
+ */
+export type RetrievalGrepInput = {
+  query: string;
+  mode?: RetrievalGrepMode;
+  scope?: RetrievalGrepScope;
+  conversationId?: ConversationId;
+  limit?: number;
+};
+
+/**
+ * Individual grep hit.
+ */
+export type RetrievalGrepMatch = {
+  id: string;
+  kind: "message" | "summary";
   conversationId: ConversationId;
-  messageCount: number;
-  summaryCount: number;
-  latestMessageId?: MessageId;
-  latestSummaryId?: SummaryId;
+  snippet: string;
+  createdAt: string;
+  score?: number;
+};
+
+/**
+ * Grep query output.
+ */
+export type RetrievalGrepResult = {
+  query: string;
+  mode: RetrievalGrepMode;
+  scope: RetrievalGrepScope;
+  matches: RetrievalGrepMatch[];
+  truncated: boolean;
+  scannedCount: number;
+};
+
+/**
+ * Summary expansion query input.
+ */
+export type RetrievalExpandInput = {
+  summaryId: SummaryId;
+  depth?: number;
+  includeMessages?: boolean;
+  tokenCap?: number;
+  limit?: number;
+};
+
+/**
+ * Summary item returned from expansion traversal.
+ */
+export type RetrievalExpandedSummary = {
+  id: SummaryId;
+  conversationId: ConversationId;
+  title?: string;
+  body: string;
+  depth: number;
+  createdAt: string;
+  tokenEstimate: number;
+};
+
+/**
+ * Message item returned from expansion traversal.
+ */
+export type RetrievalExpandedMessage = {
+  id: MessageId;
+  conversationId: ConversationId;
+  role: MessageRole;
+  content: string;
+  depth: number;
+  createdAt: string;
+  tokenEstimate: number;
+};
+
+/**
+ * Expansion output payload.
+ */
+export type RetrievalExpandResult = {
+  rootSummaryId: SummaryId;
+  conversationId: ConversationId;
+  summaries: RetrievalExpandedSummary[];
+  messages: RetrievalExpandedMessage[];
+  estimatedTokens: number;
+  truncated: boolean;
+  nextSummaryIds: SummaryId[];
 };
 
 /**
@@ -175,9 +292,9 @@ export type CompactionEngine = {
  * Retrieval abstraction used by LCM tools.
  */
 export type RetrievalEngine = {
-  describe(conversationId: ConversationId): Promise<RetrievalDescribeResult>;
-  grep(query: RetrievalQuery): Promise<RetrievalHit[]>;
-  expand(query: ExpansionQuery): Promise<LcmMessage[]>;
+  describe(id: string): Promise<RetrievalDescribeResult | null>;
+  grep(input: RetrievalGrepInput): Promise<RetrievalGrepResult>;
+  expand(input: RetrievalExpandInput): Promise<RetrievalExpandResult>;
 };
 
 /**
