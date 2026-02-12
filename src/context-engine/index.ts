@@ -16,3 +16,10 @@ export {
   clearContextEngineRegistry,
 } from "./registry.js";
 export type { ContextEngineSelection } from "./registry.js";
+
+export { LegacyContextEngine, registerLegacyContextEngine } from "./legacy-engine.js";
+export type {
+  LegacyCompactSession,
+  LegacyContextEngineMeta,
+  LegacySessionCompactResult,
+} from "./legacy-engine.js";

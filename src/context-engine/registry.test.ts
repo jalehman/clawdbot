@@ -53,9 +53,7 @@ describe("context-engine registry", () => {
     it("selects a registered engine by id", () => {
       registerContextEngine("custom", () => stubEngine("custom"));
       // Also register default so the fallback path exists
-      registerContextEngine(DEFAULT_CONTEXT_ENGINE_ID, () =>
-        stubEngine(DEFAULT_CONTEXT_ENGINE_ID),
-      );
+      registerContextEngine(DEFAULT_CONTEXT_ENGINE_ID, () => stubEngine(DEFAULT_CONTEXT_ENGINE_ID));
 
       const result = selectContextEngine("custom");
       expect(result.engine.id).toBe("custom");
@@ -65,9 +63,7 @@ describe("context-engine registry", () => {
     });
 
     it("falls back to default when requested id is not registered", () => {
-      registerContextEngine(DEFAULT_CONTEXT_ENGINE_ID, () =>
-        stubEngine(DEFAULT_CONTEXT_ENGINE_ID),
-      );
+      registerContextEngine(DEFAULT_CONTEXT_ENGINE_ID, () => stubEngine(DEFAULT_CONTEXT_ENGINE_ID));
 
       const result = selectContextEngine("nonexistent");
       expect(result.engine.id).toBe(DEFAULT_CONTEXT_ENGINE_ID);
@@ -77,9 +73,7 @@ describe("context-engine registry", () => {
     });
 
     it("falls back to default when requested id is undefined", () => {
-      registerContextEngine(DEFAULT_CONTEXT_ENGINE_ID, () =>
-        stubEngine(DEFAULT_CONTEXT_ENGINE_ID),
-      );
+      registerContextEngine(DEFAULT_CONTEXT_ENGINE_ID, () => stubEngine(DEFAULT_CONTEXT_ENGINE_ID));
 
       const result = selectContextEngine(undefined);
       expect(result.engine.id).toBe(DEFAULT_CONTEXT_ENGINE_ID);
@@ -89,9 +83,7 @@ describe("context-engine registry", () => {
     });
 
     it("falls back to default when requested id is null", () => {
-      registerContextEngine(DEFAULT_CONTEXT_ENGINE_ID, () =>
-        stubEngine(DEFAULT_CONTEXT_ENGINE_ID),
-      );
+      registerContextEngine(DEFAULT_CONTEXT_ENGINE_ID, () => stubEngine(DEFAULT_CONTEXT_ENGINE_ID));
 
       const result = selectContextEngine(null);
       expect(result.engine.id).toBe(DEFAULT_CONTEXT_ENGINE_ID);
@@ -100,9 +92,7 @@ describe("context-engine registry", () => {
     });
 
     it("falls back to default when requested id is empty string", () => {
-      registerContextEngine(DEFAULT_CONTEXT_ENGINE_ID, () =>
-        stubEngine(DEFAULT_CONTEXT_ENGINE_ID),
-      );
+      registerContextEngine(DEFAULT_CONTEXT_ENGINE_ID, () => stubEngine(DEFAULT_CONTEXT_ENGINE_ID));
 
       const result = selectContextEngine("");
       expect(result.resolvedId).toBe(DEFAULT_CONTEXT_ENGINE_ID);
@@ -110,9 +100,7 @@ describe("context-engine registry", () => {
     });
 
     it("falls back to default when requested id is whitespace only", () => {
-      registerContextEngine(DEFAULT_CONTEXT_ENGINE_ID, () =>
-        stubEngine(DEFAULT_CONTEXT_ENGINE_ID),
-      );
+      registerContextEngine(DEFAULT_CONTEXT_ENGINE_ID, () => stubEngine(DEFAULT_CONTEXT_ENGINE_ID));
 
       const result = selectContextEngine("   ");
       expect(result.resolvedId).toBe(DEFAULT_CONTEXT_ENGINE_ID);
