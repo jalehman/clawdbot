@@ -600,6 +600,12 @@ export const OpenClawSchema = z
       })
       .strict()
       .optional(),
+    contextEngine: z
+      .object({
+        engine: z.string().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   .superRefine((cfg, ctx) => {
