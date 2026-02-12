@@ -8,6 +8,10 @@ export {
   resolveLcmConfig,
 } from "./config.js";
 export { createPlaceholderTokenEstimator, PlaceholderTokenEstimator } from "./token-estimator.js";
+export {
+  createLcmRetrievalEngine,
+  type CreateLcmRetrievalEngineParams,
+} from "./retrieval-engine.js";
 export { default as lcmPlugin, LCM_CONTEXT_ENGINE_ID } from "./plugin.js";
 export {
   buildConversationScopedItemId,
