@@ -4,6 +4,7 @@ import type { ReasoningLevel, ThinkLevel, VerboseLevel } from "../../../auto-rep
 import type { AgentStreamParams } from "../../../commands/agent/types.js";
 import type { OpenClawConfig } from "../../../config/config.js";
 import type { SessionSystemPromptReport } from "../../../config/sessions/types.js";
+import type { ContextEngine } from "../../../context-engine/types.js";
 import type { ExecElevatedDefaults, ExecToolDefaults } from "../../bash-tools.js";
 import type { MessagingToolSend } from "../../pi-embedded-messaging.js";
 import type { BlockReplyChunking, ToolResultFormat } from "../../pi-embedded-subscribe.js";
@@ -43,6 +44,8 @@ export type EmbeddedRunAttemptParams = {
   workspaceDir: string;
   agentDir?: string;
   config?: OpenClawConfig;
+  /** Pre-selected context engine (injected by runtime/orchestrator). */
+  contextEngine?: ContextEngine;
   skillsSnapshot?: SkillSnapshot;
   prompt: string;
   images?: ImageContent[];

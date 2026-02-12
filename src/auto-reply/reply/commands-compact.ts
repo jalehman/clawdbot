@@ -1,5 +1,6 @@
 import type { OpenClawConfig } from "../../config/config.js";
 import type { CommandHandler } from "./commands-types.js";
+import { resolveRuntimeContextEngine } from "../../agents/context-engine-selection.js";
 import {
   abortEmbeddedPiRun,
   compactEmbeddedPiSession,
@@ -71,6 +72,17 @@ export const handleCompactCommand: CommandHandler = async (params) => {
     agentId: params.agentId,
     isGroup: params.isGroup,
   });
+  const contextEngineSelection = resolveRuntimeContextEngine({ config: params.cfg });
+  if (contextEngineSelection.warning) {
+    logVerbose(contextEngineSelection.warning);
+  }
+  const requestedContextEngineId = params.cfg.contextEngine?.engine?.trim();
+  if (!contextEngineSelection.engine && contextEngineSelection.error && requestedContextEngineId) {
+    logVerbose(
+      `Context engine "${requestedContextEngineId}" unavailable for /compact; ` +
+        `using inline fallback (${contextEngineSelection.error})`,
+    );
+  }
   const result = await compactEmbeddedPiSession({
     sessionId,
     sessionKey: params.sessionKey,
@@ -82,6 +94,7 @@ export const handleCompactCommand: CommandHandler = async (params) => {
     sessionFile: resolveSessionFilePath(sessionId, params.sessionEntry),
     workspaceDir: params.workspaceDir,
     config: params.cfg,
+    contextEngine: contextEngineSelection.engine,
     skillsSnapshot: params.sessionEntry.skillsSnapshot,
     provider: params.provider,
     model: params.model,

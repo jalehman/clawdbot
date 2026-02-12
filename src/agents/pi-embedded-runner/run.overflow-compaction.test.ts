@@ -8,6 +8,22 @@ vi.mock("./compact.js", () => ({
   compactEmbeddedPiSessionDirect: vi.fn(),
 }));
 
+const { testContextEngine } = vi.hoisted(() => ({
+  testContextEngine: {
+    id: "test-engine",
+    ingest: vi.fn(async () => ({ messages: [] })),
+    assemble: vi.fn(async () => ({ messages: [] })),
+    compact: vi.fn(async () => ({ ok: true, compacted: false })),
+  },
+}));
+
+vi.mock("../context-engine-selection.js", () => ({
+  resolveRuntimeContextEngine: vi.fn(() => ({
+    engine: testContextEngine,
+    resolvedId: "test-engine",
+  })),
+}));
+
 vi.mock("./model.js", () => ({
   resolveModel: vi.fn(() => ({
     model: {
@@ -158,6 +174,7 @@ vi.mock("../pi-embedded-helpers.js", async () => {
 });
 
 import type { EmbeddedRunAttemptResult } from "./run/types.js";
+import { resolveRuntimeContextEngine } from "../context-engine-selection.js";
 import { compactEmbeddedPiSessionDirect } from "./compact.js";
 import { log } from "./logger.js";
 import { runEmbeddedPiAgent } from "./run.js";
@@ -169,6 +186,7 @@ import {
 
 const mockedRunEmbeddedAttempt = vi.mocked(runEmbeddedAttempt);
 const mockedCompactDirect = vi.mocked(compactEmbeddedPiSessionDirect);
+const mockedResolveRuntimeContextEngine = vi.mocked(resolveRuntimeContextEngine);
 const mockedSessionLikelyHasOversizedToolResults = vi.mocked(sessionLikelyHasOversizedToolResults);
 const mockedTruncateOversizedToolResultsInSession = vi.mocked(
   truncateOversizedToolResultsInSession,
@@ -207,6 +225,10 @@ const baseParams = {
 describe("overflow compaction in run loop", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedResolveRuntimeContextEngine.mockReturnValue({
+      engine: testContextEngine,
+      resolvedId: "test-engine",
+    });
     mockedSessionLikelyHasOversizedToolResults.mockReturnValue(false);
     mockedTruncateOversizedToolResultsInSession.mockResolvedValue({
       truncated: false,
@@ -234,11 +256,21 @@ describe("overflow compaction in run loop", () => {
 
     const result = await runEmbeddedPiAgent(baseParams);
 
+    expect(mockedResolveRuntimeContextEngine).toHaveBeenCalledTimes(1);
     expect(mockedCompactDirect).toHaveBeenCalledTimes(1);
     expect(mockedCompactDirect).toHaveBeenCalledWith(
-      expect.objectContaining({ authProfileId: "test-profile" }),
+      expect.objectContaining({
+        authProfileId: "test-profile",
+        contextEngine: testContextEngine,
+      }),
     );
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(mockedRunEmbeddedAttempt).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        contextEngine: testContextEngine,
+      }),
+    );
     expect(log.warn).toHaveBeenCalledWith(
       expect.stringContaining(
         "context overflow detected (attempt 1/3); attempting auto-compaction",

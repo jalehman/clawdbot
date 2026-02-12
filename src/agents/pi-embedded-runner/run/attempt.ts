@@ -4,6 +4,7 @@ import { streamSimple } from "@mariozechner/pi-ai";
 import { createAgentSession, SessionManager, SettingsManager } from "@mariozechner/pi-coding-agent";
 import fs from "node:fs/promises";
 import os from "node:os";
+import type { ContextEngine } from "../../../context-engine/types.js";
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
 import { resolveHeartbeatPrompt } from "../../../auto-reply/heartbeat.js";
 import { resolveChannelCapabilities } from "../../../config/channel-capabilities.js";
@@ -137,6 +138,36 @@ export function injectHistoryImagesIntoMessages(
   }
 
   return didMutate;
+}
+
+export async function assembleSessionHistoryWithContextEngine(params: {
+  contextEngine: ContextEngine;
+  messages: AgentMessage[];
+  provider: string;
+  modelId: string;
+  sessionId: string;
+  historyTurnLimit?: number;
+  ingestMeta?: Record<string, unknown>;
+  assembleMeta?: Record<string, unknown>;
+}): Promise<AgentMessage[]> {
+  const ingested = await params.contextEngine.ingest({
+    messages: params.messages,
+    provider: params.provider,
+    modelId: params.modelId,
+    sessionId: params.sessionId,
+    meta: params.ingestMeta,
+  });
+  const assembled = await params.contextEngine.assemble({
+    messages: ingested.messages,
+    historyTurnLimit: params.historyTurnLimit,
+    meta: params.assembleMeta
+      ? {
+          ...ingested.meta,
+          ...params.assembleMeta,
+        }
+      : ingested.meta,
+  });
+  return assembled.messages;
 }
 
 export async function runEmbeddedAttempt(
@@ -542,32 +573,51 @@ export async function runEmbeddedAttempt(
       }
 
       try {
-        const prior = await sanitizeSessionHistory({
-          messages: activeSession.messages,
-          modelApi: params.model.api,
-          modelId: params.modelId,
-          provider: params.provider,
-          sessionManager,
-          sessionId: params.sessionId,
-          policy: transcriptPolicy,
-        });
-        cacheTrace?.recordStage("session:sanitized", { messages: prior });
-        const validatedGemini = transcriptPolicy.validateGeminiTurns
-          ? validateGeminiTurns(prior)
-          : prior;
-        const validated = transcriptPolicy.validateAnthropicTurns
-          ? validateAnthropicTurns(validatedGemini)
-          : validatedGemini;
-        const truncated = limitHistoryTurns(
-          validated,
-          getDmHistoryLimitFromSessionKey(params.sessionKey, params.config),
-        );
-        // Re-run tool_use/tool_result pairing repair after truncation, since
-        // limitHistoryTurns can orphan tool_result blocks by removing the
-        // assistant message that contained the matching tool_use.
-        const limited = transcriptPolicy.repairToolUseResultPairing
-          ? sanitizeToolUseResultPairing(truncated)
-          : truncated;
+        const historyTurnLimit = getDmHistoryLimitFromSessionKey(params.sessionKey, params.config);
+        let limited: AgentMessage[];
+        if (params.contextEngine) {
+          limited = await assembleSessionHistoryWithContextEngine({
+            contextEngine: params.contextEngine,
+            messages: activeSession.messages,
+            provider: params.provider,
+            modelId: params.modelId,
+            sessionId: params.sessionId,
+            historyTurnLimit,
+            ingestMeta: {
+              modelApi: params.model.api,
+              sessionManager,
+              policy: transcriptPolicy,
+            },
+            assembleMeta: {
+              sessionKey: params.sessionKey,
+              config: params.config,
+            },
+          });
+        } else {
+          const prior = await sanitizeSessionHistory({
+            messages: activeSession.messages,
+            modelApi: params.model.api,
+            modelId: params.modelId,
+            provider: params.provider,
+            sessionManager,
+            sessionId: params.sessionId,
+            policy: transcriptPolicy,
+          });
+          cacheTrace?.recordStage("session:sanitized", { messages: prior });
+          const validatedGemini = transcriptPolicy.validateGeminiTurns
+            ? validateGeminiTurns(prior)
+            : prior;
+          const validated = transcriptPolicy.validateAnthropicTurns
+            ? validateAnthropicTurns(validatedGemini)
+            : validatedGemini;
+          const truncated = limitHistoryTurns(validated, historyTurnLimit);
+          // Re-run tool_use/tool_result pairing repair after truncation, since
+          // limitHistoryTurns can orphan tool_result blocks by removing the
+          // assistant message that contained the matching tool_use.
+          limited = transcriptPolicy.repairToolUseResultPairing
+            ? sanitizeToolUseResultPairing(truncated)
+            : truncated;
+        }
         cacheTrace?.recordStage("session:limited", { messages: limited });
         if (limited.length > 0) {
           activeSession.agent.replaceMessages(limited);

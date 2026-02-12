@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import {
   createAgentSession,
   estimateTokens,
@@ -8,6 +9,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import type { ReasoningLevel, ThinkLevel } from "../../auto-reply/thinking.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import type { ContextEngine } from "../../context-engine/types.js";
 import type { ExecElevatedDefaults } from "../bash-tools.js";
 import type { EmbeddedPiCompactResult } from "./types.js";
 import { resolveHeartbeatPrompt } from "../../auto-reply/heartbeat.js";
@@ -26,6 +28,7 @@ import { resolveOpenClawAgentDir } from "../agent-paths.js";
 import { resolveSessionAgentIds } from "../agent-scope.js";
 import { makeBootstrapWarn, resolveBootstrapContextForRun } from "../bootstrap-files.js";
 import { listChannelSupportedActions, resolveChannelMessageToolHints } from "../channel-tools.js";
+import { resolveRuntimeContextEngine } from "../context-engine-selection.js";
 import { formatUserTime, resolveUserTimeFormat, resolveUserTimezone } from "../date-time.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../defaults.js";
 import { resolveOpenClawDocsPath } from "../docs-path.js";
@@ -96,6 +99,8 @@ export type CompactEmbeddedPiSessionParams = {
   workspaceDir: string;
   agentDir?: string;
   config?: OpenClawConfig;
+  /** Pre-selected context engine (injected by runtime/orchestrator). */
+  contextEngine?: ContextEngine;
   skillsSnapshot?: SkillSnapshot;
   provider?: string;
   model?: string;
@@ -108,6 +113,46 @@ export type CompactEmbeddedPiSessionParams = {
   extraSystemPrompt?: string;
   ownerNumbers?: string[];
 };
+
+export async function compactSessionWithContextEngine(params: {
+  contextEngine: ContextEngine;
+  messages: AgentMessage[];
+  provider: string;
+  modelId: string;
+  sessionId: string;
+  historyTurnLimit?: number;
+  customInstructions?: string;
+  replaceMessages: (messages: AgentMessage[]) => void;
+  ingestMeta?: Record<string, unknown>;
+  assembleMeta?: Record<string, unknown>;
+  compactMeta?: Record<string, unknown>;
+}): Promise<EmbeddedPiCompactResult> {
+  const ingested = await params.contextEngine.ingest({
+    messages: params.messages,
+    provider: params.provider,
+    modelId: params.modelId,
+    sessionId: params.sessionId,
+    meta: params.ingestMeta,
+  });
+  const assembled = await params.contextEngine.assemble({
+    messages: ingested.messages,
+    historyTurnLimit: params.historyTurnLimit,
+    meta: params.assembleMeta
+      ? {
+          ...ingested.meta,
+          ...params.assembleMeta,
+        }
+      : ingested.meta,
+  });
+  if (assembled.messages.length > 0) {
+    params.replaceMessages(assembled.messages);
+  }
+  return params.contextEngine.compact({
+    messages: assembled.messages,
+    customInstructions: params.customInstructions,
+    meta: params.compactMeta,
+  });
+}
 
 /**
  * Core compaction logic without lane queueing.
@@ -135,6 +180,20 @@ export async function compactEmbeddedPiSessionDirect(
       compacted: false,
       reason: error ?? `Unknown model: ${provider}/${modelId}`,
     };
+  }
+  const contextEngineSelection = resolveRuntimeContextEngine({
+    config: params.config,
+    engine: params.contextEngine,
+  });
+  const contextEngine = contextEngineSelection.engine;
+  const requestedContextEngineId = params.config?.contextEngine?.engine?.trim();
+  if (contextEngineSelection.warning) {
+    log.warn(contextEngineSelection.warning);
+  }
+  if (!contextEngine && contextEngineSelection.error && requestedContextEngineId) {
+    log.warn(
+      `context engine "${requestedContextEngineId}" is unavailable; falling back to inline compaction handling (${contextEngineSelection.error})`,
+    );
   }
   try {
     const apiKeyInfo = await getApiKeyForModel({
@@ -415,6 +474,32 @@ export async function compactEmbeddedPiSessionDirect(
       applySystemPromptOverrideToSession(session, systemPromptOverride());
 
       try {
+        const historyTurnLimit = getDmHistoryLimitFromSessionKey(params.sessionKey, params.config);
+        if (contextEngine) {
+          return compactSessionWithContextEngine({
+            contextEngine,
+            messages: session.messages,
+            provider,
+            modelId,
+            sessionId: params.sessionId,
+            historyTurnLimit,
+            customInstructions: params.customInstructions,
+            replaceMessages: (messages) => session.agent.replaceMessages(messages),
+            ingestMeta: {
+              modelApi: model.api,
+              sessionManager,
+              policy: transcriptPolicy,
+            },
+            assembleMeta: {
+              sessionKey: params.sessionKey,
+              config: params.config,
+            },
+            compactMeta: {
+              session,
+              estimateTokens,
+            },
+          });
+        }
         const prior = await sanitizeSessionHistory({
           messages: session.messages,
           modelApi: model.api,
@@ -430,10 +515,7 @@ export async function compactEmbeddedPiSessionDirect(
         const validated = transcriptPolicy.validateAnthropicTurns
           ? validateAnthropicTurns(validatedGemini)
           : validatedGemini;
-        const truncated = limitHistoryTurns(
-          validated,
-          getDmHistoryLimitFromSessionKey(params.sessionKey, params.config),
-        );
+        const truncated = limitHistoryTurns(validated, historyTurnLimit);
         // Re-run tool_use/tool_result pairing repair after truncation, since
         // limitHistoryTurns can orphan tool_result blocks by removing the
         // assistant message that contained the matching tool_use.

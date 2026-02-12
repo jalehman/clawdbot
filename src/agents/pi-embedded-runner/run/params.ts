@@ -2,6 +2,7 @@ import type { ImageContent } from "@mariozechner/pi-ai";
 import type { ReasoningLevel, ThinkLevel, VerboseLevel } from "../../../auto-reply/thinking.js";
 import type { AgentStreamParams } from "../../../commands/agent/types.js";
 import type { OpenClawConfig } from "../../../config/config.js";
+import type { ContextEngine } from "../../../context-engine/types.js";
 import type { enqueueCommand } from "../../../process/command-queue.js";
 import type { ExecElevatedDefaults, ExecToolDefaults } from "../../bash-tools.js";
 import type { BlockReplyChunking, ToolResultFormat } from "../../pi-embedded-subscribe.js";
@@ -58,6 +59,8 @@ export type RunEmbeddedPiAgentParams = {
   workspaceDir: string;
   agentDir?: string;
   config?: OpenClawConfig;
+  /** Pre-selected context engine (injected by runtime/orchestrator). */
+  contextEngine?: ContextEngine;
   skillsSnapshot?: SkillSnapshot;
   prompt: string;
   images?: ImageContent[];
