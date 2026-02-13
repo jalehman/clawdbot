@@ -34,6 +34,8 @@ import { createContextAssembler } from "./context-assembler.js";
 import { createConversationStore } from "./conversation-store.js";
 import { ExpansionGrantRegistry } from "./expansion-auth.js";
 import { ingestCanonicalTranscript, resolveConversationId } from "./ingestion.js";
+import { createLcmIntegrityChecker } from "./integrity-checker.js";
+import { createLcmMetrics } from "./observability.js";
 import { createLcmRetrievalEngine } from "./retrieval-engine.js";
 import { createLcmStorageBackend } from "./storage/backend.js";
 import {
@@ -52,7 +54,7 @@ type LcmPluginRuntime = LcmRuntime & {
   ensureReady: () => Promise<void>;
 };
 
-function createScaffoldRuntime(): LcmPluginRuntime {
+function createScaffoldRuntime(logMetrics?: (message: string) => void): LcmPluginRuntime {
   const storage = createLcmStorageBackend({
     sqlite: {
       dbPath: path.join(resolveStateDir(), "lcm", "lcm.sqlite"),
@@ -61,6 +63,15 @@ function createScaffoldRuntime(): LcmPluginRuntime {
   const tokenEstimator = createPlaceholderTokenEstimator();
   const store = createConversationStore({ storage });
   const expansionAuth = new ExpansionGrantRegistry();
+  const metrics = createLcmMetrics({
+    onEvent(event) {
+      if (!logMetrics) {
+        return;
+      }
+      logMetrics(`lcm.metrics ${JSON.stringify(event)}`);
+    },
+    historyLimit: 100,
+  });
   let readyPromise: Promise<void> | null = null;
   return {
     expansionAuth,
@@ -72,11 +83,17 @@ function createScaffoldRuntime(): LcmPluginRuntime {
     compaction: createCompactionEngine({
       store,
       tokenEstimator,
+      metrics,
     }),
     retrieval: createLcmRetrievalEngine({
       backend: storage,
       tokenEstimator,
       expansionAuth,
+      metrics,
+    }),
+    integrity: createLcmIntegrityChecker({
+      backend: storage,
+      metrics,
     }),
     ensureReady() {
       if (!readyPromise) {
@@ -547,7 +564,9 @@ const lcmPlugin: OpenClawPluginDefinition = {
       config: api.config,
       pluginConfig: api.pluginConfig,
     });
-    const runtime = createScaffoldRuntime();
+    const runtime = createScaffoldRuntime((message) => {
+      api.logger.debug?.(message);
+    });
 
     if (!registeredContextEngineIds().includes(LCM_CONTEXT_ENGINE_ID)) {
       registerContextEngine(LCM_CONTEXT_ENGINE_ID, () =>

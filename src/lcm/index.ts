@@ -21,6 +21,23 @@ export {
 export { createContextAssembler } from "./context-assembler.js";
 export { createCompactionEngine } from "./compaction-engine.js";
 export {
+  createLcmIntegrityChecker,
+  SqliteLcmIntegrityChecker,
+  type LcmIntegrityCheckMode,
+  type LcmIntegrityReport,
+  type LcmIntegrityRepairAction,
+  type LcmIntegrityRepairPlan,
+  type LcmIntegrityRepairResult,
+  type LcmIntegrityViolation,
+  type LcmIntegrityViolationCode,
+} from "./integrity-checker.js";
+export {
+  createLcmMetrics,
+  type LcmMetricEvent,
+  type LcmMetrics,
+  type LcmMetricsSnapshot,
+} from "./observability.js";
+export {
   ingestCanonicalTranscript,
   resolveConversationId,
   type IngestCanonicalTranscriptParams,
