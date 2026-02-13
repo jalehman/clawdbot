@@ -26,3 +26,15 @@ export {
   type IngestCanonicalTranscriptParams,
   type IngestCanonicalTranscriptResult,
 } from "./ingestion.js";
+export {
+  buildExpansionPrompt,
+  parseExpansionResult,
+  SubagentExpansionOrchestrator,
+  type ExpandDeepPassResult,
+  type ExpandDeepRequest,
+  type ExpandDeepResult,
+  type ExpansionStrategy,
+  type ParsedExpansionResult,
+  type SubagentExpansionRunRequest,
+  type SubagentExpansionRunner,
+} from "./subagent-expansion.js";
