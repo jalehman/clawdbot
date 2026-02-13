@@ -162,7 +162,7 @@ describe("createCompactionEngine", () => {
       includeTombstoned: false,
       limit: 50,
     });
-    const kinds = activeSummaries.map((item) => String(item.metadata.kind ?? ""));
+    const kinds = activeSummaries.map((item) => String(item.metadata?.kind ?? ""));
     expect(kinds).toContain("condensed");
   });
 
