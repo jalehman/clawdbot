@@ -1,3 +1,4 @@
+import type { LcmMetrics } from "./observability.js";
 import type { LcmStorageBackend } from "./storage/types.js";
 import type { TokenEstimator } from "./token-estimator.js";
 import type {
@@ -89,6 +90,7 @@ type RetrievalGrepMessageRow = {
 export type CreateLcmRetrievalEngineParams = {
   backend: LcmStorageBackend;
   tokenEstimator: TokenEstimator;
+  metrics?: LcmMetrics;
   regexScanLimit?: number;
 };
 
@@ -105,6 +107,7 @@ export function createLcmRetrievalEngine(params: CreateLcmRetrievalEngineParams)
 class SqliteLcmRetrievalEngine implements RetrievalEngine {
   private readonly backend: LcmStorageBackend;
   private readonly tokenEstimator: TokenEstimator;
+  private readonly metrics: LcmMetrics | null;
   private readonly regexScanLimit: number;
 
   /**
@@ -113,6 +116,7 @@ class SqliteLcmRetrievalEngine implements RetrievalEngine {
   constructor(params: CreateLcmRetrievalEngineParams) {
     this.backend = params.backend;
     this.tokenEstimator = params.tokenEstimator;
+    this.metrics = params.metrics ?? null;
     this.regexScanLimit = clampInt(params.regexScanLimit, DEFAULT_REGEX_SCAN_LIMIT, 1, 20_000);
   }
 
@@ -152,23 +156,35 @@ class SqliteLcmRetrievalEngine implements RetrievalEngine {
    * Execute regex or full-text search over messages/summaries.
    */
   async grep(input: RetrievalGrepInput): Promise<RetrievalGrepResult> {
+    const startedAtMs = Date.now();
     const query = normalizeQuery(input.query);
     const mode = normalizeGrepMode(input.mode);
     const scope = normalizeGrepScope(input.scope);
     const limit = clampInt(input.limit, DEFAULT_GREP_LIMIT, 1, MAX_GREP_LIMIT);
     const conversationId = normalizeConversationId(input.conversationId);
 
-    if (mode === "regex") {
-      return this.grepRegex({ query, scope, limit, conversationId });
-    }
+    const result =
+      mode === "regex"
+        ? this.grepRegex({ query, scope, limit, conversationId })
+        : this.grepFullText({ query, scope, limit, conversationId });
 
-    return this.grepFullText({ query, scope, limit, conversationId });
+    this.metrics?.recordSearchLatency({
+      conversationId,
+      latencyMs: Date.now() - startedAtMs,
+      mode: result.mode,
+      scope: result.scope,
+      scannedCount: result.scannedCount,
+      resultCount: result.matches.length,
+    });
+
+    return result;
   }
 
   /**
    * Expand a summary id through lineage with depth/token/limit bounds.
    */
   async expand(input: RetrievalExpandInput): Promise<RetrievalExpandResult> {
+    const startedAtMs = Date.now();
     const summaryId = normalizeId(input.summaryId);
     if (!summaryId) {
       throw new Error("summaryId is required.");
@@ -288,7 +304,7 @@ class SqliteLcmRetrievalEngine implements RetrievalEngine {
       }
     }
 
-    return {
+    const result: RetrievalExpandResult = {
       rootSummaryId: root.item_id as SummaryId,
       conversationId: root.conversation_id as ConversationId,
       summaries,
@@ -297,6 +313,16 @@ class SqliteLcmRetrievalEngine implements RetrievalEngine {
       truncated,
       nextSummaryIds,
     };
+
+    this.metrics?.recordExpandLatency({
+      conversationId: result.conversationId,
+      latencyMs: Date.now() - startedAtMs,
+      depth: depthLimit,
+      truncated: result.truncated,
+      resultCount: result.summaries.length + result.messages.length,
+    });
+
+    return result;
   }
 
   /**

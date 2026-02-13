@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import type { LcmMetrics } from "./observability.js";
 import type { TokenEstimator } from "./token-estimator.js";
 import type {
   CompactionDecision,
@@ -24,6 +26,7 @@ const MIN_ITEMS_FOR_SUMMARY = 2;
 type CreateCompactionEngineParams = {
   store: ConversationStore;
   tokenEstimator: TokenEstimator;
+  metrics?: LcmMetrics;
   leafBatchSize?: number;
   condensedBatchSize?: number;
 };
@@ -51,6 +54,7 @@ export function createCompactionEngine(params: CreateCompactionEngineParams): Co
 class DefaultCompactionEngine implements CompactionEngine {
   private readonly store: ConversationStore;
   private readonly tokenEstimator: TokenEstimator;
+  private readonly metrics: LcmMetrics | null;
   private readonly leafBatchSize: number;
   private readonly condensedBatchSize: number;
   private readonly conversationLocks = new Map<string, Promise<void>>();
@@ -61,6 +65,7 @@ class DefaultCompactionEngine implements CompactionEngine {
   constructor(params: CreateCompactionEngineParams) {
     this.store = params.store;
     this.tokenEstimator = params.tokenEstimator;
+    this.metrics = params.metrics ?? null;
     this.leafBatchSize = clampInt(params.leafBatchSize, DEFAULT_LEAF_BATCH_SIZE, 2, 64);
     this.condensedBatchSize = clampInt(
       params.condensedBatchSize,
@@ -104,6 +109,7 @@ class DefaultCompactionEngine implements CompactionEngine {
    */
   async compact(request: CompactionRequest): Promise<CompactionResult> {
     return this.withConversationLock(request.conversationId, async () => {
+      const compactionId = randomUUID();
       const decision = await this.evaluate({
         conversationId: request.conversationId,
         assembledTokens: request.assembledTokens,
@@ -114,9 +120,20 @@ class DefaultCompactionEngine implements CompactionEngine {
       });
 
       const tokensBefore = await this.estimateActiveContextTokens(request.conversationId);
+      this.metrics?.recordContextTokens({
+        conversationId: request.conversationId,
+        tokens: tokensBefore,
+      });
       const activeMessageCountBefore = decision.activeMessageCount;
 
       if (!decision.shouldCompact) {
+        this.metrics?.recordCompactionRun({
+          conversationId: request.conversationId,
+          compactionId,
+          triggerReason: decision.reason,
+          tokenBefore: tokensBefore,
+          tokenAfter: tokensBefore,
+        });
         return {
           compacted: false,
           summaries: [],
@@ -144,6 +161,12 @@ class DefaultCompactionEngine implements CompactionEngine {
           break;
         }
         summaries.push(leaf.summary);
+        this.metrics?.recordSummaryCreated({
+          conversationId: request.conversationId,
+          compactionId,
+          summaryId: leaf.summary.id,
+          kind: leaf.summary.kind,
+        });
         leafBatches += 1;
 
         const remainingTokens = await this.estimateActiveContextTokens(request.conversationId);
@@ -161,6 +184,12 @@ class DefaultCompactionEngine implements CompactionEngine {
           break;
         }
         summaries.push(condensed.summary);
+        this.metrics?.recordSummaryCreated({
+          conversationId: request.conversationId,
+          compactionId,
+          summaryId: condensed.summary.id,
+          kind: condensed.summary.kind,
+        });
         condensedBatches += 1;
 
         const remainingTokens = await this.estimateActiveContextTokens(request.conversationId);
@@ -170,6 +199,17 @@ class DefaultCompactionEngine implements CompactionEngine {
       }
 
       const tokensAfter = await this.estimateActiveContextTokens(request.conversationId);
+      this.metrics?.recordContextTokens({
+        conversationId: request.conversationId,
+        tokens: tokensAfter,
+      });
+      this.metrics?.recordCompactionRun({
+        conversationId: request.conversationId,
+        compactionId,
+        triggerReason: decision.reason,
+        tokenBefore: tokensBefore,
+        tokenAfter: tokensAfter,
+      });
       const activeMessageCountAfter = await this.countActiveMessages(request.conversationId);
 
       return {
