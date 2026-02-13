@@ -37,6 +37,15 @@ function createSessionFilePath(name: string): string {
   return join(tempDir, `${name}.jsonl`);
 }
 
+function createEngineWithConfig(overrides: Partial<LcmConfig>): LcmContextEngine {
+  const tempDir = mkdtempSync(join(tmpdir(), "openclaw-lcm-engine-"));
+  tempDirs.push(tempDir);
+  return new LcmContextEngine({
+    ...createTestConfig(join(tempDir, "lcm.db")),
+    ...overrides,
+  });
+}
+
 function makeMessage(params: { role?: string; content: unknown }): AgentMessage {
   return {
     role: (params.role ?? "assistant") as AgentMessage["role"],
@@ -495,5 +504,54 @@ describe("LcmContextEngine fidelity and token budget", () => {
     expect(result.compacted).toBe(false);
     expect(evaluateSpy).toHaveBeenCalledWith(expect.any(Number), 123);
     expect(compactSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ── Compact token budget plumbing ───────────────────────────────────────────
+
+describe("LcmContextEngine.compact token budget plumbing", () => {
+  it("fails when compact token budget is missing", async () => {
+    const engine = createEngine();
+    const sessionId = "session-missing-budget";
+
+    await engine.ingest({
+      sessionId,
+      message: { role: "user", content: "hello compact" } as AgentMessage,
+    });
+
+    const result = await engine.compact({
+      sessionId,
+      sessionFile: "/tmp/session.jsonl",
+      legacyParams: {
+        provider: "anthropic",
+        model: "claude-opus-4-5",
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.compacted).toBe(false);
+    expect(result.reason).toContain("missing token budget");
+  });
+
+  it("accepts explicit token budget without falling back to defaults", async () => {
+    const engine = createEngineWithConfig({ contextThreshold: 0.9 });
+    const sessionId = "session-explicit-budget";
+
+    await engine.ingest({
+      sessionId,
+      message: { role: "user", content: "small message" } as AgentMessage,
+    });
+
+    const result = await engine.compact({
+      sessionId,
+      sessionFile: "/tmp/session.jsonl",
+      legacyParams: {
+        tokenBudget: 10_000,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.compacted).toBe(false);
+    expect(result.reason).toBe("below threshold");
   });
 });

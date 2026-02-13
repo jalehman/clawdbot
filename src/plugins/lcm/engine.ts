@@ -20,6 +20,7 @@ import {
   type MessagePartType,
 } from "./store/conversation-store.js";
 import { SummaryStore } from "./store/summary-store.js";
+import { createLcmSummarizeFromLegacyParams } from "./summarize.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -513,22 +514,47 @@ export class LcmContextEngine implements ContextEngine {
 
     const conversationId = conversation.conversationId;
 
-    // Extract summarize callback from legacyParams if provided,
-    // otherwise use a built-in placeholder that delegates to the
-    // LLM provider (will be wired in the runtime integration task).
     const lp = params.legacyParams ?? {};
-    const summarize: (text: string, aggressive?: boolean) => Promise<string> =
-      typeof lp.summarize === "function"
-        ? (lp.summarize as (text: string, aggressive?: boolean) => Promise<string>)
-        : createDefaultSummarize(params.customInstructions);
-
-    // Determine token budget from legacyParams or use a sensible default
     const tokenBudget =
-      typeof params.tokenBudget === "number"
-        ? params.tokenBudget
-        : typeof lp.tokenBudget === "number"
-          ? lp.tokenBudget
-          : 128_000;
+      typeof params.tokenBudget === "number" &&
+      Number.isFinite(params.tokenBudget) &&
+      params.tokenBudget > 0
+        ? Math.floor(params.tokenBudget)
+        : typeof lp.tokenBudget === "number" &&
+            Number.isFinite(lp.tokenBudget) &&
+            lp.tokenBudget > 0
+        ? Math.floor(lp.tokenBudget)
+        : undefined;
+    if (!tokenBudget) {
+      return {
+        ok: false,
+        compacted: false,
+        reason: "missing token budget in compact params",
+      };
+    }
+
+    // 1) Honor an explicitly injected summarize callback.
+    // 2) Try model-backed summarization from runtime provider/model params.
+    // 3) Fall back to deterministic truncation only if summarizer setup fails.
+    const summarize = await (async (): Promise<
+      (text: string, aggressive?: boolean) => Promise<string>
+    > => {
+      if (typeof lp.summarize === "function") {
+        return lp.summarize as (text: string, aggressive?: boolean) => Promise<string>;
+      }
+      try {
+        const runtimeSummarizer = await createLcmSummarizeFromLegacyParams({
+          legacyParams: lp,
+          customInstructions: params.customInstructions,
+        });
+        if (runtimeSummarizer) {
+          return runtimeSummarizer;
+        }
+      } catch {
+        // Preserve compaction behavior even when model-backed setup fails.
+      }
+      return createEmergencyFallbackSummarize();
+    })();
 
     // Evaluate whether compaction is needed
     const decision = await this.compaction.evaluate(conversationId, tokenBudget);
@@ -584,22 +610,21 @@ export class LcmContextEngine implements ContextEngine {
   }
 }
 
-// ── Default summarization stub ──────────────────────────────────────────────
+// ── Emergency fallback summarization ────────────────────────────────────────
 
 /**
- * Creates a default summarization function that produces a simple truncation.
+ * Creates a deterministic truncation summarizer used only as an emergency
+ * fallback when the model-backed summarizer cannot be created.
  *
- * This is a placeholder until the runtime integration wires in the real
- * LLM-powered summarization. The real implementation will call the
- * configured provider with appropriate prompts for normal vs aggressive mode.
+ * CompactionEngine already escalates normal -> aggressive -> fallback for
+ * convergence. This function simply provides a stable baseline summarize
+ * callback to keep compaction operable when runtime setup is unavailable.
  */
-function createDefaultSummarize(
-  _customInstructions?: string,
-): (text: string, aggressive?: boolean) => Promise<string> {
+function createEmergencyFallbackSummarize(): (
+  text: string,
+  aggressive?: boolean,
+) => Promise<string> {
   return async (text: string, aggressive?: boolean): Promise<string> => {
-    // Placeholder: truncate to target size.
-    // The real implementation will be an LLM call injected via legacyParams.summarize
-    // or wired through the provider system in the runtime integration task.
     const maxChars = aggressive ? 600 * 4 : 900 * 4;
     if (text.length <= maxChars) {
       return text;

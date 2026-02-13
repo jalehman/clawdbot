@@ -112,6 +112,7 @@ export const handleCompactCommand: CommandHandler = async (params) => {
         skillsSnapshot: sessionEntry.skillsSnapshot,
         provider: params.provider,
         model: params.model,
+        tokenBudget: params.contextTokens,
         thinkLevel,
         bashElevated: {
           enabled: false,

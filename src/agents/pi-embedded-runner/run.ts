@@ -598,6 +598,7 @@ export async function runEmbeddedPiAgent(
                   provider,
                   model: modelId,
                   runId: params.runId,
+                  tokenBudget: ctxInfo.tokens,
                   thinkLevel,
                   reasoningLevel: params.reasoningLevel,
                   bashElevated: params.bashElevated,
