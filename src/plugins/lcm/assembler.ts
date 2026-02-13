@@ -249,13 +249,35 @@ export class ContextAssembler {
 
     const content = msg.content;
     const role = mapRole(msg.role);
+    const tokenCount = msg.tokenCount > 0 ? msg.tokenCount : estimateTokens(content);
 
     // Cast: these are reconstructed from DB storage, not live agent messages,
     // so they won't carry the full AgentMessage metadata (timestamp, usage, etc.)
     return {
       ordinal: item.ordinal,
-      message: { role, content } as AgentMessage,
-      tokens: msg.tokenCount > 0 ? msg.tokenCount : estimateTokens(content),
+      message: {
+        role,
+        content: role === "assistant" ? [{ type: "text", text: content }] : content,
+        ...(role === "assistant"
+          ? {
+              usage: {
+                input: 0,
+                output: tokenCount,
+                cacheRead: 0,
+                cacheWrite: 0,
+                totalTokens: tokenCount,
+                cost: {
+                  input: 0,
+                  output: 0,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                  total: 0,
+                },
+              },
+            }
+          : {}),
+      } as AgentMessage,
+      tokens: tokenCount,
       isMessage: true,
     };
   }
