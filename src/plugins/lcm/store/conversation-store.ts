@@ -1,4 +1,4 @@
-import type postgres from "postgres";
+import type { DatabaseSync } from "node:sqlite";
 
 export type ConversationId = number;
 export type MessageId = number;
@@ -51,17 +51,14 @@ export type MessageSearchResult = {
   rank?: number;
 };
 
-/** Escape null bytes (0x00) which PostgreSQL text columns reject. */
-const escNull = (s: string) => s.replaceAll("\0", "\\x00");
-
 // ── DB row shapes (snake_case) ────────────────────────────────────────────────
 
 interface ConversationRow {
   conversation_id: number;
   session_id: string;
   title: string | null;
-  created_at: Date;
-  updated_at: Date;
+  created_at: string;
+  updated_at: string;
 }
 
 interface MessageRow {
@@ -71,7 +68,7 @@ interface MessageRow {
   role: MessageRole;
   content: string;
   token_count: number;
-  created_at: Date;
+  created_at: string;
 }
 
 interface MessageSearchRow {
@@ -97,8 +94,8 @@ function toConversationRecord(row: ConversationRow): ConversationRecord {
     conversationId: row.conversation_id,
     sessionId: row.session_id,
     title: row.title,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    createdAt: new Date(row.created_at),
+    updatedAt: new Date(row.updated_at),
   };
 }
 
@@ -110,7 +107,7 @@ function toMessageRecord(row: MessageRow): MessageRecord {
     role: row.role,
     content: row.content,
     tokenCount: row.token_count,
-    createdAt: row.created_at,
+    createdAt: new Date(row.created_at),
   };
 }
 
@@ -127,37 +124,42 @@ function toSearchResult(row: MessageSearchRow): MessageSearchResult {
 // ── ConversationStore ─────────────────────────────────────────────────────────
 
 export class ConversationStore {
-  constructor(private sql: ReturnType<typeof postgres>) {}
+  constructor(private db: DatabaseSync) {}
 
   // ── Conversation operations ───────────────────────────────────────────────
 
   async createConversation(input: CreateConversationInput): Promise<ConversationRecord> {
-    const [row] = await this.sql<ConversationRow[]>`
-      INSERT INTO conversations (session_id, title)
-      VALUES (${input.sessionId}, ${input.title ?? null})
-      RETURNING conversation_id, session_id, title, created_at, updated_at
-    `;
+    const result = this.db.prepare(
+      `INSERT INTO conversations (session_id, title) VALUES (?, ?)`,
+    ).run(input.sessionId, input.title ?? null);
+
+    const row = this.db.prepare(
+      `SELECT conversation_id, session_id, title, created_at, updated_at
+       FROM conversations WHERE conversation_id = ?`,
+    ).get(Number(result.lastInsertRowid)) as unknown as ConversationRow;
+
     return toConversationRecord(row);
   }
 
   async getConversation(conversationId: ConversationId): Promise<ConversationRecord | null> {
-    const rows = await this.sql<ConversationRow[]>`
-      SELECT conversation_id, session_id, title, created_at, updated_at
-      FROM conversations
-      WHERE conversation_id = ${conversationId}
-    `;
-    return rows[0] ? toConversationRecord(rows[0]) : null;
+    const row = this.db.prepare(
+      `SELECT conversation_id, session_id, title, created_at, updated_at
+       FROM conversations WHERE conversation_id = ?`,
+    ).get(conversationId) as unknown as ConversationRow | undefined;
+
+    return row ? toConversationRecord(row) : null;
   }
 
   async getConversationBySessionId(sessionId: string): Promise<ConversationRecord | null> {
-    const rows = await this.sql<ConversationRow[]>`
-      SELECT conversation_id, session_id, title, created_at, updated_at
-      FROM conversations
-      WHERE session_id = ${sessionId}
-      ORDER BY created_at DESC
-      LIMIT 1
-    `;
-    return rows[0] ? toConversationRecord(rows[0]) : null;
+    const row = this.db.prepare(
+      `SELECT conversation_id, session_id, title, created_at, updated_at
+       FROM conversations
+       WHERE session_id = ?
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    ).get(sessionId) as unknown as ConversationRow | undefined;
+
+    return row ? toConversationRecord(row) : null;
   }
 
   async getOrCreateConversation(sessionId: string, title?: string): Promise<ConversationRecord> {
@@ -171,17 +173,29 @@ export class ConversationStore {
   // ── Message operations ────────────────────────────────────────────────────
 
   async createMessage(input: CreateMessageInput): Promise<MessageRecord> {
-    const [row] = await this.sql<MessageRow[]>`
-      INSERT INTO messages (conversation_id, seq, role, content, token_count)
-      VALUES (
-        ${input.conversationId},
-        ${input.seq},
-        ${input.role}::message_role,
-        ${escNull(input.content)},
-        ${input.tokenCount}
-      )
-      RETURNING message_id, conversation_id, seq, role, content, token_count, created_at
-    `;
+    const result = this.db.prepare(
+      `INSERT INTO messages (conversation_id, seq, role, content, token_count)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      input.conversationId,
+      input.seq,
+      input.role,
+      input.content,
+      input.tokenCount,
+    );
+
+    const messageId = Number(result.lastInsertRowid);
+
+    // Index in FTS5
+    this.db.prepare(
+      `INSERT INTO messages_fts(rowid, content) VALUES (?, ?)`,
+    ).run(messageId, input.content);
+
+    const row = this.db.prepare(
+      `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+       FROM messages WHERE message_id = ?`,
+    ).get(messageId) as unknown as MessageRow;
+
     return toMessageRecord(row);
   }
 
@@ -193,52 +207,46 @@ export class ConversationStore {
     const limit = opts?.limit;
 
     if (limit != null) {
-      const rows = await this.sql<MessageRow[]>`
-        SELECT message_id, conversation_id, seq, role, content, token_count, created_at
-        FROM messages
-        WHERE conversation_id = ${conversationId}
-          AND seq > ${afterSeq}
-        ORDER BY seq
-        LIMIT ${limit}
-      `;
+      const rows = this.db.prepare(
+        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+         FROM messages
+         WHERE conversation_id = ? AND seq > ?
+         ORDER BY seq
+         LIMIT ?`,
+      ).all(conversationId, afterSeq, limit) as unknown as MessageRow[];
       return rows.map(toMessageRecord);
     }
 
-    const rows = await this.sql<MessageRow[]>`
-      SELECT message_id, conversation_id, seq, role, content, token_count, created_at
-      FROM messages
-      WHERE conversation_id = ${conversationId}
-        AND seq > ${afterSeq}
-      ORDER BY seq
-    `;
+    const rows = this.db.prepare(
+      `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+       FROM messages
+       WHERE conversation_id = ? AND seq > ?
+       ORDER BY seq`,
+    ).all(conversationId, afterSeq) as unknown as MessageRow[];
     return rows.map(toMessageRecord);
   }
 
   async getMessageById(messageId: MessageId): Promise<MessageRecord | null> {
-    const rows = await this.sql<MessageRow[]>`
-      SELECT message_id, conversation_id, seq, role, content, token_count, created_at
-      FROM messages
-      WHERE message_id = ${messageId}
-    `;
-    return rows[0] ? toMessageRecord(rows[0]) : null;
+    const row = this.db.prepare(
+      `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+       FROM messages WHERE message_id = ?`,
+    ).get(messageId) as unknown as MessageRow | undefined;
+    return row ? toMessageRecord(row) : null;
   }
 
   async getMessageCount(conversationId: ConversationId): Promise<number> {
-    const rows = await this.sql<CountRow[]>`
-      SELECT COUNT(*)::int AS count
-      FROM messages
-      WHERE conversation_id = ${conversationId}
-    `;
-    return rows[0]?.count ?? 0;
+    const row = this.db.prepare(
+      `SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ?`,
+    ).get(conversationId) as unknown as CountRow;
+    return row?.count ?? 0;
   }
 
   async getMaxSeq(conversationId: ConversationId): Promise<number> {
-    const rows = await this.sql<MaxSeqRow[]>`
-      SELECT COALESCE(MAX(seq), 0)::int AS max_seq
-      FROM messages
-      WHERE conversation_id = ${conversationId}
-    `;
-    return rows[0]?.max_seq ?? 0;
+    const row = this.db.prepare(
+      `SELECT COALESCE(MAX(seq), 0) AS max_seq
+       FROM messages WHERE conversation_id = ?`,
+    ).get(conversationId) as unknown as MaxSeqRow;
+    return row?.max_seq ?? 0;
   }
 
   // ── Search ────────────────────────────────────────────────────────────────
@@ -252,77 +260,83 @@ export class ConversationStore {
     return this.searchRegex(input.query, limit, input.conversationId);
   }
 
-  private async searchFullText(
+  private searchFullText(
     query: string,
     limit: number,
     conversationId?: ConversationId,
-  ): Promise<MessageSearchResult[]> {
+  ): MessageSearchResult[] {
     if (conversationId != null) {
-      const rows = await this.sql<MessageSearchRow[]>`
-        SELECT
-          message_id,
-          conversation_id,
-          role,
-          ts_headline('english', content, plainto_tsquery('english', ${query})) AS snippet,
-          ts_rank(content_tsv, plainto_tsquery('english', ${query})) AS rank
-        FROM messages
-        WHERE conversation_id = ${conversationId}
-          AND content_tsv @@ plainto_tsquery('english', ${query})
-        ORDER BY rank DESC
-        LIMIT ${limit}
-      `;
+      const rows = this.db.prepare(
+        `SELECT
+           m.message_id,
+           m.conversation_id,
+           m.role,
+           snippet(messages_fts, 0, '', '', '...', 32) AS snippet,
+           messages_fts.rank
+         FROM messages_fts
+         JOIN messages m ON m.message_id = messages_fts.rowid
+         WHERE messages_fts MATCH ?
+           AND m.conversation_id = ?
+         ORDER BY messages_fts.rank
+         LIMIT ?`,
+      ).all(query, conversationId, limit) as unknown as MessageSearchRow[];
       return rows.map(toSearchResult);
     }
 
-    const rows = await this.sql<MessageSearchRow[]>`
-      SELECT
-        message_id,
-        conversation_id,
-        role,
-        ts_headline('english', content, plainto_tsquery('english', ${query})) AS snippet,
-        ts_rank(content_tsv, plainto_tsquery('english', ${query})) AS rank
-      FROM messages
-      WHERE content_tsv @@ plainto_tsquery('english', ${query})
-      ORDER BY rank DESC
-      LIMIT ${limit}
-    `;
+    const rows = this.db.prepare(
+      `SELECT
+         m.message_id,
+         m.conversation_id,
+         m.role,
+         snippet(messages_fts, 0, '', '', '...', 32) AS snippet,
+         messages_fts.rank
+       FROM messages_fts
+       JOIN messages m ON m.message_id = messages_fts.rowid
+       WHERE messages_fts MATCH ?
+       ORDER BY messages_fts.rank
+       LIMIT ?`,
+    ).all(query, limit) as unknown as MessageSearchRow[];
     return rows.map(toSearchResult);
   }
 
-  private async searchRegex(
+  private searchRegex(
     pattern: string,
     limit: number,
     conversationId?: ConversationId,
-  ): Promise<MessageSearchResult[]> {
+  ): MessageSearchResult[] {
+    // SQLite has no native POSIX regex; fetch candidates and filter in JS
+    const re = new RegExp(pattern);
+
+    let rows: MessageRow[];
     if (conversationId != null) {
-      const rows = await this.sql<MessageSearchRow[]>`
-        SELECT
-          message_id,
-          conversation_id,
-          role,
-          substring(content FROM ${pattern}) AS snippet,
-          0 AS rank
-        FROM messages
-        WHERE conversation_id = ${conversationId}
-          AND content ~ ${pattern}
-        ORDER BY seq
-        LIMIT ${limit}
-      `;
-      return rows.map(toSearchResult);
+      rows = this.db.prepare(
+        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+         FROM messages
+         WHERE conversation_id = ?
+         ORDER BY seq`,
+      ).all(conversationId) as unknown as MessageRow[];
+    } else {
+      rows = this.db.prepare(
+        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+         FROM messages
+         ORDER BY message_id`,
+      ).all() as unknown as MessageRow[];
     }
 
-    const rows = await this.sql<MessageSearchRow[]>`
-      SELECT
-        message_id,
-        conversation_id,
-        role,
-        substring(content FROM ${pattern}) AS snippet,
-        0 AS rank
-      FROM messages
-      WHERE content ~ ${pattern}
-      ORDER BY message_id
-      LIMIT ${limit}
-    `;
-    return rows.map(toSearchResult);
+    const results: MessageSearchResult[] = [];
+    for (const row of rows) {
+      if (results.length >= limit) break;
+      const match = re.exec(row.content);
+      if (match) {
+        results.push({
+          messageId: row.message_id,
+          conversationId: row.conversation_id,
+          role: row.role,
+          snippet: match[0],
+          rank: 0,
+        });
+      }
+    }
+    return results;
   }
 }

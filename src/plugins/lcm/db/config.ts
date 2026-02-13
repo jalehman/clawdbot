@@ -1,6 +1,9 @@
+import { homedir } from "os";
+import { join } from "path";
+
 export type LcmConfig = {
   enabled: boolean;
-  databaseUrl: string;
+  databasePath: string;
   contextThreshold: number;
   freshTailCount: number;
   leafTargetTokens: number;
@@ -12,7 +15,8 @@ export type LcmConfig = {
 export function resolveLcmConfig(env: NodeJS.ProcessEnv = process.env): LcmConfig {
   return {
     enabled: env.LCM_ENABLED === "true",
-    databaseUrl: env.LCM_DATABASE_URL ?? "postgres://localhost:54329/lcm",
+    databasePath:
+      env.LCM_DATABASE_PATH ?? join(homedir(), ".openclaw", "lcm.db"),
     contextThreshold: parseFloat(env.LCM_CONTEXT_THRESHOLD ?? "0.75"),
     freshTailCount: parseInt(env.LCM_FRESH_TAIL_COUNT ?? "8", 10),
     leafTargetTokens: parseInt(env.LCM_LEAF_TARGET_TOKENS ?? "600", 10),

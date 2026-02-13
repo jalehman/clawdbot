@@ -1,22 +1,29 @@
-import postgres from "postgres";
+import type { DatabaseSync } from "node:sqlite";
+import { mkdirSync } from "fs";
+import { dirname } from "path";
+import { requireNodeSqlite } from "../../../memory/sqlite.js";
 
-let _sql: ReturnType<typeof postgres> | null = null;
+let _db: DatabaseSync | null = null;
 
-export function getLcmConnection(databaseUrl: string): ReturnType<typeof postgres> {
-  if (!_sql) {
-    _sql = postgres(databaseUrl, {
-      max: 10,
-      idle_timeout: 20,
-      max_lifetime: 30 * 60,
-      prepare: false, // RDS Proxy compatibility
-    });
+export function getLcmConnection(dbPath: string): DatabaseSync {
+  if (!_db) {
+    // Ensure parent directory exists
+    mkdirSync(dirname(dbPath), { recursive: true });
+
+    const { DatabaseSync } = requireNodeSqlite();
+    _db = new DatabaseSync(dbPath);
+
+    // Enable WAL mode for better concurrent read performance
+    _db.exec("PRAGMA journal_mode = WAL");
+    // Enable foreign key enforcement
+    _db.exec("PRAGMA foreign_keys = ON");
   }
-  return _sql;
+  return _db;
 }
 
-export async function closeLcmConnection(): Promise<void> {
-  if (_sql) {
-    await _sql.end();
-    _sql = null;
+export function closeLcmConnection(): void {
+  if (_db) {
+    _db.close();
+    _db = null;
   }
 }

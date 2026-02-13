@@ -58,10 +58,10 @@ export class LcmContextEngine implements ContextEngine {
   constructor(config?: LcmConfig) {
     this.config = config ?? resolveLcmConfig();
 
-    const sql = getLcmConnection(this.config.databaseUrl);
+    const db = getLcmConnection(this.config.databasePath);
 
-    this.conversationStore = new ConversationStore(sql);
-    this.summaryStore = new SummaryStore(sql);
+    this.conversationStore = new ConversationStore(db);
+    this.summaryStore = new SummaryStore(db);
 
     this.assembler = new ContextAssembler(
       this.conversationStore,
@@ -88,9 +88,10 @@ export class LcmContextEngine implements ContextEngine {
   }
 
   /** Ensure DB schema is up-to-date. Called lazily on first ingest/assemble/compact. */
-  private async ensureMigrated(): Promise<void> {
+  private ensureMigrated(): void {
     if (this.migrated) return;
-    await runLcmMigrations(this.config.databaseUrl);
+    const db = getLcmConnection(this.config.databasePath);
+    runLcmMigrations(db);
     this.migrated = true;
   }
 
@@ -100,7 +101,7 @@ export class LcmContextEngine implements ContextEngine {
     sessionId: string;
     message: AgentMessage;
   }): Promise<IngestResult> {
-    await this.ensureMigrated();
+    this.ensureMigrated();
 
     const { sessionId, message } = params;
     const content =
@@ -140,7 +141,7 @@ export class LcmContextEngine implements ContextEngine {
     messages: AgentMessage[];
     tokenBudget?: number;
   }): Promise<AssembleResult> {
-    await this.ensureMigrated();
+    this.ensureMigrated();
 
     const { sessionId, tokenBudget } = params;
 
@@ -174,7 +175,7 @@ export class LcmContextEngine implements ContextEngine {
     customInstructions?: string;
     legacyParams?: Record<string, unknown>;
   }): Promise<CompactResult> {
-    await this.ensureMigrated();
+    this.ensureMigrated();
 
     const { sessionId } = params;
 
@@ -243,7 +244,7 @@ export class LcmContextEngine implements ContextEngine {
   }
 
   async dispose(): Promise<void> {
-    await closeLcmConnection();
+    closeLcmConnection();
   }
 
   // ── Public accessors for retrieval (used by subagent expansion) ─────────
