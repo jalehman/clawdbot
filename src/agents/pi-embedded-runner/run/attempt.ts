@@ -779,6 +779,7 @@ export async function runEmbeddedAttempt(
         getLastToolError,
         getUsageTotals,
         getCompactionCount,
+        getLastCompactionResult,
       } = subscription;
 
       const queueHandle: EmbeddedPiQueueHandle = {
@@ -1057,6 +1058,21 @@ export async function runEmbeddedAttempt(
         // Ingest new messages into the context engine's canonical store.
         // Legacy engine: no-op. LCM engine: persists to SQLite for future assembly/compaction.
         if (params.contextEngine) {
+          const autoCompactionResult = getLastCompactionResult?.();
+          if (autoCompactionResult?.summary) {
+            try {
+              await params.contextEngine.ingest({
+                sessionId: params.sessionId,
+                message: {
+                  role: "user",
+                  content: autoCompactionResult.summary,
+                } as AgentMessage,
+              });
+            } catch (ingestErr) {
+              log.warn(`context engine auto-compaction ingest failed: ${String(ingestErr)}`);
+            }
+          }
+
           const newMessages = messagesSnapshot.slice(prePromptMessageCount);
           for (const msg of newMessages) {
             try {

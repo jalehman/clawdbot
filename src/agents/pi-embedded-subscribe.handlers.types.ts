@@ -30,6 +30,12 @@ export type ToolCallSummary = {
   actionFingerprint?: string;
 };
 
+export type EmbeddedCompactionResult = {
+  summary: string;
+  tokensBefore: number;
+  firstKeptEntryId?: string;
+};
+
 export type EmbeddedPiSubscribeState = {
   assistantTexts: string[];
   toolMetas: Array<{ toolName?: string; meta?: string }>;
@@ -66,6 +72,7 @@ export type EmbeddedPiSubscribeState = {
   compactionRetryReject?: (reason?: unknown) => void;
   compactionRetryPromise: Promise<void> | null;
   unsubscribed: boolean;
+  lastCompactionResult?: EmbeddedCompactionResult;
 
   messagingToolSentTexts: string[];
   messagingToolSentTextsNormalized: string[];
@@ -122,6 +129,7 @@ export type EmbeddedPiSubscribeContext = {
   incrementCompactionCount: () => void;
   getUsageTotals: () => NormalizedUsage | undefined;
   getCompactionCount: () => number;
+  setLastCompactionResult: (result: EmbeddedCompactionResult) => void;
 };
 
 /**
