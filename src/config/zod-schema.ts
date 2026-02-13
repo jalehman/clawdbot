@@ -53,11 +53,7 @@ const MemoryQmdUpdateSchema = z
     interval: z.string().optional(),
     debounceMs: z.number().int().nonnegative().optional(),
     onBoot: z.boolean().optional(),
-    waitForBootSync: z.boolean().optional(),
     embedInterval: z.string().optional(),
-    commandTimeoutMs: z.number().int().nonnegative().optional(),
-    updateTimeoutMs: z.number().int().nonnegative().optional(),
-    embedTimeoutMs: z.number().int().nonnegative().optional(),
   })
   .strict();
 
@@ -73,7 +69,6 @@ const MemoryQmdLimitsSchema = z
 const MemoryQmdSchema = z
   .object({
     command: z.string().optional(),
-    searchMode: z.union([z.literal("query"), z.literal("search"), z.literal("vsearch")]).optional(),
     includeDefaultMemory: z.boolean().optional(),
     paths: z.array(MemoryQmdPathSchema).optional(),
     sessions: MemoryQmdSessionSchema.optional(),
@@ -293,7 +288,6 @@ export const OpenClawSchema = z
         enabled: z.boolean().optional(),
         store: z.string().optional(),
         maxConcurrentRuns: z.number().int().positive().optional(),
-        sessionRetention: z.union([z.string(), z.literal(false)]).optional(),
       })
       .strict()
       .optional(),
@@ -302,7 +296,6 @@ export const OpenClawSchema = z
         enabled: z.boolean().optional(),
         path: z.string().optional(),
         token: z.string().optional(),
-        allowedAgentIds: z.array(z.string()).optional(),
         maxBodyBytes: z.number().int().positive().optional(),
         presets: z.array(z.string()).optional(),
         transformsDir: z.string().optional(),
@@ -603,6 +596,17 @@ export const OpenClawSchema = z
     contextEngine: z
       .object({
         engine: z.string().optional(),
+        lcm: z
+          .object({
+            enabled: z.boolean().optional(),
+            ingestTokenThreshold: z.number().int().positive().optional(),
+            compactionTokenThreshold: z.number().int().positive().optional(),
+            freshTailCount: z.number().int().nonnegative().optional(),
+            targetTokens: z.number().int().positive().optional(),
+            retrievalK: z.number().int().positive().optional(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),
