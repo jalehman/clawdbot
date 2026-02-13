@@ -32,6 +32,7 @@ export type ConversationRecord = {
   conversationId: ConversationId;
   sessionId: string;
   title: string | null;
+  bootstrappedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -57,6 +58,7 @@ interface ConversationRow {
   conversation_id: number;
   session_id: string;
   title: string | null;
+  bootstrapped_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -94,6 +96,7 @@ function toConversationRecord(row: ConversationRow): ConversationRecord {
     conversationId: row.conversation_id,
     sessionId: row.session_id,
     title: row.title,
+    bootstrappedAt: row.bootstrapped_at ? new Date(row.bootstrapped_at) : null,
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
   };
@@ -126,38 +129,58 @@ function toSearchResult(row: MessageSearchRow): MessageSearchResult {
 export class ConversationStore {
   constructor(private db: DatabaseSync) {}
 
+  // ── Transaction helpers ──────────────────────────────────────────────────
+
+  async withTransaction<T>(operation: () => Promise<T> | T): Promise<T> {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = await operation();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   // ── Conversation operations ───────────────────────────────────────────────
 
   async createConversation(input: CreateConversationInput): Promise<ConversationRecord> {
-    const result = this.db.prepare(
-      `INSERT INTO conversations (session_id, title) VALUES (?, ?)`,
-    ).run(input.sessionId, input.title ?? null);
+    const result = this.db
+      .prepare(`INSERT INTO conversations (session_id, title) VALUES (?, ?)`)
+      .run(input.sessionId, input.title ?? null);
 
-    const row = this.db.prepare(
-      `SELECT conversation_id, session_id, title, created_at, updated_at
+    const row = this.db
+      .prepare(
+        `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at
        FROM conversations WHERE conversation_id = ?`,
-    ).get(Number(result.lastInsertRowid)) as unknown as ConversationRow;
+      )
+      .get(Number(result.lastInsertRowid)) as unknown as ConversationRow;
 
     return toConversationRecord(row);
   }
 
   async getConversation(conversationId: ConversationId): Promise<ConversationRecord | null> {
-    const row = this.db.prepare(
-      `SELECT conversation_id, session_id, title, created_at, updated_at
+    const row = this.db
+      .prepare(
+        `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at
        FROM conversations WHERE conversation_id = ?`,
-    ).get(conversationId) as unknown as ConversationRow | undefined;
+      )
+      .get(conversationId) as unknown as ConversationRow | undefined;
 
     return row ? toConversationRecord(row) : null;
   }
 
   async getConversationBySessionId(sessionId: string): Promise<ConversationRecord | null> {
-    const row = this.db.prepare(
-      `SELECT conversation_id, session_id, title, created_at, updated_at
+    const row = this.db
+      .prepare(
+        `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at
        FROM conversations
        WHERE session_id = ?
        ORDER BY created_at DESC
        LIMIT 1`,
-    ).get(sessionId) as unknown as ConversationRow | undefined;
+      )
+      .get(sessionId) as unknown as ConversationRow | undefined;
 
     return row ? toConversationRecord(row) : null;
   }
@@ -170,33 +193,75 @@ export class ConversationStore {
     return this.createConversation({ sessionId, title });
   }
 
+  async markConversationBootstrapped(conversationId: ConversationId): Promise<void> {
+    this.db
+      .prepare(
+        `UPDATE conversations
+       SET bootstrapped_at = COALESCE(bootstrapped_at, datetime('now')),
+           updated_at = datetime('now')
+       WHERE conversation_id = ?`,
+      )
+      .run(conversationId);
+  }
+
   // ── Message operations ────────────────────────────────────────────────────
 
   async createMessage(input: CreateMessageInput): Promise<MessageRecord> {
-    const result = this.db.prepare(
-      `INSERT INTO messages (conversation_id, seq, role, content, token_count)
+    const result = this.db
+      .prepare(
+        `INSERT INTO messages (conversation_id, seq, role, content, token_count)
        VALUES (?, ?, ?, ?, ?)`,
-    ).run(
-      input.conversationId,
-      input.seq,
-      input.role,
-      input.content,
-      input.tokenCount,
-    );
+      )
+      .run(input.conversationId, input.seq, input.role, input.content, input.tokenCount);
 
     const messageId = Number(result.lastInsertRowid);
 
     // Index in FTS5
-    this.db.prepare(
-      `INSERT INTO messages_fts(rowid, content) VALUES (?, ?)`,
-    ).run(messageId, input.content);
+    this.db
+      .prepare(`INSERT INTO messages_fts(rowid, content) VALUES (?, ?)`)
+      .run(messageId, input.content);
 
-    const row = this.db.prepare(
-      `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+    const row = this.db
+      .prepare(
+        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
        FROM messages WHERE message_id = ?`,
-    ).get(messageId) as unknown as MessageRow;
+      )
+      .get(messageId) as unknown as MessageRow;
 
     return toMessageRecord(row);
+  }
+
+  async createMessagesBulk(inputs: CreateMessageInput[]): Promise<MessageRecord[]> {
+    if (inputs.length === 0) {
+      return [];
+    }
+    const insertStmt = this.db.prepare(
+      `INSERT INTO messages (conversation_id, seq, role, content, token_count)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+    const insertFtsStmt = this.db.prepare(`INSERT INTO messages_fts(rowid, content) VALUES (?, ?)`);
+    const selectStmt = this.db.prepare(
+      `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+       FROM messages WHERE message_id = ?`,
+    );
+
+    const records: MessageRecord[] = [];
+    for (const input of inputs) {
+      const result = insertStmt.run(
+        input.conversationId,
+        input.seq,
+        input.role,
+        input.content,
+        input.tokenCount,
+      );
+
+      const messageId = Number(result.lastInsertRowid);
+      insertFtsStmt.run(messageId, input.content);
+      const row = selectStmt.get(messageId) as unknown as MessageRow;
+      records.push(toMessageRecord(row));
+    }
+
+    return records;
   }
 
   async getMessages(
@@ -207,45 +272,53 @@ export class ConversationStore {
     const limit = opts?.limit;
 
     if (limit != null) {
-      const rows = this.db.prepare(
-        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+      const rows = this.db
+        .prepare(
+          `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
          FROM messages
          WHERE conversation_id = ? AND seq > ?
          ORDER BY seq
          LIMIT ?`,
-      ).all(conversationId, afterSeq, limit) as unknown as MessageRow[];
+        )
+        .all(conversationId, afterSeq, limit) as unknown as MessageRow[];
       return rows.map(toMessageRecord);
     }
 
-    const rows = this.db.prepare(
-      `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+    const rows = this.db
+      .prepare(
+        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
        FROM messages
        WHERE conversation_id = ? AND seq > ?
        ORDER BY seq`,
-    ).all(conversationId, afterSeq) as unknown as MessageRow[];
+      )
+      .all(conversationId, afterSeq) as unknown as MessageRow[];
     return rows.map(toMessageRecord);
   }
 
   async getMessageById(messageId: MessageId): Promise<MessageRecord | null> {
-    const row = this.db.prepare(
-      `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+    const row = this.db
+      .prepare(
+        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
        FROM messages WHERE message_id = ?`,
-    ).get(messageId) as unknown as MessageRow | undefined;
+      )
+      .get(messageId) as unknown as MessageRow | undefined;
     return row ? toMessageRecord(row) : null;
   }
 
   async getMessageCount(conversationId: ConversationId): Promise<number> {
-    const row = this.db.prepare(
-      `SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ?`,
-    ).get(conversationId) as unknown as CountRow;
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ?`)
+      .get(conversationId) as unknown as CountRow;
     return row?.count ?? 0;
   }
 
   async getMaxSeq(conversationId: ConversationId): Promise<number> {
-    const row = this.db.prepare(
-      `SELECT COALESCE(MAX(seq), 0) AS max_seq
+    const row = this.db
+      .prepare(
+        `SELECT COALESCE(MAX(seq), 0) AS max_seq
        FROM messages WHERE conversation_id = ?`,
-    ).get(conversationId) as unknown as MaxSeqRow;
+      )
+      .get(conversationId) as unknown as MaxSeqRow;
     return row?.max_seq ?? 0;
   }
 
@@ -266,8 +339,9 @@ export class ConversationStore {
     conversationId?: ConversationId,
   ): MessageSearchResult[] {
     if (conversationId != null) {
-      const rows = this.db.prepare(
-        `SELECT
+      const rows = this.db
+        .prepare(
+          `SELECT
            m.message_id,
            m.conversation_id,
            m.role,
@@ -279,12 +353,14 @@ export class ConversationStore {
            AND m.conversation_id = ?
          ORDER BY messages_fts.rank
          LIMIT ?`,
-      ).all(query, conversationId, limit) as unknown as MessageSearchRow[];
+        )
+        .all(query, conversationId, limit) as unknown as MessageSearchRow[];
       return rows.map(toSearchResult);
     }
 
-    const rows = this.db.prepare(
-      `SELECT
+    const rows = this.db
+      .prepare(
+        `SELECT
          m.message_id,
          m.conversation_id,
          m.role,
@@ -295,7 +371,8 @@ export class ConversationStore {
        WHERE messages_fts MATCH ?
        ORDER BY messages_fts.rank
        LIMIT ?`,
-    ).all(query, limit) as unknown as MessageSearchRow[];
+      )
+      .all(query, limit) as unknown as MessageSearchRow[];
     return rows.map(toSearchResult);
   }
 
@@ -309,23 +386,29 @@ export class ConversationStore {
 
     let rows: MessageRow[];
     if (conversationId != null) {
-      rows = this.db.prepare(
-        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+      rows = this.db
+        .prepare(
+          `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
          FROM messages
          WHERE conversation_id = ?
          ORDER BY seq`,
-      ).all(conversationId) as unknown as MessageRow[];
+        )
+        .all(conversationId) as unknown as MessageRow[];
     } else {
-      rows = this.db.prepare(
-        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+      rows = this.db
+        .prepare(
+          `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
          FROM messages
          ORDER BY message_id`,
-      ).all() as unknown as MessageRow[];
+        )
+        .all() as unknown as MessageRow[];
     }
 
     const results: MessageSearchResult[] = [];
     for (const row of rows) {
-      if (results.length >= limit) break;
+      if (results.length >= limit) {
+        break;
+      }
       const match = re.exec(row.content);
       if (match) {
         results.push({

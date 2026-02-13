@@ -1,8 +1,10 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import { SessionManager } from "@mariozechner/pi-coding-agent";
 import type {
   ContextEngine,
   ContextEngineInfo,
   AssembleResult,
+  BootstrapResult,
   CompactResult,
   IngestResult,
 } from "../../context-engine/types.js";
@@ -67,6 +69,59 @@ function toDbRole(role: string): "user" | "assistant" | "system" | "tool" {
   return "user";
 }
 
+type StoredMessage = {
+  role: "user" | "assistant" | "system" | "tool";
+  content: string;
+  tokenCount: number;
+};
+
+/**
+ * Normalize AgentMessage variants into the storage shape used by LCM.
+ */
+function toStoredMessage(message: AgentMessage): StoredMessage {
+  const content =
+    "content" in message
+      ? extractMessageContent(message.content)
+      : "output" in message
+        ? `$ ${(message as { command: string; output: string }).command}\n${(message as { command: string; output: string }).output}`
+        : "";
+
+  return {
+    role: toDbRole(message.role),
+    content,
+    tokenCount: estimateTokens(content),
+  };
+}
+
+function isBootstrapMessage(value: unknown): value is AgentMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const msg = value as { role?: unknown; content?: unknown; command?: unknown; output?: unknown };
+  if (typeof msg.role !== "string") {
+    return false;
+  }
+  return "content" in msg || ("command" in msg && "output" in msg);
+}
+
+/**
+ * Load the active leaf-path context from a session file using SessionManager
+ * semantics (open + buildSessionContext).
+ */
+function readLeafPathMessages(sessionFile: string): AgentMessage[] {
+  const sessionManager = SessionManager.open(sessionFile) as unknown as {
+    setSessionFile?: (path: string) => void;
+    buildSessionContext?: () => { messages?: unknown };
+  };
+  sessionManager.setSessionFile?.(sessionFile);
+  const context = sessionManager.buildSessionContext?.();
+  const messages = context?.messages;
+  if (!Array.isArray(messages)) {
+    return [];
+  }
+  return messages.filter(isBootstrapMessage);
+}
+
 // ── LcmContextEngine ────────────────────────────────────────────────────────
 
 export class LcmContextEngine implements ContextEngine {
@@ -110,7 +165,7 @@ export class LcmContextEngine implements ContextEngine {
     this.retrieval = new RetrievalEngine(this.conversationStore, this.summaryStore);
   }
 
-  /** Ensure DB schema is up-to-date. Called lazily on first ingest/assemble/compact. */
+  /** Ensure DB schema is up-to-date. Called lazily on first bootstrap/ingest/assemble/compact. */
   private ensureMigrated(): void {
     if (this.migrated) {
       return;
@@ -122,18 +177,74 @@ export class LcmContextEngine implements ContextEngine {
 
   // ── ContextEngine interface ─────────────────────────────────────────────
 
+  async bootstrap(params: { sessionId: string; sessionFile: string }): Promise<BootstrapResult> {
+    this.ensureMigrated();
+
+    return this.conversationStore.withTransaction(async () => {
+      const conversation = await this.conversationStore.getOrCreateConversation(params.sessionId);
+      const conversationId = conversation.conversationId;
+
+      if (conversation.bootstrappedAt) {
+        return {
+          bootstrapped: false,
+          importedMessages: 0,
+          reason: "already bootstrapped",
+        };
+      }
+
+      // If data already exists but bootstrap marker was never written (for example
+      // from a partial deploy), avoid re-importing duplicates and just seal state.
+      const existingCount = await this.conversationStore.getMessageCount(conversationId);
+      if (existingCount > 0) {
+        await this.conversationStore.markConversationBootstrapped(conversationId);
+        return {
+          bootstrapped: false,
+          importedMessages: 0,
+          reason: "conversation already has messages",
+        };
+      }
+
+      const historicalMessages = readLeafPathMessages(params.sessionFile);
+      if (historicalMessages.length === 0) {
+        await this.conversationStore.markConversationBootstrapped(conversationId);
+        return {
+          bootstrapped: false,
+          importedMessages: 0,
+          reason: "no leaf-path messages in session",
+        };
+      }
+
+      const nextSeq = (await this.conversationStore.getMaxSeq(conversationId)) + 1;
+      const bulkInput = historicalMessages.map((message, index) => {
+        const stored = toStoredMessage(message);
+        return {
+          conversationId,
+          seq: nextSeq + index,
+          role: stored.role,
+          content: stored.content,
+          tokenCount: stored.tokenCount,
+        };
+      });
+
+      const inserted = await this.conversationStore.createMessagesBulk(bulkInput);
+      await this.summaryStore.appendContextMessages(
+        conversationId,
+        inserted.map((record) => record.messageId),
+      );
+      await this.conversationStore.markConversationBootstrapped(conversationId);
+
+      return {
+        bootstrapped: true,
+        importedMessages: inserted.length,
+      };
+    });
+  }
+
   async ingest(params: { sessionId: string; message: AgentMessage }): Promise<IngestResult> {
     this.ensureMigrated();
 
     const { sessionId, message } = params;
-    // Handle all AgentMessage variants: standard messages have .content,
-    // BashExecutionMessage has .command/.output instead
-    const content =
-      "content" in message
-        ? extractMessageContent(message.content)
-        : "output" in message
-          ? `$ ${(message as { command: string; output: string }).command}\n${(message as { command: string; output: string }).output}`
-          : "";
+    const stored = toStoredMessage(message);
 
     // Get or create conversation for this session
     const conversation = await this.conversationStore.getOrCreateConversation(sessionId);
@@ -147,9 +258,9 @@ export class LcmContextEngine implements ContextEngine {
     const msgRecord = await this.conversationStore.createMessage({
       conversationId,
       seq,
-      role: toDbRole(message.role),
-      content,
-      tokenCount: estimateTokens(content),
+      role: stored.role,
+      content: stored.content,
+      tokenCount: stored.tokenCount,
     });
 
     // Append to context items so assembler can see it

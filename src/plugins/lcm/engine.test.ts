@@ -1,9 +1,10 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import { SessionManager } from "@mariozechner/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LcmConfig } from "./db/config.js";
 import { closeLcmConnection } from "./db/connection.js";
 import { LcmContextEngine } from "./engine.js";
@@ -27,6 +28,12 @@ function createEngine(): LcmContextEngine {
   const tempDir = mkdtempSync(join(tmpdir(), "openclaw-lcm-engine-"));
   tempDirs.push(tempDir);
   return new LcmContextEngine(createTestConfig(join(tempDir, "lcm.db")));
+}
+
+function createSessionFilePath(name: string): string {
+  const tempDir = mkdtempSync(join(tmpdir(), "openclaw-lcm-session-"));
+  tempDirs.push(tempDir);
+  return join(tempDir, `${name}.jsonl`);
 }
 
 function makeMessage(params: { role?: "user" | "assistant"; content: unknown }): AgentMessage {
@@ -158,6 +165,113 @@ describe("LcmContextEngine.ingest content extraction", () => {
     expect(storedMessages).toHaveLength(1);
     expect(storedMessages[0].content).toBe("HEARTBEAT_OK");
     expect(storedMessages[0].content).not.toContain('{"type":"text"');
+  });
+});
+
+// ── Bootstrap ───────────────────────────────────────────────────────────────
+
+describe("LcmContextEngine.bootstrap", () => {
+  it("imports only active leaf-path messages from SessionManager context", async () => {
+    const sessionFile = createSessionFilePath("branched");
+    const sm = SessionManager.open(sessionFile);
+
+    const rootUserId = sm.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "root user" }],
+    } as AgentMessage);
+    sm.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "abandoned assistant" }],
+    } as AgentMessage);
+    sm.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "abandoned user" }],
+    } as AgentMessage);
+
+    // Re-branch from the first user entry so prior turns are abandoned.
+    sm.branch(rootUserId);
+    sm.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "active assistant" }],
+    } as AgentMessage);
+
+    const engine = createEngine();
+    const sessionId = "bootstrap-leaf-path";
+    const result = await engine.bootstrap({ sessionId, sessionFile });
+
+    expect(result.bootstrapped).toBe(true);
+    expect(result.importedMessages).toBe(2);
+
+    const conversation = await engine.getConversationStore().getConversationBySessionId(sessionId);
+    expect(conversation).not.toBeNull();
+    expect(conversation!.bootstrappedAt).not.toBeNull();
+
+    const stored = await engine.getConversationStore().getMessages(conversation!.conversationId);
+    expect(stored).toHaveLength(2);
+    expect(stored.map((m) => m.content)).toEqual(["root user", "active assistant"]);
+
+    const contextItems = await engine
+      .getSummaryStore()
+      .getContextItems(conversation!.conversationId);
+    expect(contextItems).toHaveLength(2);
+    expect(contextItems.every((item) => item.itemType === "message")).toBe(true);
+  });
+
+  it("is idempotent and does not duplicate already bootstrapped sessions", async () => {
+    const sessionFile = createSessionFilePath("idempotent");
+    const sm = SessionManager.open(sessionFile);
+    sm.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "first" }],
+    } as AgentMessage);
+    sm.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "second" }],
+    } as AgentMessage);
+
+    const engine = createEngine();
+    const sessionId = "bootstrap-idempotent";
+
+    const first = await engine.bootstrap({ sessionId, sessionFile });
+    const second = await engine.bootstrap({ sessionId, sessionFile });
+
+    expect(first.bootstrapped).toBe(true);
+    expect(first.importedMessages).toBe(2);
+    expect(second.bootstrapped).toBe(false);
+    expect(second.importedMessages).toBe(0);
+    expect(second.reason).toBe("already bootstrapped");
+
+    const conversation = await engine.getConversationStore().getConversationBySessionId(sessionId);
+    expect(conversation).not.toBeNull();
+    expect(await engine.getConversationStore().getMessageCount(conversation!.conversationId)).toBe(
+      2,
+    );
+  });
+
+  it("uses the bulk import path for initial bootstrap", async () => {
+    const sessionFile = createSessionFilePath("bulk");
+    const sm = SessionManager.open(sessionFile);
+    sm.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "bulk one" }],
+    } as AgentMessage);
+    sm.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "bulk two" }],
+    } as AgentMessage);
+
+    const engine = createEngine();
+    const bulkSpy = vi.spyOn(engine.getConversationStore(), "createMessagesBulk");
+    const singleSpy = vi.spyOn(engine.getConversationStore(), "createMessage");
+
+    const result = await engine.bootstrap({
+      sessionId: "bootstrap-bulk",
+      sessionFile,
+    });
+
+    expect(result.bootstrapped).toBe(true);
+    expect(bulkSpy).toHaveBeenCalledTimes(1);
+    expect(singleSpy).not.toHaveBeenCalled();
   });
 });
 

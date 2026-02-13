@@ -6,6 +6,7 @@ export function runLcmMigrations(db: DatabaseSync): void {
       conversation_id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id TEXT NOT NULL,
       title TEXT,
+      bootstrapped_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -117,10 +118,19 @@ export function runLcmMigrations(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS large_files_conv_idx ON large_files (conversation_id, created_at);
   `);
 
+  // Forward-compatible conversations migration for existing DBs.
+  const conversationColumns = db.prepare(`PRAGMA table_info(conversations)`).all() as Array<{
+    name?: string;
+  }>;
+  const hasBootstrappedAt = conversationColumns.some((col) => col.name === "bootstrapped_at");
+  if (!hasBootstrappedAt) {
+    db.exec(`ALTER TABLE conversations ADD COLUMN bootstrapped_at TEXT`);
+  }
+
   // FTS5 virtual tables for full-text search (cannot use IF NOT EXISTS, so check manually)
-  const hasFts = db.prepare(
-    "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-  ).get();
+  const hasFts = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'")
+    .get();
 
   if (!hasFts) {
     db.exec(`
@@ -132,9 +142,9 @@ export function runLcmMigrations(db: DatabaseSync): void {
     `);
   }
 
-  const hasSummariesFts = db.prepare(
-    "SELECT name FROM sqlite_master WHERE type='table' AND name='summaries_fts'"
-  ).get();
+  const hasSummariesFts = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='summaries_fts'")
+    .get();
 
   if (!hasSummariesFts) {
     db.exec(`

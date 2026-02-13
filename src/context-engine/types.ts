@@ -27,6 +27,15 @@ export type IngestResult = {
   ingested: boolean;
 };
 
+export type BootstrapResult = {
+  /** Whether bootstrap imported historical context into the canonical store */
+  bootstrapped: boolean;
+  /** Number of imported historical messages when bootstrap ran */
+  importedMessages?: number;
+  /** Optional reason when bootstrap did not import */
+  reason?: string;
+};
+
 export type ContextEngineInfo = {
   id: string;
   name: string;
@@ -44,13 +53,16 @@ export interface ContextEngine {
   readonly info: ContextEngineInfo;
 
   /**
+   * Bootstrap historical session context into the canonical store.
+   * Engines that don't own persistence (legacy) can omit this.
+   */
+  bootstrap?(params: { sessionId: string; sessionFile: string }): Promise<BootstrapResult>;
+
+  /**
    * Ingest a message into the canonical store.
    * For legacy engine, this is a no-op (messages are managed by SessionManager).
    */
-  ingest(params: {
-    sessionId: string;
-    message: AgentMessage;
-  }): Promise<IngestResult>;
+  ingest(params: { sessionId: string; message: AgentMessage }): Promise<IngestResult>;
 
   /**
    * Assemble model context under a token budget.

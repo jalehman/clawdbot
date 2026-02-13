@@ -509,6 +509,17 @@ export async function runEmbeddedAttempt(
       });
       trackSessionManagerAccess(params.sessionFile);
 
+      if (hadSessionFile && params.contextEngine?.bootstrap) {
+        try {
+          await params.contextEngine.bootstrap({
+            sessionId: params.sessionId,
+            sessionFile: params.sessionFile,
+          });
+        } catch (bootstrapErr) {
+          log.warn(`context engine bootstrap failed: ${String(bootstrapErr)}`);
+        }
+      }
+
       await prepareSessionManagerForRun({
         sessionManager,
         sessionFile: params.sessionFile,
