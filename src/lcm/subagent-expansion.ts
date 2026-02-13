@@ -516,27 +516,27 @@ function clip(value: string, limit: number): string {
   return `${text.slice(0, Math.max(0, limit - 3)).trimEnd()}...`;
 }
 
-function extractJsonCandidate(output: string): unknown | null {
+function extractJsonCandidate(output: string): unknown {
   const direct = parseJsonMaybe(output);
-  if (direct !== null) {
+  if (direct !== undefined) {
     return direct;
   }
   const fenced = output.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (!fenced?.[1]) {
-    return null;
+    return undefined;
   }
   return parseJsonMaybe(fenced[1]);
 }
 
-function parseJsonMaybe(value: string): unknown | null {
+function parseJsonMaybe(value: string): unknown {
   const trimmed = value.trim();
   if (!trimmed) {
-    return null;
+    return undefined;
   }
   try {
     return JSON.parse(trimmed);
   } catch {
-    return null;
+    return undefined;
   }
 }
 
