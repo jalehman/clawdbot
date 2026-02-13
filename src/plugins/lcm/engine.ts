@@ -23,6 +23,31 @@ function estimateTokens(text: string): number {
 }
 
 /**
+ * Convert AgentMessage content into plain text for DB storage.
+ *
+ * For content block arrays we keep only text blocks to avoid persisting raw
+ * JSON syntax that can later pollute assembled model context.
+ */
+function extractMessageContent(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (Array.isArray(content)) {
+    return content
+      .filter((block): block is { type?: unknown; text?: unknown } => {
+        return !!block && typeof block === "object";
+      })
+      .filter((block) => block.type === "text" && typeof block.text === "string")
+      .map((block) => block.text as string)
+      .join("\n");
+  }
+
+  const serialized = JSON.stringify(content);
+  return typeof serialized === "string" ? serialized : "";
+}
+
+/**
  * Map AgentMessage role to the DB enum.
  *
  *   "user"      -> "user"
@@ -105,9 +130,7 @@ export class LcmContextEngine implements ContextEngine {
     // BashExecutionMessage has .command/.output instead
     const content =
       "content" in message
-        ? typeof message.content === "string"
-          ? message.content
-          : JSON.stringify(message.content)
+        ? extractMessageContent(message.content)
         : "output" in message
           ? `$ ${(message as { command: string; output: string }).command}\n${(message as { command: string; output: string }).output}`
           : "";
