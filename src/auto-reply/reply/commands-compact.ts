@@ -6,14 +6,14 @@ import {
 } from "../../agents/pi-embedded.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import {
-  ensureContextEnginesInitialized,
-  resolveContextEngine,
-} from "../../context-engine/index.js";
-import {
   resolveFreshSessionTotalTokens,
   resolveSessionFilePath,
   resolveSessionFilePathOptions,
 } from "../../config/sessions.js";
+import {
+  ensureContextEnginesInitialized,
+  resolveContextEngine,
+} from "../../context-engine/index.js";
 import { logVerbose } from "../../globals.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { enqueueCommandInLane } from "../../process/command-queue.js";
@@ -68,7 +68,8 @@ export const handleCompactCommand: CommandHandler = async (params) => {
       reply: { text: "⚙️ Compaction unavailable (missing session id)." },
     };
   }
-  const sessionId = params.sessionEntry.sessionId;
+  const sessionEntry = params.sessionEntry;
+  const sessionId = sessionEntry.sessionId;
   if (isEmbeddedPiRunActive(sessionId)) {
     abortEmbeddedPiRun(sessionId);
     await waitForEmbeddedPiRunEnd(sessionId, 15_000);
@@ -101,13 +102,13 @@ export const handleCompactCommand: CommandHandler = async (params) => {
         sessionKey: params.sessionKey,
         messageChannel: params.command.channel,
         messageProvider: params.command.channel,
-        groupId: params.sessionEntry.groupId,
-        groupChannel: params.sessionEntry.groupChannel,
-        groupSpace: params.sessionEntry.space,
-        spawnedBy: params.sessionEntry.spawnedBy,
+        groupId: sessionEntry.groupId,
+        groupChannel: sessionEntry.groupChannel,
+        groupSpace: sessionEntry.space,
+        spawnedBy: sessionEntry.spawnedBy,
         workspaceDir: params.workspaceDir,
         config: params.cfg,
-        skillsSnapshot: params.sessionEntry.skillsSnapshot,
+        skillsSnapshot: sessionEntry.skillsSnapshot,
         provider: params.provider,
         model: params.model,
         thinkLevel,

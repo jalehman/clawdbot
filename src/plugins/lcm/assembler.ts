@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { ConversationStore, MessageRecord, MessageRole } from "./store/conversation-store.js";
+import type { ConversationStore, MessageRole } from "./store/conversation-store.js";
 import type { SummaryStore, ContextItemRecord, SummaryRecord } from "./store/summary-store.js";
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -40,7 +40,9 @@ function estimateTokens(text: string): number {
  *   tool      -> assistant  (tool results are part of assistant turns)
  */
 function mapRole(role: MessageRole): "user" | "assistant" {
-  if (role === "user" || role === "system") return "user";
+  if (role === "user" || role === "system") {
+    return "user";
+  }
   return "assistant"; // assistant | tool
 }
 
@@ -126,8 +128,11 @@ export class ContextAssembler {
     let rawMessageCount = 0;
     let summaryCount = 0;
     for (const item of resolved) {
-      if (item.isMessage) rawMessageCount++;
-      else summaryCount++;
+      if (item.isMessage) {
+        rawMessageCount++;
+      } else {
+        summaryCount++;
+      }
     }
 
     // Step 3: Split into evictable prefix and protected fresh tail
@@ -238,14 +243,18 @@ export class ContextAssembler {
    */
   private async resolveMessageItem(item: ContextItemRecord): Promise<ResolvedItem | null> {
     const msg = await this.conversationStore.getMessageById(item.messageId!);
-    if (!msg) return null;
+    if (!msg) {
+      return null;
+    }
 
     const content = msg.content;
     const role = mapRole(msg.role);
 
+    // Cast: these are reconstructed from DB storage, not live agent messages,
+    // so they won't carry the full AgentMessage metadata (timestamp, usage, etc.)
     return {
       ordinal: item.ordinal,
-      message: { role, content },
+      message: { role, content } as AgentMessage,
       tokens: msg.tokenCount > 0 ? msg.tokenCount : estimateTokens(content),
       isMessage: true,
     };
@@ -257,14 +266,17 @@ export class ContextAssembler {
    */
   private async resolveSummaryItem(item: ContextItemRecord): Promise<ResolvedItem | null> {
     const summary = await this.summaryStore.getSummary(item.summaryId!);
-    if (!summary) return null;
+    if (!summary) {
+      return null;
+    }
 
     const content = await formatSummaryContent(summary, this.summaryStore);
     const tokens = estimateTokens(content);
 
+    // Cast: summaries are synthetic user messages without full AgentMessage metadata
     return {
       ordinal: item.ordinal,
-      message: { role: "user", content },
+      message: { role: "user" as const, content } as AgentMessage,
       tokens,
       isMessage: false,
     };
