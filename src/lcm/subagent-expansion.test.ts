@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import type { RetrievalEngine, RetrievalExpandResult } from "./types.js";
+import type {
+  RetrievalDescribeResult,
+  RetrievalEngine,
+  RetrievalExpandInput,
+  RetrievalExpandResult,
+} from "./types.js";
 import {
   buildExpansionPrompt,
   parseExpansionResult,
@@ -7,11 +12,31 @@ import {
 } from "./subagent-expansion.js";
 
 function createRetrievalEngine(params?: {
+  describe?: (
+    id: string,
+    auth?: RetrievalExpandInput["auth"],
+  ) => Promise<RetrievalDescribeResult | null>;
   expand?: (summaryId: string, depth: number, tokenCap: number) => Promise<RetrievalExpandResult>;
+  onExpandInput?: (input: RetrievalExpandInput) => void;
 }): RetrievalEngine {
   return {
-    async describe() {
-      return null;
+    async describe(id, auth) {
+      if (params?.describe) {
+        return await params.describe(id, auth);
+      }
+      return {
+        id: id as RetrievalExpandResult["rootSummaryId"],
+        kind: "summary",
+        conversationId: "conv-test" as RetrievalExpandResult["conversationId"],
+        itemType: "summary",
+        tokenEstimate: 1,
+        createdAt: "2026-02-10T00:00:00.000Z",
+        metadata: {},
+        lineage: {
+          parentIds: [],
+          childIds: [],
+        },
+      };
     },
     async grep(input) {
       return {
@@ -24,6 +49,7 @@ function createRetrievalEngine(params?: {
       };
     },
     async expand(input) {
+      params?.onExpandInput?.(input);
       const summaryId = String(input.summaryId);
       const depth = input.depth ?? 0;
       const tokenCap = input.tokenCap ?? 1_000;
@@ -127,6 +153,27 @@ describe("SubagentExpansionOrchestrator", () => {
     expect(result.citedIds).toContain("sum-leaf");
   });
 
+  it("forwards session auth context into direct retrieval expansion", async () => {
+    let expandInput: RetrievalExpandInput | undefined;
+    const retrieval = createRetrievalEngine({
+      onExpandInput(input) {
+        expandInput = input;
+      },
+    });
+    const orchestrator = new SubagentExpansionOrchestrator({ retrieval });
+
+    await orchestrator.expandDeep({
+      targetIds: ["sum-root"],
+      question: "Trace auth rollout",
+      sessionKey: "agent:main:subagent:direct",
+      depth: 2,
+      tokenCap: 2_000,
+      strategy: "direct",
+    });
+
+    expect(expandInput?.auth?.sessionKey).toBe("agent:main:subagent:direct");
+  });
+
   it("runs iterative subagent passes and follows next ids", async () => {
     const retrieval = createRetrievalEngine();
     const runSubagent = vi.fn().mockImplementation(async (request: { passIndex: number }) => {
@@ -162,6 +209,60 @@ describe("SubagentExpansionOrchestrator", () => {
     expect(result.synthesis).toContain("Pass 1");
     expect(result.synthesis).toContain("Pass 2");
     expect(result.citedIds).toEqual(["sum-a", "sum-b"]);
+  });
+
+  it("passes delegated conversation scope to subagent runs", async () => {
+    const retrieval = createRetrievalEngine({
+      async describe(id) {
+        if (id === "sum-a") {
+          return {
+            id: "sum-a" as RetrievalExpandResult["rootSummaryId"],
+            kind: "summary",
+            conversationId: "conv-alpha" as RetrievalExpandResult["conversationId"],
+            itemType: "summary",
+            tokenEstimate: 1,
+            createdAt: "2026-02-10T00:00:00.000Z",
+            metadata: {},
+            lineage: { parentIds: [], childIds: [] },
+          };
+        }
+        if (id === "sum-b") {
+          return {
+            id: "sum-b" as RetrievalExpandResult["rootSummaryId"],
+            kind: "summary",
+            conversationId: "conv-beta" as RetrievalExpandResult["conversationId"],
+            itemType: "summary",
+            tokenEstimate: 1,
+            createdAt: "2026-02-10T00:00:00.000Z",
+            metadata: {},
+            lineage: { parentIds: [], childIds: [] },
+          };
+        }
+        return null;
+      },
+    });
+    const runSubagent = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        synthesis: "Scoped pass complete.",
+        citedIds: ["sum-a"],
+        nextSummaryIds: [],
+      }),
+    );
+    const orchestrator = new SubagentExpansionOrchestrator({
+      retrieval,
+      runSubagent,
+    });
+
+    await orchestrator.expandDeep({
+      targetIds: ["sum-a", "sum-b"],
+      question: "Cross-session test",
+      depth: 6,
+      tokenCap: 8_000,
+      strategy: "subagent",
+    });
+
+    expect(runSubagent).toHaveBeenCalledTimes(1);
+    expect(runSubagent.mock.calls[0]?.[0].conversationIds).toEqual(["conv-alpha", "conv-beta"]);
   });
 
   it("enforces depth and token bounds across iterative passes", async () => {

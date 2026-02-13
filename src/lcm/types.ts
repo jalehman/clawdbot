@@ -225,6 +225,14 @@ export type RetrievalFileDescribeResult = {
 export type RetrievalDescribeResult = RetrievalSummaryDescribeResult | RetrievalFileDescribeResult;
 
 /**
+ * Optional authorization context supplied by tool execution.
+ */
+export type RetrievalAuthorizationInput = {
+  sessionKey?: string;
+  nowMs?: number;
+};
+
+/**
  * Grep query input.
  */
 export type RetrievalGrepInput = {
@@ -233,6 +241,7 @@ export type RetrievalGrepInput = {
   scope?: RetrievalGrepScope;
   conversationId?: ConversationId;
   limit?: number;
+  auth?: RetrievalAuthorizationInput;
 };
 
 /**
@@ -268,6 +277,7 @@ export type RetrievalExpandInput = {
   includeMessages?: boolean;
   tokenCap?: number;
   limit?: number;
+  auth?: RetrievalAuthorizationInput;
 };
 
 /**
@@ -569,7 +579,7 @@ export type CompactionEngine = {
  * Retrieval abstraction used by LCM tools.
  */
 export type RetrievalEngine = {
-  describe(id: string): Promise<RetrievalDescribeResult | null>;
+  describe(id: string, auth?: RetrievalAuthorizationInput): Promise<RetrievalDescribeResult | null>;
   grep(input: RetrievalGrepInput): Promise<RetrievalGrepResult>;
   expand(input: RetrievalExpandInput): Promise<RetrievalExpandResult>;
 };

@@ -28,6 +28,7 @@ export type ParsedExpansionResult = {
 export type SubagentExpansionRunRequest = {
   prompt: string;
   targetIds: string[];
+  conversationIds: string[];
   question: string;
   tokenCap: number;
   depth: number;
@@ -50,6 +51,7 @@ export type ExpansionStrategy = "direct" | "subagent";
 export type ExpandDeepRequest = {
   targetIds: string[];
   question: string;
+  sessionKey?: string;
   depth?: number;
   tokenCap?: number;
   includeMessages?: boolean;
@@ -227,6 +229,7 @@ export class SubagentExpansionOrchestrator {
         depth,
         tokenCap,
         includeMessages: request.includeMessages ?? false,
+        sessionKey: request.sessionKey,
       });
     }
 
@@ -235,6 +238,7 @@ export class SubagentExpansionOrchestrator {
       question,
       depth,
       tokenCap,
+      sessionKey: request.sessionKey,
       maxPasses: clampInt(
         request.maxPasses,
         Math.max(1, Math.ceil(depth / this.passDepth)),
@@ -286,6 +290,7 @@ export class SubagentExpansionOrchestrator {
     depth: number;
     tokenCap: number;
     includeMessages: boolean;
+    sessionKey?: string;
   }): Promise<ExpandDeepResult> {
     const perTargetTokenCap = Math.max(1, Math.floor(params.tokenCap / params.targetIds.length));
     const citedIds = new Set<string>();
@@ -303,6 +308,9 @@ export class SubagentExpansionOrchestrator {
         includeMessages: params.includeMessages,
         tokenCap: perTargetTokenCap,
         limit: DIRECT_EXPAND_LIMIT,
+        auth: {
+          sessionKey: params.sessionKey,
+        },
       };
       const expanded = await this.retrieval.expand(expandInput);
       tokenBudgetUsed += expanded.estimatedTokens;
@@ -355,6 +363,7 @@ export class SubagentExpansionOrchestrator {
     question: string;
     depth: number;
     tokenCap: number;
+    sessionKey?: string;
     maxPasses: number;
   }): Promise<ExpandDeepResult> {
     if (!this.runSubagent) {
@@ -376,6 +385,11 @@ export class SubagentExpansionOrchestrator {
     const warnings: string[] = [];
     const passResults: ExpandDeepPassResult[] = [];
     const synthesisParts: string[] = [];
+    const allowedConversationIds = await this.resolveTargetConversationIds({
+      targetIds: params.targetIds,
+      sessionKey: params.sessionKey,
+    });
+    const allowedConversationIdSet = new Set<string>(allowedConversationIds);
 
     let pendingTargetIds = [...params.targetIds];
     let remainingDepth = params.depth;
@@ -402,6 +416,7 @@ export class SubagentExpansionOrchestrator {
         const output = await this.runSubagent({
           prompt,
           targetIds: pendingTargetIds,
+          conversationIds: allowedConversationIds,
           question: params.question,
           tokenCap: passTokenCap,
           depth: passDepth,
@@ -428,7 +443,14 @@ export class SubagentExpansionOrchestrator {
       }
 
       const nextSummaryIds = normalizeIds(parsed.nextSummaryIds.filter((id) => !seen.has(id)));
-      for (const id of nextSummaryIds) {
+      const scopedNextSummaryIds = await this.filterTargetIdsByConversationScope({
+        targetIds: nextSummaryIds,
+        allowedConversationIdSet,
+        sessionKey: params.sessionKey,
+        passIndex,
+        warnings,
+      });
+      for (const id of scopedNextSummaryIds) {
         seen.add(id);
       }
 
@@ -440,10 +462,10 @@ export class SubagentExpansionOrchestrator {
         tokenCap: passTokenCap,
         synthesis,
         citedIds: normalizeIds([...parsed.citedIds, ...pendingTargetIds]),
-        nextSummaryIds,
+        nextSummaryIds: scopedNextSummaryIds,
       });
 
-      pendingTargetIds = nextSummaryIds;
+      pendingTargetIds = scopedNextSummaryIds;
       remainingDepth -= passDepth;
       remainingTokenCap -= passTokenCap;
     }
@@ -454,6 +476,7 @@ export class SubagentExpansionOrchestrator {
         depth: Math.min(params.depth, this.directDepthThreshold),
         tokenCap: params.tokenCap,
         includeMessages: false,
+        sessionKey: params.sessionKey,
       });
       return {
         ...fallback,
@@ -477,6 +500,66 @@ export class SubagentExpansionOrchestrator {
       warnings,
       passes: passResults,
     };
+  }
+
+  /**
+   * Resolve conversation ids for summary targets and require valid summary ids.
+   */
+  private async resolveTargetConversationIds(params: {
+    targetIds: string[];
+    sessionKey?: string;
+  }): Promise<string[]> {
+    const conversationIds = new Set<string>();
+    for (const targetId of params.targetIds) {
+      const described = await this.retrieval.describe(targetId, {
+        sessionKey: params.sessionKey,
+      });
+      if (!described || described.kind !== "summary") {
+        throw new Error(`summary '${targetId}' was not found.`);
+      }
+      conversationIds.add(described.conversationId);
+    }
+    return normalizeIds([...conversationIds]);
+  }
+
+  /**
+   * Keep only follow-up ids that stay inside delegated conversation scope.
+   */
+  private async filterTargetIdsByConversationScope(params: {
+    targetIds: string[];
+    allowedConversationIdSet: Set<string>;
+    sessionKey?: string;
+    passIndex: number;
+    warnings: string[];
+  }): Promise<string[]> {
+    const scoped: string[] = [];
+    for (const targetId of params.targetIds) {
+      try {
+        const described = await this.retrieval.describe(targetId, {
+          sessionKey: params.sessionKey,
+        });
+        if (!described || described.kind !== "summary") {
+          params.warnings.push(
+            `Ignored follow-up summary id '${targetId}' from pass ${params.passIndex}; id not found.`,
+          );
+          continue;
+        }
+        if (!params.allowedConversationIdSet.has(described.conversationId)) {
+          params.warnings.push(
+            `Ignored out-of-scope summary id '${targetId}' from pass ${params.passIndex}.`,
+          );
+          continue;
+        }
+        scoped.push(targetId);
+      } catch (error) {
+        params.warnings.push(
+          `Ignored follow-up summary id '${targetId}' from pass ${params.passIndex}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    return normalizeIds(scoped);
   }
 }
 

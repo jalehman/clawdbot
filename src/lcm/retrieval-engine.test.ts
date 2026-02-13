@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ConversationId, SummaryId } from "./types.js";
+import { ExpansionGrantRegistry } from "./expansion-auth.js";
 import { createLcmRetrievalEngine } from "./retrieval-engine.js";
 import { SqliteLcmStorageBackend } from "./storage/sqlite.js";
 import { createPlaceholderTokenEstimator } from "./token-estimator.js";
@@ -316,9 +317,93 @@ describe("createLcmRetrievalEngine", () => {
       }),
     ).rejects.toThrow(/expand only supports summary ids/i);
   });
+
+  it("rejects unauthorized cross-session expansion outside delegated scope", async () => {
+    const expansionAuth = new ExpansionGrantRegistry();
+    const { backend, retrieval } = await createHarness({ expansionAuth });
+    const now = 1_700_000_007_000;
+
+    insertConversation(backend, { conversationId: "conv-alpha", now });
+    insertSummaryItem(backend, {
+      conversationId: "conv-alpha",
+      itemId: "sum-alpha-root",
+      title: "Alpha Root",
+      body: "Alpha branch",
+      now: now + 1,
+    });
+
+    insertConversation(backend, { conversationId: "conv-beta", now: now + 2 });
+    insertSummaryItem(backend, {
+      conversationId: "conv-beta",
+      itemId: "sum-beta-root",
+      title: "Beta Root",
+      body: "Beta branch",
+      now: now + 3,
+    });
+
+    expansionAuth.issueGrant({
+      delegatorSessionKey: "agent:main:main",
+      delegateSessionKey: "agent:main:subagent:scope",
+      conversationIds: ["conv-alpha"],
+      maxDepth: 2,
+      maxTokenCap: 4_000,
+      ttlMs: 60_000,
+      nowMs: now + 4,
+    });
+
+    await expect(
+      retrieval.expand({
+        summaryId: "sum-beta-root" as SummaryId,
+        depth: 1,
+        tokenCap: 1_000,
+        auth: {
+          sessionKey: "agent:main:subagent:scope",
+          nowMs: now + 5,
+        },
+      }),
+    ).rejects.toThrow(/outside delegated expansion scope/i);
+  });
+
+  it("rejects unscoped grep when a cross-session grant is active", async () => {
+    const expansionAuth = new ExpansionGrantRegistry();
+    const { backend, retrieval } = await createHarness({ expansionAuth });
+    const now = 1_700_000_008_000;
+
+    insertConversation(backend, { conversationId: "conv-alpha", now });
+    insertMessage(backend, {
+      conversationId: "conv-alpha",
+      messageId: "msg-alpha-1",
+      ordinal: 1,
+      role: "assistant",
+      content: "Auth handoff timeline",
+      now: now + 1,
+    });
+
+    expansionAuth.issueGrant({
+      delegatorSessionKey: "agent:main:main",
+      delegateSessionKey: "agent:main:subagent:grep",
+      conversationIds: ["conv-alpha"],
+      maxDepth: 2,
+      maxTokenCap: 4_000,
+      ttlMs: 60_000,
+      nowMs: now + 2,
+    });
+
+    await expect(
+      retrieval.grep({
+        query: "handoff",
+        mode: "regex",
+        scope: "messages",
+        auth: {
+          sessionKey: "agent:main:subagent:grep",
+          nowMs: now + 3,
+        },
+      }),
+    ).rejects.toThrow(/requires a scoped conversationId/i);
+  });
 });
 
-async function createHarness() {
+async function createHarness(params?: { expansionAuth?: ExpansionGrantRegistry }) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-lcm-retrieval-"));
   OPEN_DIRS.add(dir);
 
@@ -332,6 +417,7 @@ async function createHarness() {
   const retrieval = createLcmRetrievalEngine({
     backend,
     tokenEstimator: createPlaceholderTokenEstimator(),
+    expansionAuth: params?.expansionAuth,
   });
 
   return { backend, retrieval };

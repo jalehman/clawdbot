@@ -38,3 +38,12 @@ export {
   type SubagentExpansionRunRequest,
   type SubagentExpansionRunner,
 } from "./subagent-expansion.js";
+export {
+  ExpansionAuthorizationError,
+  ExpansionGrantRegistry,
+  validateExpansionGrant,
+  type ExpansionAuthorizationErrorCode,
+  type ExpansionAuthorizationRequest,
+  type ExpansionGrant,
+  type IssueExpansionGrantInput,
+} from "./expansion-auth.js";

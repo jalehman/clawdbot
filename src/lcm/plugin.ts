@@ -32,6 +32,7 @@ import { createCompactionEngine } from "./compaction-engine.js";
 import { LCM_PLUGIN_CONFIG_SCHEMA, resolveLcmConfig, type LcmConfig } from "./config.js";
 import { createContextAssembler } from "./context-assembler.js";
 import { createConversationStore } from "./conversation-store.js";
+import { ExpansionGrantRegistry } from "./expansion-auth.js";
 import { ingestCanonicalTranscript, resolveConversationId } from "./ingestion.js";
 import { createLcmRetrievalEngine } from "./retrieval-engine.js";
 import { createLcmStorageBackend } from "./storage/backend.js";
@@ -47,6 +48,7 @@ import { createPlaceholderTokenEstimator } from "./token-estimator.js";
 export const LCM_CONTEXT_ENGINE_ID = "lcm";
 
 type LcmPluginRuntime = LcmRuntime & {
+  expansionAuth: ExpansionGrantRegistry;
   ensureReady: () => Promise<void>;
 };
 
@@ -58,8 +60,10 @@ function createScaffoldRuntime(): LcmPluginRuntime {
   });
   const tokenEstimator = createPlaceholderTokenEstimator();
   const store = createConversationStore({ storage });
+  const expansionAuth = new ExpansionGrantRegistry();
   let readyPromise: Promise<void> | null = null;
   return {
+    expansionAuth,
     store,
     assembler: createContextAssembler({
       store,
@@ -72,6 +76,7 @@ function createScaffoldRuntime(): LcmPluginRuntime {
     retrieval: createLcmRetrievalEngine({
       backend: storage,
       tokenEstimator,
+      expansionAuth,
     }),
     ensureReady() {
       if (!readyPromise) {
@@ -429,15 +434,29 @@ async function runLcmExpansionSubagentPass(params: {
   requesterChannel?: string;
   model?: string;
   passIndex: number;
+  conversationIds: string[];
+  depth: number;
+  tokenCap: number;
   prompt: string;
   question: string;
   runTimeoutSeconds: number;
+  expansionAuth: ExpansionGrantRegistry;
 }) {
   const childSessionKey = `agent:${resolveAgentIdFromSessionKey(params.requesterSessionKey)}:subagent:${crypto.randomUUID()}`;
   const idem = crypto.randomUUID();
   let runId: string = idem;
+  const grantTtlMs = Math.max(5_000, params.runTimeoutSeconds * 1_000 + 10_000);
 
   try {
+    params.expansionAuth.issueGrant({
+      delegatorSessionKey: params.requesterSessionKey,
+      delegateSessionKey: childSessionKey,
+      conversationIds: params.conversationIds,
+      maxDepth: params.depth,
+      maxTokenCap: params.tokenCap,
+      ttlMs: grantTtlMs,
+    });
+
     if (params.model) {
       await callGateway({
         method: "sessions.patch",
@@ -498,6 +517,7 @@ async function runLcmExpansionSubagentPass(params: {
     }
     return reply;
   } finally {
+    params.expansionAuth.revokeSession(childSessionKey);
     try {
       await callGateway({
         method: "sessions.delete",
@@ -539,7 +559,7 @@ const lcmPlugin: OpenClawPluginDefinition = {
     }
 
     api.registerTool(
-      {
+      (toolContext) => ({
         name: "lcm_describe",
         label: "LCM Describe",
         description: "Describe a summary id or file id from LCM storage.",
@@ -560,20 +580,25 @@ const lcmPlugin: OpenClawPluginDefinition = {
           if (!id) {
             throw new Error("id is required.");
           }
-
-          const result = await runtime.retrieval.describe(id);
+          const requesterSessionKey = resolveRequesterSessionKey(
+            toolContext.sessionKey,
+            api.config,
+          );
+          const result = await runtime.retrieval.describe(id, {
+            sessionKey: requesterSessionKey,
+          });
           return jsonToolResult("describe", {
             id,
             found: Boolean(result),
             result,
           });
         },
-      },
+      }),
       { name: "lcm_describe", optional: true },
     );
 
     api.registerTool(
-      {
+      (toolContext) => ({
         name: "lcm_grep",
         label: "LCM Grep",
         description: "Search LCM messages and summaries with regex or full-text mode.",
@@ -600,6 +625,10 @@ const lcmPlugin: OpenClawPluginDefinition = {
           }
           await runtime.ensureReady();
 
+          const requesterSessionKey = resolveRequesterSessionKey(
+            toolContext.sessionKey,
+            api.config,
+          );
           const input = params as {
             query: string;
             mode?: "regex" | "full_text";
@@ -613,16 +642,19 @@ const lcmPlugin: OpenClawPluginDefinition = {
             scope: input.scope,
             conversationId: toConversationId(input.conversationId) ?? undefined,
             limit: toPositiveInt(input.limit, lcmConfig.retrievalK, 1, 200),
+            auth: {
+              sessionKey: requesterSessionKey,
+            },
           };
           const result = await runtime.retrieval.grep(grepInput);
           return jsonToolResult("grep", result);
         },
-      },
+      }),
       { name: "lcm_grep", optional: true },
     );
 
     api.registerTool(
-      {
+      (toolContext) => ({
         name: "lcm_expand",
         label: "LCM Expand",
         description: "Expand a summary id through lineage with bounded depth/token caps.",
@@ -646,6 +678,10 @@ const lcmPlugin: OpenClawPluginDefinition = {
           }
           await runtime.ensureReady();
 
+          const requesterSessionKey = resolveRequesterSessionKey(
+            toolContext.sessionKey,
+            api.config,
+          );
           const input = params as {
             summaryId: string;
             depth?: number;
@@ -664,11 +700,14 @@ const lcmPlugin: OpenClawPluginDefinition = {
             includeMessages: input.includeMessages ?? true,
             tokenCap: toPositiveInt(input.tokenCap, 4_000, 1, 20_000),
             limit: toPositiveInt(input.limit, lcmConfig.retrievalK, 1, 500),
+            auth: {
+              sessionKey: requesterSessionKey,
+            },
           };
           const result = await runtime.retrieval.expand(expandInput);
           return jsonToolResult("expand", result);
         },
-      },
+      }),
       { name: "lcm_expand", optional: true },
     );
 
@@ -762,9 +801,13 @@ const lcmPlugin: OpenClawPluginDefinition = {
                   requesterChannel: toolContext.messageChannel,
                   model: resolvedModel,
                   passIndex: request.passIndex,
+                  conversationIds: request.conversationIds,
+                  depth: request.depth,
+                  tokenCap: request.tokenCap,
                   prompt: request.prompt,
                   question,
                   runTimeoutSeconds,
+                  expansionAuth: runtime.expansionAuth,
                 })
             : undefined;
 
@@ -776,6 +819,7 @@ const lcmPlugin: OpenClawPluginDefinition = {
           const result = await orchestrator.expandDeep({
             targetIds,
             question,
+            sessionKey: requesterSessionKey,
             depth,
             tokenCap: tokenBudget,
             maxPasses,

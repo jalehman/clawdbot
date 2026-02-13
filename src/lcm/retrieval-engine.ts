@@ -3,6 +3,7 @@ import type { TokenEstimator } from "./token-estimator.js";
 import type {
   ConversationId,
   MessageId,
+  RetrievalAuthorizationInput,
   RetrievalDescribeResult,
   RetrievalEngine,
   RetrievalExpandInput,
@@ -20,6 +21,7 @@ import type {
   RetrievalSummaryDescribeResult,
   SummaryId,
 } from "./types.js";
+import { ExpansionGrantRegistry } from "./expansion-auth.js";
 
 const DEFAULT_GREP_LIMIT = 20;
 const MAX_GREP_LIMIT = 200;
@@ -90,6 +92,7 @@ export type CreateLcmRetrievalEngineParams = {
   backend: LcmStorageBackend;
   tokenEstimator: TokenEstimator;
   regexScanLimit?: number;
+  expansionAuth?: ExpansionGrantRegistry;
 };
 
 /**
@@ -106,6 +109,7 @@ class SqliteLcmRetrievalEngine implements RetrievalEngine {
   private readonly backend: LcmStorageBackend;
   private readonly tokenEstimator: TokenEstimator;
   private readonly regexScanLimit: number;
+  private readonly expansionAuth?: ExpansionGrantRegistry;
 
   /**
    * Construct the retrieval adapter.
@@ -114,12 +118,16 @@ class SqliteLcmRetrievalEngine implements RetrievalEngine {
     this.backend = params.backend;
     this.tokenEstimator = params.tokenEstimator;
     this.regexScanLimit = clampInt(params.regexScanLimit, DEFAULT_REGEX_SCAN_LIMIT, 1, 20_000);
+    this.expansionAuth = params.expansionAuth;
   }
 
   /**
    * Describe either a summary item id or file artifact id.
    */
-  async describe(id: string): Promise<RetrievalDescribeResult | null> {
+  async describe(
+    id: string,
+    auth?: RetrievalAuthorizationInput,
+  ): Promise<RetrievalDescribeResult | null> {
     const normalizedId = normalizeId(id);
     if (!normalizedId) {
       return null;
@@ -132,6 +140,10 @@ class SqliteLcmRetrievalEngine implements RetrievalEngine {
       [normalizedId],
     );
     if (summaryRow) {
+      this.authorizeConversationScope({
+        auth,
+        conversationId: summaryRow.conversation_id,
+      });
       return this.buildSummaryDescribe(summaryRow);
     }
 
@@ -142,6 +154,10 @@ class SqliteLcmRetrievalEngine implements RetrievalEngine {
       [normalizedId],
     );
     if (artifactRow) {
+      this.authorizeConversationScope({
+        auth,
+        conversationId: artifactRow.conversation_id,
+      });
       return this.buildFileDescribe(artifactRow);
     }
 
@@ -157,6 +173,10 @@ class SqliteLcmRetrievalEngine implements RetrievalEngine {
     const scope = normalizeGrepScope(input.scope);
     const limit = clampInt(input.limit, DEFAULT_GREP_LIMIT, 1, MAX_GREP_LIMIT);
     const conversationId = normalizeConversationId(input.conversationId);
+    this.authorizeConversationScope({
+      auth: input.auth,
+      conversationId,
+    });
 
     if (mode === "regex") {
       return this.grepRegex({ query, scope, limit, conversationId });
@@ -198,6 +218,12 @@ class SqliteLcmRetrievalEngine implements RetrievalEngine {
     const itemLimit = clampInt(input.limit, DEFAULT_EXPAND_LIMIT, 1, MAX_EXPAND_LIMIT);
     const tokenCap = clampInt(input.tokenCap, DEFAULT_EXPAND_TOKEN_CAP, 1, MAX_EXPAND_TOKEN_CAP);
     const includeMessages = input.includeMessages !== false;
+    this.authorizeConversationScope({
+      auth: input.auth,
+      conversationId: root.conversation_id,
+      depth: depthLimit,
+      tokenCap,
+    });
 
     const queue: Array<{ id: string; depth: number }> = [{ id: root.item_id, depth: 0 }];
     const visited = new Set<string>([root.item_id]);
@@ -297,6 +323,27 @@ class SqliteLcmRetrievalEngine implements RetrievalEngine {
       truncated,
       nextSummaryIds,
     };
+  }
+
+  /**
+   * Enforce delegated cross-session expansion scope, when present.
+   */
+  private authorizeConversationScope(params: {
+    auth?: RetrievalAuthorizationInput;
+    conversationId?: string;
+    depth?: number;
+    tokenCap?: number;
+  }): void {
+    if (!this.expansionAuth) {
+      return;
+    }
+    this.expansionAuth.authorize({
+      sessionKey: params.auth?.sessionKey,
+      conversationId: params.conversationId as ConversationId | undefined,
+      depth: params.depth,
+      tokenCap: params.tokenCap,
+      nowMs: params.auth?.nowMs,
+    });
   }
 
   /**
