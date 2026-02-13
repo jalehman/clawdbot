@@ -12,7 +12,7 @@ export type FactId = Brand<string, "FactId">;
 export type AnchorId = Brand<string, "AnchorId">;
 
 export type MessageRole = "system" | "user" | "assistant" | "tool";
-export type SummaryKind = "rolling" | "compaction" | "checkpoint" | "topic";
+export type SummaryKind = "rolling" | "compaction" | "checkpoint" | "topic" | "leaf" | "condensed";
 export type IntegritySeverity = "info" | "warn" | "error";
 
 /**
@@ -79,7 +79,7 @@ export type AssembleContextInput = {
 /**
  * Final assembled context payload.
  */
-export type AssembledContext = {
+export type AssembleContextResult = {
   conversationId: ConversationId;
   messages: LcmMessage[];
   summaries: LcmSummary[];
@@ -88,12 +88,51 @@ export type AssembledContext = {
 };
 
 /**
+ * Backward-compatible alias for assembled context payload.
+ */
+export type AssembledContext = AssembleContextResult;
+
+/**
+ * Compaction trigger reason.
+ */
+export type CompactionDecisionReason = "manual" | "token_threshold" | "message_threshold" | "none";
+
+/**
+ * Compaction decision query.
+ */
+export type CompactionDecisionInput = {
+  conversationId: ConversationId;
+  assembledTokens: number;
+  modelTokenBudget: number;
+  contextThreshold: number;
+  maxActiveMessages: number;
+  manual?: boolean;
+};
+
+/**
+ * Compaction decision output.
+ */
+export type CompactionDecision = {
+  shouldCompact: boolean;
+  reason: CompactionDecisionReason;
+  assembledTokens: number;
+  activeMessageCount: number;
+  tokenTriggerThreshold: number;
+  maxActiveMessages: number;
+};
+
+/**
  * Compaction request.
  */
 export type CompactionRequest = {
   conversationId: ConversationId;
-  currentTokenEstimate: number;
+  assembledTokens: number;
+  modelTokenBudget: number;
+  contextThreshold: number;
+  maxActiveMessages: number;
   targetTokens: number;
+  freshTailCount: number;
+  manual?: boolean;
   customInstructions?: string;
 };
 
@@ -102,10 +141,16 @@ export type CompactionRequest = {
  */
 export type CompactionResult = {
   compacted: boolean;
-  summary?: LcmSummary;
-  deletedMessageIds?: MessageId[];
+  summaries: LcmSummary[];
   tokensBefore: number;
-  tokensAfter?: number;
+  tokensAfter: number;
+  activeMessageCountBefore: number;
+  activeMessageCountAfter: number;
+  decision: CompactionDecision;
+  batches: {
+    leaf: number;
+    condensed: number;
+  };
   reason?: string;
 };
 
@@ -451,6 +496,16 @@ export type SearchSummariesInput = {
 };
 
 /**
+ * Canonical message query options.
+ */
+export type ListMessagesInput = {
+  conversationId: ConversationId;
+  messageIds?: MessageId[];
+  limit?: number;
+  descending?: boolean;
+};
+
+/**
  * Canonical message search hit.
  */
 export type LcmMessageSearchHit = {
@@ -489,6 +544,8 @@ export type ConversationStore = {
   getSummary(summaryId: SummaryId): Promise<LcmSummaryItem | null>;
   getSummaryChildren(summaryId: SummaryId): Promise<LcmSummaryItem[]>;
   getSummaryMessages(summaryId: SummaryId, limit?: number): Promise<StoredLcmMessage[]>;
+  listMessages(input: ListMessagesInput): Promise<StoredLcmMessage[]>;
+  withTransaction<T>(fn: (store: ConversationStore) => Promise<T> | T): Promise<T>;
   searchMessages(input: SearchMessagesInput): Promise<LcmMessageSearchHit[]>;
   searchSummaries(input: SearchSummariesInput): Promise<LcmSummarySearchHit[]>;
 };
@@ -497,13 +554,14 @@ export type ConversationStore = {
  * Message assembler abstraction.
  */
 export type ContextAssembler = {
-  assemble(input: AssembleContextInput): Promise<AssembledContext>;
+  assemble(input: AssembleContextInput): Promise<AssembleContextResult>;
 };
 
 /**
  * Message compaction abstraction.
  */
 export type CompactionEngine = {
+  evaluate(input: CompactionDecisionInput): Promise<CompactionDecision>;
   compact(request: CompactionRequest): Promise<CompactionResult>;
 };
 

@@ -1,9 +1,12 @@
+import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { Type } from "@sinclair/typebox";
 import path from "node:path";
 import type { OpenClawPluginDefinition } from "../plugins/types.js";
 import type {
   ConversationId,
+  LcmMessage,
   LcmRuntime,
+  LcmSummary,
   RetrievalExpandInput,
   RetrievalGrepInput,
 } from "./types.js";
@@ -14,9 +17,12 @@ import {
   type ContextCompactParams,
   type ContextEngine,
 } from "../context-engine/index.js";
-import { LCM_PLUGIN_CONFIG_SCHEMA, resolveLcmConfig } from "./config.js";
+import { createCompactionEngine } from "./compaction-engine.js";
+import { LCM_PLUGIN_CONFIG_SCHEMA, resolveLcmConfig, type LcmConfig } from "./config.js";
+import { createContextAssembler } from "./context-assembler.js";
 import { createConversationStore } from "./conversation-store.js";
 import { ingestCanonicalTranscript, resolveConversationId } from "./ingestion.js";
+import { createLcmRetrievalEngine } from "./retrieval-engine.js";
 import { createLcmStorageBackend } from "./storage/backend.js";
 import { createPlaceholderTokenEstimator } from "./token-estimator.js";
 
@@ -36,9 +42,22 @@ function createScaffoldRuntime(): LcmPluginRuntime {
     },
   });
   const store = createConversationStore({ storage });
+  const tokenEstimator = createPlaceholderTokenEstimator();
   let readyPromise: Promise<void> | null = null;
   return {
     store,
+    assembler: createContextAssembler({
+      store,
+      tokenEstimator,
+    }),
+    compaction: createCompactionEngine({
+      store,
+      tokenEstimator,
+    }),
+    retrieval: createLcmRetrievalEngine({
+      backend: storage,
+      tokenEstimator,
+    }),
     ensureReady() {
       if (!readyPromise) {
         readyPromise = storage.migrate();
@@ -49,9 +68,9 @@ function createScaffoldRuntime(): LcmPluginRuntime {
 }
 
 /**
- * Build an LCM context engine scaffold with canonical ingest persistence.
+ * Build an LCM context engine with canonical ingest persistence.
  */
-function createLcmContextEngine(runtime: LcmPluginRuntime): ContextEngine {
+function createLcmContextEngine(runtime: LcmPluginRuntime, lcmConfig: LcmConfig): ContextEngine {
   const tokenEstimator = createPlaceholderTokenEstimator();
   return {
     id: LCM_CONTEXT_ENGINE_ID,
@@ -86,25 +105,135 @@ function createLcmContextEngine(runtime: LcmPluginRuntime): ContextEngine {
       };
     },
     async assemble(params) {
+      await runtime.ensureReady();
+      const conversationId = resolveConversationIdFromMeta(params.meta);
+      if (!runtime.assembler || !conversationId) {
+        return {
+          messages: params.messages,
+          meta: {
+            ...params.meta,
+            lcm: {
+              ...asRecord(params.meta?.lcm),
+              runtimeReady: false,
+              phase: "assemble",
+              conversationId,
+              assembledMessages: params.messages.length,
+              assembledSummaries: 0,
+              tokenEstimate: estimateAgentMessages(params.messages),
+            },
+          },
+        };
+      }
+
+      const assembled = await runtime.assembler.assemble({
+        conversationId,
+        targetTokens: lcmConfig.targetTokens,
+        freshTailCount: lcmConfig.freshTailCount,
+      });
+      const messages = toAgentMessages(assembled.messages, assembled.summaries);
+
       return {
-        messages: params.messages,
+        messages,
         meta: {
           ...params.meta,
           lcm: {
+            ...asRecord(params.meta?.lcm),
             runtimeReady: Boolean(runtime.assembler),
             phase: "assemble",
+            conversationId,
+            assembledMessages: assembled.messages.length,
+            assembledSummaries: assembled.summaries.length,
+            tokenEstimate: assembled.tokenEstimate,
           },
         },
       };
     },
-    async compact(_params: ContextCompactParams) {
+    async compact(params: ContextCompactParams) {
+      await runtime.ensureReady();
+      const conversationId = resolveConversationIdFromMeta(params.meta);
+      if (!conversationId || !runtime.compaction) {
+        return {
+          ok: false,
+          compacted: false,
+          reason: "LCM compaction requires conversation metadata and compaction runtime.",
+        };
+      }
+
+      const manual = Boolean(params.customInstructions?.trim()) || readBoolean(params.meta?.manual);
+      const lcmMeta = asRecord(params.meta?.lcm);
+      const estimateFromMeta = readNumber(lcmMeta.tokenEstimate);
+      const assembledTokens = Math.max(
+        0,
+        Math.trunc(estimateFromMeta ?? estimateAgentMessages(params.messages)),
+      );
+      const result = await runtime.compaction.compact({
+        conversationId,
+        assembledTokens,
+        modelTokenBudget: lcmConfig.compactionTokenThreshold,
+        contextThreshold: 1,
+        maxActiveMessages: 200,
+        targetTokens: lcmConfig.targetTokens,
+        freshTailCount: lcmConfig.freshTailCount,
+        manual,
+        customInstructions: params.customInstructions,
+      });
+
+      if (!result.compacted) {
+        return {
+          ok: true,
+          compacted: false,
+          reason: result.reason ?? "LCM compaction not required.",
+        };
+      }
+
+      const activeItems = await runtime.store?.getContextItems({
+        conversationId,
+        includeTombstoned: false,
+        itemTypes: ["message", "summary"],
+        limit: 1,
+      });
+      const firstKeptEntryId =
+        activeItems?.[0]?.itemId ??
+        result.summaries.at(-1)?.messageEndId ??
+        result.summaries[0]?.id;
+      const summaryText = result.summaries.map((summary) => summary.text).join("\n\n");
+
       return {
-        ok: false,
-        compacted: false,
-        reason: "LCM compaction engine is not implemented yet.",
+        ok: true,
+        compacted: true,
+        result: {
+          summary: summaryText || "Compaction completed.",
+          firstKeptEntryId: firstKeptEntryId ?? "unknown",
+          tokensBefore: result.tokensBefore,
+          tokensAfter: result.tokensAfter,
+          details: {
+            decision: result.decision,
+            batches: result.batches,
+            summaries: result.summaries.map((summary) => ({
+              id: summary.id,
+              kind: summary.kind,
+            })),
+            activeMessageCountBefore: result.activeMessageCountBefore,
+            activeMessageCountAfter: result.activeMessageCountAfter,
+          },
+        },
       };
     },
   };
+}
+
+function resolveConversationIdFromMeta(meta?: Record<string, unknown>): ConversationId | null {
+  const lcmMeta = asRecord(meta?.lcm);
+  const fromLcm = lcmMeta.conversationId;
+  if (typeof fromLcm === "string" && fromLcm.trim()) {
+    return fromLcm.trim() as ConversationId;
+  }
+
+  const direct = meta?.conversationId;
+  if (typeof direct === "string" && direct.trim()) {
+    return direct.trim() as ConversationId;
+  }
+  return null;
 }
 
 function toConversationId(value?: string): ConversationId | null {
@@ -120,6 +249,109 @@ function toPositiveInt(value: unknown, fallback: number, min = 1, max = 10_000):
     return fallback;
   }
   return Math.min(max, Math.max(min, Math.trunc(value)));
+}
+
+function toAgentMessages(messages: LcmMessage[], summaries: LcmSummary[]): AgentMessage[] {
+  const rawMessages = messages.map(
+    (message) =>
+      ({
+        role: mapLcmRoleToAgentRole(message.role),
+        content: message.content,
+      }) as AgentMessage,
+  );
+
+  if (summaries.length === 0) {
+    return rawMessages;
+  }
+
+  const summariesText = summaries
+    .map((summary, index) => `${index + 1}. (${summary.kind}) ${summary.text}`)
+    .join("\n");
+  const summaryMessage = {
+    role: "custom",
+    content: `Prior conversation summaries:\n${summariesText}`,
+  } as AgentMessage;
+
+  const firstNonSystem = rawMessages.findIndex((message) => message.role !== "custom");
+  if (firstNonSystem < 0) {
+    return [...rawMessages, summaryMessage];
+  }
+  return [
+    ...rawMessages.slice(0, firstNonSystem),
+    summaryMessage,
+    ...rawMessages.slice(firstNonSystem),
+  ];
+}
+
+function mapLcmRoleToAgentRole(role: LcmMessage["role"]): AgentMessage["role"] {
+  switch (role) {
+    case "system":
+      return "custom";
+    case "user":
+      return "user";
+    case "assistant":
+      return "assistant";
+    case "tool":
+      return "toolResult";
+  }
+}
+
+function estimateAgentMessages(messages: AgentMessage[]): number {
+  const tokenEstimator = createPlaceholderTokenEstimator();
+  let total = 0;
+  for (const message of messages) {
+    total += tokenEstimator.estimateText(readMessageText(message));
+  }
+  return total;
+}
+
+function readMessageText(message: AgentMessage): string {
+  const content = (message as { content?: unknown }).content;
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  const lines: string[] = [];
+  for (const part of content) {
+    if (!part || typeof part !== "object") {
+      continue;
+    }
+    const text = (part as { text?: unknown; content?: unknown; value?: unknown }).text;
+    if (typeof text === "string" && text.trim()) {
+      lines.push(text);
+      continue;
+    }
+    const contentText = (part as { content?: unknown }).content;
+    if (typeof contentText === "string" && contentText.trim()) {
+      lines.push(contentText);
+      continue;
+    }
+    const valueText = (part as { value?: unknown }).value;
+    if (typeof valueText === "string" && valueText.trim()) {
+      lines.push(valueText);
+    }
+  }
+  return lines.join("\n");
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return {};
+}
+
+function readBoolean(value: unknown): boolean {
+  return value === true;
+}
+
+function readNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  return undefined;
 }
 
 function retrievalUnavailableResult(action: string) {
@@ -173,7 +405,9 @@ const lcmPlugin: OpenClawPluginDefinition = {
     const runtime = createScaffoldRuntime();
 
     if (!registeredContextEngineIds().includes(LCM_CONTEXT_ENGINE_ID)) {
-      registerContextEngine(LCM_CONTEXT_ENGINE_ID, () => createLcmContextEngine(runtime));
+      registerContextEngine(LCM_CONTEXT_ENGINE_ID, () =>
+        createLcmContextEngine(runtime, lcmConfig),
+      );
       api.logger.info(
         `lcm: registered context engine "${LCM_CONTEXT_ENGINE_ID}" (targetTokens=${lcmConfig.targetTokens})`,
       );

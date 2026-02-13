@@ -18,6 +18,8 @@ export {
   createConversationStore,
   SqliteConversationStore,
 } from "./conversation-store.js";
+export { createContextAssembler } from "./context-assembler.js";
+export { createCompactionEngine } from "./compaction-engine.js";
 export {
   ingestCanonicalTranscript,
   resolveConversationId,

@@ -15,6 +15,7 @@ import type {
   LcmSummarySearchHit,
   LinkSummaryToMessagesInput,
   LinkSummaryToParentsInput,
+  ListMessagesInput,
   MessageId,
   ReplaceContextRangeWithSummaryInput,
   SearchMessagesInput,
@@ -428,6 +429,40 @@ export class SqliteConversationStore implements ConversationStore {
       [summaryId, summary.conversation_id, boundedLimit],
     );
     return rows.map(mapMessageRow);
+  }
+
+  /**
+   * List canonical messages for a conversation in ordinal order.
+   */
+  async listMessages(input: ListMessagesInput): Promise<StoredLcmMessage[]> {
+    const where: string[] = ["conversation_id = ?"];
+    const params: Array<string | number> = [input.conversationId];
+
+    const messageIds = (input.messageIds ?? []).filter(Boolean);
+    if (messageIds.length > 0) {
+      where.push(`message_id IN (${messageIds.map(() => "?").join(", ")})`);
+      params.push(...messageIds);
+    }
+
+    const limit = Math.max(1, Math.trunc(input.limit ?? 2_000));
+    params.push(limit);
+    const direction = input.descending ? "DESC" : "ASC";
+    const rows = this.storage.all<DbMessageRow>(
+      `SELECT message_id, conversation_id, ordinal, role, author_id, content_text, payload_json, created_at_ms
+       FROM lcm_messages
+       WHERE ${where.join(" AND ")}
+       ORDER BY ordinal ${direction}
+       LIMIT ?`,
+      params,
+    );
+    return rows.map(mapMessageRow);
+  }
+
+  /**
+   * Run a callback in a single SQLite transaction scope.
+   */
+  async withTransaction<T>(fn: (store: ConversationStore) => Promise<T> | T): Promise<T> {
+    return this.storage.withTransaction(() => fn(this), { mode: "immediate" });
   }
 
   /**
