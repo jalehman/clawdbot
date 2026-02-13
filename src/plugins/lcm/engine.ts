@@ -165,28 +165,14 @@ export class LcmContextEngine implements ContextEngine {
   }): Promise<AssembleResult> {
     this.ensureMigrated();
 
-    const { sessionId, tokenBudget } = params;
-
-    // Look up conversation — if none exists, fall back to pass-through
-    const conversation = await this.conversationStore.getConversationBySessionId(sessionId);
-    if (!conversation) {
-      return {
-        messages: params.messages,
-        estimatedTokens: 0,
-      };
-    }
-
-    const budget = tokenBudget ?? 128_000; // default to 128k if unspecified
-
-    const result = await this.assembler.assemble({
-      conversationId: conversation.conversationId,
-      tokenBudget: budget,
-      freshTailCount: this.config.freshTailCount,
-    });
-
+    // Pass through the live session messages unchanged.
+    // LCM ingest currently runs post-prompt and does not capture the full
+    // live context (for example system prompts and pre-prompt session history).
+    // Replacing active session messages with DB-assembled context causes
+    // context loss across turns.
     return {
-      messages: result.messages,
-      estimatedTokens: result.estimatedTokens,
+      messages: params.messages,
+      estimatedTokens: 0,
     };
   }
 
