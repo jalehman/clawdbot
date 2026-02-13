@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { ConversationId, SummaryId } from "./types.js";
+import type { ConversationId } from "./types.js";
 import { createCompactionEngine } from "./compaction-engine.js";
 import { createConversationStore } from "./conversation-store.js";
 import { ingestCanonicalTranscript } from "./ingestion.js";
