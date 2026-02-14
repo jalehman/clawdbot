@@ -4,7 +4,12 @@ import type { LcmContextEngine } from "../../plugins/lcm/engine.js";
 import type { AnyAgentTool } from "./common.js";
 import { ensureContextEnginesInitialized } from "../../context-engine/init.js";
 import { resolveContextEngine } from "../../context-engine/registry.js";
-import { ExpansionOrchestrator, distillForSubagent } from "../../plugins/lcm/expansion.js";
+import { resolveLcmConfig } from "../../plugins/lcm/db/config.js";
+import {
+  ExpansionOrchestrator,
+  distillForSubagent,
+  resolveExpansionTokenCap,
+} from "../../plugins/lcm/expansion.js";
 import { jsonResult } from "./common.js";
 import { resolveLcmConversationScope } from "./lcm-conversation-scope.js";
 
@@ -86,7 +91,11 @@ export function createLcmExpandTool(options?: {
       const summaryIds = p.summaryIds as string[] | undefined;
       const query = typeof p.query === "string" ? p.query.trim() : undefined;
       const maxDepth = typeof p.maxDepth === "number" ? Math.trunc(p.maxDepth) : undefined;
-      const tokenCap = typeof p.tokenCap === "number" ? Math.trunc(p.tokenCap) : undefined;
+      const requestedTokenCap = typeof p.tokenCap === "number" ? Math.trunc(p.tokenCap) : undefined;
+      const tokenCap = resolveExpansionTokenCap({
+        requestedTokenCap,
+        maxExpandTokens: resolveLcmConfig().maxExpandTokens,
+      });
       const includeMessages = typeof p.includeMessages === "boolean" ? p.includeMessages : false;
       const conversationScope = await resolveLcmConversationScope({
         lcm,

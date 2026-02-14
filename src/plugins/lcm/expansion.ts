@@ -55,6 +55,22 @@ function truncateSnippet(content: string, maxChars: number = SNIPPET_MAX_CHARS):
 }
 
 /**
+ * Resolve the effective expansion token cap by applying a configured default
+ * and an explicit upper bound.
+ */
+export function resolveExpansionTokenCap(input: {
+  requestedTokenCap?: number;
+  maxExpandTokens: number;
+}): number {
+  const maxExpandTokens = Math.max(1, Math.trunc(input.maxExpandTokens));
+  const requestedTokenCap = input.requestedTokenCap;
+  if (typeof requestedTokenCap !== "number" || !Number.isFinite(requestedTokenCap)) {
+    return maxExpandTokens;
+  }
+  return Math.min(Math.max(1, Math.trunc(requestedTokenCap)), maxExpandTokens);
+}
+
+/**
  * Convert a single RetrievalEngine.expand() result into the ExpansionResult
  * entry format, truncating content to short snippets.
  */
@@ -315,8 +331,12 @@ export function buildExpansionToolDefinition(options: {
       const query = typeof params.query === "string" ? params.query.trim() : undefined;
       const maxDepth =
         typeof params.maxDepth === "number" ? Math.trunc(params.maxDepth) : undefined;
-      const tokenCap =
-        typeof params.tokenCap === "number" ? Math.trunc(params.tokenCap) : config.maxExpandTokens;
+      const requestedTokenCap =
+        typeof params.tokenCap === "number" ? Math.trunc(params.tokenCap) : undefined;
+      const tokenCap = resolveExpansionTokenCap({
+        requestedTokenCap,
+        maxExpandTokens: config.maxExpandTokens,
+      });
       const includeMessages =
         typeof params.includeMessages === "boolean" ? params.includeMessages : false;
 
