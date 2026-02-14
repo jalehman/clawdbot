@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ConversationStore } from "./store/conversation-store.js";
+import type { ConversationStore, CreateMessagePartInput } from "./store/conversation-store.js";
 import type { SummaryStore, SummaryRecord, ContextItemRecord } from "./store/summary-store.js";
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -22,7 +22,7 @@ export interface CompactionResult {
   /** Whether condensation was performed */
   condensed: boolean;
   /** Escalation level used: "normal" | "aggressive" | "fallback" */
-  level?: string;
+  level?: CompactionLevel;
 }
 
 export interface CompactionConfig {
@@ -37,6 +37,9 @@ export interface CompactionConfig {
   /** Maximum compaction rounds (default 10) */
   maxRounds: number;
 }
+
+type CompactionLevel = "normal" | "aggressive" | "fallback";
+type CompactionPass = "leaf" | "condensed";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -155,7 +158,7 @@ export class CompactionEngine {
 
     let leafResult: {
       summaryId: string;
-      level: string;
+      level: CompactionLevel;
     } | null = null;
 
     if (compactableMessages.length > 0) {
@@ -165,6 +168,15 @@ export class CompactionEngine {
     // Check if we are now under threshold after the leaf pass
     const tokensAfterLeaf = await this.summaryStore.getContextTokenCount(conversationId);
     if (tokensAfterLeaf <= threshold) {
+      await this.persistCompactionEvents({
+        conversationId,
+        tokensBefore,
+        tokensAfterLeaf,
+        tokensAfterFinal: tokensAfterLeaf,
+        leafResult,
+        condenseResult: null,
+      });
+
       return {
         actionTaken: true,
         tokensBefore,
@@ -183,6 +195,15 @@ export class CompactionEngine {
 
     if (currentSummaryItems.length === 0) {
       // Nothing to condense; return what we have
+      await this.persistCompactionEvents({
+        conversationId,
+        tokensBefore,
+        tokensAfterLeaf,
+        tokensAfterFinal: tokensAfterLeaf,
+        leafResult,
+        condenseResult: null,
+      });
+
       return {
         actionTaken: leafResult !== null,
         tokensBefore,
@@ -196,6 +217,14 @@ export class CompactionEngine {
     const condenseResult = await this.condensedPass(conversationId, currentSummaryItems, summarize);
 
     const tokensAfterCondense = await this.summaryStore.getContextTokenCount(conversationId);
+    await this.persistCompactionEvents({
+      conversationId,
+      tokensBefore,
+      tokensAfterLeaf,
+      tokensAfterFinal: tokensAfterCondense,
+      leafResult,
+      condenseResult,
+    });
 
     return {
       actionTaken: true,
@@ -288,7 +317,7 @@ export class CompactionEngine {
     conversationId: number,
     messageItems: ContextItemRecord[],
     summarize: (text: string, aggressive?: boolean) => Promise<string>,
-  ): Promise<{ summaryId: string; level: string }> {
+  ): Promise<{ summaryId: string; level: CompactionLevel }> {
     // Fetch full message content for each context item
     const messageContents: { messageId: number; content: string }[] = [];
     for (const item of messageItems) {
@@ -309,7 +338,7 @@ export class CompactionEngine {
 
     // Level 1: Normal summarization
     let summaryText = await summarize(concatenated, false);
-    let level = "normal";
+    let level: CompactionLevel = "normal";
 
     // Convergence check: summary must be strictly smaller than input
     if (estimateTokens(summaryText) >= inputTokens) {
@@ -369,7 +398,7 @@ export class CompactionEngine {
     conversationId: number,
     summaryItems: ContextItemRecord[],
     summarize: (text: string, aggressive?: boolean) => Promise<string>,
-  ): Promise<{ summaryId: string; level: string }> {
+  ): Promise<{ summaryId: string; level: CompactionLevel }> {
     // Fetch full summary records
     const summaryRecords: SummaryRecord[] = [];
     for (const item of summaryItems) {
@@ -387,7 +416,7 @@ export class CompactionEngine {
 
     // Level 1: Normal condensation
     let condensedText = await summarize(concatenated, false);
-    let level = "normal";
+    let level: CompactionLevel = "normal";
 
     // Convergence check
     if (estimateTokens(condensedText) >= inputTokens) {
@@ -435,5 +464,124 @@ export class CompactionEngine {
     });
 
     return { summaryId, level };
+  }
+
+  /**
+   * Persist durable compaction events into canonical history as message parts.
+   *
+   * Event persistence is best-effort: failures are swallowed to avoid
+   * compromising the core compaction path.
+   */
+  private async persistCompactionEvents(input: {
+    conversationId: number;
+    tokensBefore: number;
+    tokensAfterLeaf: number;
+    tokensAfterFinal: number;
+    leafResult: { summaryId: string; level: CompactionLevel } | null;
+    condenseResult: { summaryId: string; level: CompactionLevel } | null;
+  }): Promise<void> {
+    const {
+      conversationId,
+      tokensBefore,
+      tokensAfterLeaf,
+      tokensAfterFinal,
+      leafResult,
+      condenseResult,
+    } = input;
+
+    if (!leafResult && !condenseResult) {
+      return;
+    }
+
+    const conversation = await this.conversationStore.getConversation(conversationId);
+    if (!conversation) {
+      return;
+    }
+
+    const createdSummaryIds = [leafResult?.summaryId, condenseResult?.summaryId].filter(
+      (id): id is string => typeof id === "string" && id.length > 0,
+    );
+    const condensedPassOccurred = condenseResult !== null;
+
+    if (leafResult) {
+      await this.persistCompactionEvent({
+        conversationId,
+        sessionId: conversation.sessionId,
+        pass: "leaf",
+        level: leafResult.level,
+        tokensBefore,
+        tokensAfter: tokensAfterLeaf,
+        createdSummaryId: leafResult.summaryId,
+        createdSummaryIds,
+        condensedPassOccurred,
+      });
+    }
+
+    if (condenseResult) {
+      await this.persistCompactionEvent({
+        conversationId,
+        sessionId: conversation.sessionId,
+        pass: "condensed",
+        level: condenseResult.level,
+        tokensBefore: tokensAfterLeaf,
+        tokensAfter: tokensAfterFinal,
+        createdSummaryId: condenseResult.summaryId,
+        createdSummaryIds,
+        condensedPassOccurred,
+      });
+    }
+  }
+
+  /** Write one compaction event message + part atomically where possible. */
+  private async persistCompactionEvent(input: {
+    conversationId: number;
+    sessionId: string;
+    pass: CompactionPass;
+    level: CompactionLevel;
+    tokensBefore: number;
+    tokensAfter: number;
+    createdSummaryId: string;
+    createdSummaryIds: string[];
+    condensedPassOccurred: boolean;
+  }): Promise<void> {
+    const content = `LCM compaction ${input.pass} pass (${input.level}): ${input.tokensBefore} -> ${input.tokensAfter}`;
+    const metadata = JSON.stringify({
+      conversationId: input.conversationId,
+      pass: input.pass,
+      level: input.level,
+      tokensBefore: input.tokensBefore,
+      tokensAfter: input.tokensAfter,
+      createdSummaryId: input.createdSummaryId,
+      createdSummaryIds: input.createdSummaryIds,
+      condensedPassOccurred: input.condensedPassOccurred,
+    });
+
+    const writeEvent = async (): Promise<void> => {
+      const seq = (await this.conversationStore.getMaxSeq(input.conversationId)) + 1;
+      const eventMessage = await this.conversationStore.createMessage({
+        conversationId: input.conversationId,
+        seq,
+        role: "system",
+        content,
+        tokenCount: estimateTokens(content),
+      });
+
+      const parts: CreateMessagePartInput[] = [
+        {
+          sessionId: input.sessionId,
+          partType: "compaction",
+          ordinal: 0,
+          textContent: content,
+          metadata,
+        },
+      ];
+      await this.conversationStore.createMessageParts(eventMessage.messageId, parts);
+    };
+
+    try {
+      await this.conversationStore.withTransaction(() => writeEvent());
+    } catch {
+      // Compaction should still succeed if event persistence fails.
+    }
   }
 }

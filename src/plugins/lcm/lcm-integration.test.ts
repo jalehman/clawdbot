@@ -21,6 +21,9 @@ function createMockConversationStore() {
   let nextPartId = 1;
 
   return {
+    withTransaction: vi.fn(async <T>(operation: () => Promise<T> | T): Promise<T> => {
+      return await operation();
+    }),
     createConversation: vi.fn(async (input: { sessionId: string; title?: string }) => {
       const conv = {
         conversationId: nextConvId++,
@@ -168,6 +171,7 @@ function createMockConversationStore() {
     // Expose internals for assertions
     _conversations: conversations,
     _messages: messages,
+    _messageParts: messageParts,
   };
 }
 
@@ -510,6 +514,12 @@ async function ingestMessages(
 ): Promise<MessageRecord[]> {
   const conversationId = opts?.conversationId ?? CONV_ID;
   const records: MessageRecord[] = [];
+  const existingConversation = await convStore.getConversation(conversationId);
+  if (!existingConversation) {
+    await convStore.createConversation({
+      sessionId: `session-${conversationId}`,
+    });
+  }
 
   for (let i = 0; i < count; i++) {
     const content = opts?.contentFn ? opts.contentFn(i) : `Message ${i}`;
@@ -770,6 +780,89 @@ describe("LCM integration: compaction", () => {
 
     // Total context items should be fewer than the original 10
     expect(contextItems.length).toBeLessThan(10);
+  });
+
+  it("compaction emits one durable compaction part for a leaf-only pass", async () => {
+    await convStore.createConversation({ sessionId: "leaf-only-session" });
+    await ingestMessages(convStore, sumStore, 5, {
+      contentFn: (i) => `Turn ${i}: ${"l".repeat(160)}`,
+      tokenCountFn: () => 40,
+    });
+
+    const summarize = vi.fn(async () => "Leaf summary");
+    const result = await compactionEngine.compact({
+      conversationId: CONV_ID,
+      tokenBudget: 250,
+      summarize,
+    });
+
+    expect(result.actionTaken).toBe(true);
+    expect(result.condensed).toBe(false);
+
+    const compactionParts = convStore._messageParts.filter(
+      (part) => part.partType === "compaction",
+    );
+    expect(compactionParts).toHaveLength(1);
+
+    const metadata = JSON.parse(compactionParts[0].metadata ?? "{}") as Record<string, unknown>;
+    expect(metadata.conversationId).toBe(CONV_ID);
+    expect(metadata.pass).toBe("leaf");
+    expect(metadata.tokensBefore).toBeTypeOf("number");
+    expect(metadata.tokensAfter).toBeTypeOf("number");
+    expect((metadata.tokensBefore as number) > (metadata.tokensAfter as number)).toBe(true);
+    expect(metadata.level).toBeDefined();
+    expect(metadata.createdSummaryId).toBeTypeOf("string");
+    expect(metadata.createdSummaryIds).toEqual([metadata.createdSummaryId]);
+    expect(metadata.condensedPassOccurred).toBe(false);
+  });
+
+  it("compaction emits durable compaction parts for leaf and condensed passes", async () => {
+    await convStore.createConversation({ sessionId: "leaf-condensed-session" });
+    await ingestMessages(convStore, sumStore, 8, {
+      contentFn: (i) => `Turn ${i}: ${"c".repeat(200)}`,
+      tokenCountFn: () => 50,
+    });
+
+    const summarize = vi.fn(async () => "Compacted");
+    const result = await compactionEngine.compact({
+      conversationId: CONV_ID,
+      tokenBudget: 260,
+      summarize,
+    });
+
+    expect(result.actionTaken).toBe(true);
+    expect(result.condensed).toBe(true);
+
+    const compactionParts = convStore._messageParts.filter(
+      (part) => part.partType === "compaction",
+    );
+    expect(compactionParts).toHaveLength(2);
+
+    const firstMetadata = JSON.parse(compactionParts[0].metadata ?? "{}") as Record<
+      string,
+      unknown
+    >;
+    const secondMetadata = JSON.parse(compactionParts[1].metadata ?? "{}") as Record<
+      string,
+      unknown
+    >;
+
+    expect(firstMetadata.pass).toBe("leaf");
+    expect(secondMetadata.pass).toBe("condensed");
+    expect(firstMetadata.condensedPassOccurred).toBe(true);
+    expect(secondMetadata.condensedPassOccurred).toBe(true);
+    expect(Array.isArray(firstMetadata.createdSummaryIds)).toBe(true);
+    expect(Array.isArray(secondMetadata.createdSummaryIds)).toBe(true);
+    expect((firstMetadata.createdSummaryIds as unknown[]).length).toBe(2);
+    expect((secondMetadata.createdSummaryIds as unknown[]).length).toBe(2);
+    expect(firstMetadata.conversationId).toBe(CONV_ID);
+    expect(secondMetadata.conversationId).toBe(CONV_ID);
+    expect(firstMetadata.tokensBefore).toBeTypeOf("number");
+    expect(firstMetadata.tokensAfter).toBeTypeOf("number");
+    expect(secondMetadata.tokensBefore).toBeTypeOf("number");
+    expect(secondMetadata.tokensAfter).toBeTypeOf("number");
+    expect(firstMetadata.level).toBeDefined();
+    expect(secondMetadata.level).toBeDefined();
   });
 
   it("compaction escalates to aggressive when normal does not converge", async () => {
