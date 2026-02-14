@@ -512,10 +512,10 @@ export class SummaryStore {
          s.conversation_id,
          s.kind,
          snippet(summaries_fts, 1, '', '', '...', 32) AS snippet,
-         summaries_fts.rank,
+         rank,
          s.created_at
-       FROM summaries_fts sf
-       JOIN summaries s ON s.summary_id = sf.summary_id
+       FROM summaries_fts
+       JOIN summaries s ON s.summary_id = summaries_fts.summary_id
        WHERE ${where.join(" AND ")}
        ORDER BY s.created_at DESC
        LIMIT ?`;

@@ -504,7 +504,7 @@ export class ConversationStore {
          m.conversation_id,
          m.role,
          snippet(messages_fts, 0, '', '', '...', 32) AS snippet,
-         messages_fts.rank,
+         rank,
          m.created_at
        FROM messages_fts
        JOIN messages m ON m.message_id = messages_fts.rowid
