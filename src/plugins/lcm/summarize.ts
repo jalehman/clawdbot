@@ -117,26 +117,28 @@ export async function createLcmSummarizeFromLegacyParams(params: {
     return undefined;
   }
 
+  const resolvedModel = resolved.model;
+
   const authProfileId =
     typeof params.legacyParams.authProfileId === "string"
       ? params.legacyParams.authProfileId
       : undefined;
 
   const auth = await getApiKeyForModel({
-    model: resolved.model,
+    model: resolvedModel,
     cfg,
     profileId: authProfileId,
     agentDir,
   });
 
   let apiKey: string | undefined;
-  if (resolved.model.provider === "github-copilot") {
+  if (resolvedModel.provider === "github-copilot") {
     const { resolveCopilotApiToken } = await import("../../providers/github-copilot-token.js");
-    const githubToken = requireApiKey(auth, resolved.model.provider);
+    const githubToken = requireApiKey(auth, resolvedModel.provider);
     const copilotToken = await resolveCopilotApiToken({ githubToken });
     apiKey = copilotToken.token;
   } else if (auth.mode !== "aws-sdk") {
-    apiKey = requireApiKey(auth, resolved.model.provider);
+    apiKey = requireApiKey(auth, resolvedModel.provider);
   }
 
   return async (text: string, aggressive?: boolean): Promise<string> => {
@@ -158,7 +160,7 @@ export async function createLcmSummarizeFromLegacyParams(params: {
 
     try {
       const result = await completeSimple(
-        resolved.model,
+        resolvedModel,
         {
           messages: [
             {

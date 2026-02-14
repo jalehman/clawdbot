@@ -55,10 +55,10 @@ export function applyPiAutoCompactionGuard(params: {
     contextEngineId: params.contextEngineId,
     env: params.env,
   });
-  const setCompactionEnabled = params.settingsManager.setCompactionEnabled;
-  if (!disable || typeof setCompactionEnabled !== "function") {
-    return { supported: typeof setCompactionEnabled === "function", disabled: false };
+  const hasMethod = typeof params.settingsManager.setCompactionEnabled === "function";
+  if (!disable || !hasMethod) {
+    return { supported: hasMethod, disabled: false };
   }
-  setCompactionEnabled(false);
+  params.settingsManager.setCompactionEnabled!(false);
   return { supported: true, disabled: true };
 }
