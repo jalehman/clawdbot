@@ -3,43 +3,72 @@ import { mkdirSync } from "fs";
 import { dirname } from "path";
 import { requireNodeSqlite } from "../../../memory/sqlite.js";
 
-let _db: DatabaseSync | null = null;
+type ConnectionEntry = {
+  db: DatabaseSync;
+  refs: number;
+};
+
+const _connections = new Map<string, ConnectionEntry>();
+
+function isConnectionHealthy(db: DatabaseSync): boolean {
+  try {
+    db.prepare("SELECT 1").get();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function forceCloseConnection(entry: ConnectionEntry): void {
+  try {
+    entry.db.close();
+  } catch {
+    // Ignore close failures; caller is already replacing/removing this handle.
+  }
+}
 
 export function getLcmConnection(dbPath: string): DatabaseSync {
-  // If we have a connection but it fails any health check, create a fresh one
-  // instead of failing later with "database is not open" (or other sqlite errors).
-  if (_db) {
-    try {
-      _db.prepare("SELECT 1").get();
-      return _db;
-    } catch {
-      // Connection is closed or invalid - close defensively and recreate it.
-      try {
-        _db.close();
-      } catch {
-        // Ignore close failures and replace the handle.
-      }
-      _db = null;
+  const existing = _connections.get(dbPath);
+  if (existing) {
+    if (isConnectionHealthy(existing.db)) {
+      existing.refs += 1;
+      return existing.db;
     }
+    forceCloseConnection(existing);
+    _connections.delete(dbPath);
   }
 
   // Ensure parent directory exists
   mkdirSync(dirname(dbPath), { recursive: true });
 
   const { DatabaseSync } = requireNodeSqlite();
-  _db = new DatabaseSync(dbPath);
+  const db = new DatabaseSync(dbPath);
 
   // Enable WAL mode for better concurrent read performance
-  _db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA journal_mode = WAL");
   // Enable foreign key enforcement
-  _db.exec("PRAGMA foreign_keys = ON");
+  db.exec("PRAGMA foreign_keys = ON");
 
-  return _db;
+  _connections.set(dbPath, { db, refs: 1 });
+  return db;
 }
 
-export function closeLcmConnection(): void {
-  if (_db) {
-    _db.close();
-    _db = null;
+export function closeLcmConnection(dbPath?: string): void {
+  if (typeof dbPath === "string" && dbPath.trim()) {
+    const entry = _connections.get(dbPath);
+    if (!entry) {
+      return;
+    }
+    entry.refs = Math.max(0, entry.refs - 1);
+    if (entry.refs === 0) {
+      forceCloseConnection(entry);
+      _connections.delete(dbPath);
+    }
+    return;
   }
+
+  for (const entry of _connections.values()) {
+    forceCloseConnection(entry);
+  }
+  _connections.clear();
 }

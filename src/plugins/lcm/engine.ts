@@ -713,7 +713,7 @@ export class LcmContextEngine implements ContextEngine {
   }
 
   async dispose(): Promise<void> {
-    closeLcmConnection();
+    closeLcmConnection(this.config.databasePath);
   }
 
   // ── Public accessors for retrieval (used by subagent expansion) ─────────

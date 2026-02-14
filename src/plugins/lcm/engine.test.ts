@@ -31,6 +31,10 @@ function createEngine(): LcmContextEngine {
   return new LcmContextEngine(createTestConfig(join(tempDir, "lcm.db")));
 }
 
+function createEngineAtDatabasePath(databasePath: string): LcmContextEngine {
+  return new LcmContextEngine(createTestConfig(databasePath));
+}
+
 function createSessionFilePath(name: string): string {
   const tempDir = mkdtempSync(join(tmpdir(), "openclaw-lcm-session-"));
   tempDirs.push(tempDir);
@@ -175,6 +179,32 @@ describe("LcmContextEngine.ingest content extraction", () => {
     expect(storedMessages).toHaveLength(1);
     expect(storedMessages[0].content).toBe("HEARTBEAT_OK");
     expect(storedMessages[0].content).not.toContain('{"type":"text"');
+  });
+});
+
+describe("LcmContextEngine connection lifecycle", () => {
+  it("keeps shared sqlite handle open while another engine instance is active", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "openclaw-lcm-shared-db-"));
+    tempDirs.push(tempDir);
+    const dbPath = join(tempDir, "lcm.db");
+
+    const engineA = createEngineAtDatabasePath(dbPath);
+    const engineB = createEngineAtDatabasePath(dbPath);
+    const sessionId = randomUUID();
+
+    await engineA.ingest({
+      sessionId,
+      message: makeMessage({ role: "user", content: "first" }),
+    });
+
+    await engineA.dispose();
+
+    await expect(
+      engineB.ingest({
+        sessionId,
+        message: makeMessage({ role: "assistant", content: "second" }),
+      }),
+    ).resolves.toEqual({ ingested: true });
   });
 });
 
