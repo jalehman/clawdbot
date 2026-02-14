@@ -523,8 +523,8 @@ export class LcmContextEngine implements ContextEngine {
         : typeof lp.tokenBudget === "number" &&
             Number.isFinite(lp.tokenBudget) &&
             lp.tokenBudget > 0
-        ? Math.floor(lp.tokenBudget)
-        : undefined;
+          ? Math.floor(lp.tokenBudget)
+          : undefined;
     if (!tokenBudget) {
       return {
         ok: false,

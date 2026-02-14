@@ -480,13 +480,19 @@ describe("LcmContextEngine fidelity and token budget", () => {
 
   it("uses explicit compact tokenBudget over legacy tokenBudget", async () => {
     const engine = createEngine();
-    const evaluateSpy = vi.spyOn((engine as any).compaction, "evaluate").mockResolvedValue({
+    const privateEngine = engine as unknown as {
+      compaction: {
+        evaluate: (conversationId: number, tokenBudget: number) => Promise<unknown>;
+        compactUntilUnder: (input: unknown) => Promise<unknown>;
+      };
+    };
+    const evaluateSpy = vi.spyOn(privateEngine.compaction, "evaluate").mockResolvedValue({
       shouldCompact: false,
       reason: "none",
       currentTokens: 12,
       threshold: 9,
     });
-    const compactSpy = vi.spyOn((engine as any).compaction, "compactUntilUnder");
+    const compactSpy = vi.spyOn(privateEngine.compaction, "compactUntilUnder");
 
     await engine.ingest({
       sessionId: "budget-session",
