@@ -197,10 +197,15 @@ export class SummaryStore {
         fileIds,
       );
 
-    // Index in FTS5 (store summary_id as unindexed column)
-    this.db
-      .prepare(`INSERT INTO summaries_fts(summary_id, content) VALUES (?, ?)`)
-      .run(input.summaryId, input.content);
+    // Index in FTS5 — best-effort; schema mismatch (summary_id is TEXT but
+    // FTS5 content_rowid expects INTEGER) causes failures on some DBs.
+    // Don't let FTS failures block the core compaction flow.
+    try {
+      this.db.prepare(`INSERT INTO summaries_fts(content) VALUES (?)`).run(input.content);
+    } catch {
+      // FTS indexing failed — search won't find this summary but
+      // compaction and assembly will still work correctly.
+    }
 
     const row = this.db
       .prepare(
