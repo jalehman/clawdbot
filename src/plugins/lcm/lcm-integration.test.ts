@@ -131,21 +131,38 @@ function createMockConversationStore() {
       return convMsgs.length > 0 ? Math.max(...convMsgs.map((m) => m.seq)) : 0;
     }),
     searchMessages: vi.fn(
-      async (input: { query: string; mode: string; conversationId?: number; limit?: number }) => {
+      async (input: {
+        query: string;
+        mode: string;
+        conversationId?: number;
+        since?: Date;
+        before?: Date;
+        limit?: number;
+      }) => {
         const limit = input.limit ?? 50;
         let filtered = messages;
         if (input.conversationId != null) {
           filtered = filtered.filter((m) => m.conversationId === input.conversationId);
         }
+        if (input.since) {
+          filtered = filtered.filter((m) => m.createdAt >= input.since!);
+        }
+        if (input.before) {
+          filtered = filtered.filter((m) => m.createdAt < input.before!);
+        }
         // Simple in-memory search: check if content includes the query string
         filtered = filtered.filter((m) => m.content.includes(input.query));
-        return filtered.slice(0, limit).map((m) => ({
-          messageId: m.messageId,
-          conversationId: m.conversationId,
-          role: m.role,
-          snippet: m.content.slice(0, 100),
-          rank: 0,
-        }));
+        return filtered
+          .toSorted((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+          .slice(0, limit)
+          .map((m) => ({
+            messageId: m.messageId,
+            conversationId: m.conversationId,
+            role: m.role,
+            snippet: m.content.slice(0, 100),
+            createdAt: m.createdAt,
+            rank: 0,
+          }));
       },
     ),
     // Expose internals for assertions
@@ -367,21 +384,38 @@ function createMockSummaryStore() {
     // ── Search ──────────────────────────────────────────────────────────
 
     searchSummaries: vi.fn(
-      async (input: { query: string; mode: string; conversationId?: number; limit?: number }) => {
+      async (input: {
+        query: string;
+        mode: string;
+        conversationId?: number;
+        since?: Date;
+        before?: Date;
+        limit?: number;
+      }) => {
         const limit = input.limit ?? 50;
         let filtered = summaries;
         if (input.conversationId != null) {
           filtered = filtered.filter((s) => s.conversationId === input.conversationId);
         }
+        if (input.since) {
+          filtered = filtered.filter((s) => s.createdAt >= input.since!);
+        }
+        if (input.before) {
+          filtered = filtered.filter((s) => s.createdAt < input.before!);
+        }
         // Simple in-memory search
         filtered = filtered.filter((s) => s.content.includes(input.query));
-        return filtered.slice(0, limit).map((s) => ({
-          summaryId: s.summaryId,
-          conversationId: s.conversationId,
-          kind: s.kind,
-          snippet: s.content.slice(0, 100),
-          rank: 0,
-        }));
+        return filtered
+          .toSorted((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+          .slice(0, limit)
+          .map((s) => ({
+            summaryId: s.summaryId,
+            conversationId: s.conversationId,
+            kind: s.kind,
+            snippet: s.content.slice(0, 100),
+            createdAt: s.createdAt,
+            rank: 0,
+          }));
       },
     ),
 
@@ -1082,6 +1116,99 @@ describe("LCM integration: retrieval", () => {
     // Only messages should be searched
     expect(result.messages.length).toBeGreaterThanOrEqual(1);
     expect(result.summaries).toEqual([]);
+  });
+
+  it("grep returns timestamps and orders matches by recency", async () => {
+    const msgs = await ingestMessages(convStore, sumStore, 2, {
+      contentFn: () => "timeline match in message",
+    });
+    await sumStore.insertSummary({
+      summaryId: "sum_timeline_old",
+      conversationId: CONV_ID,
+      kind: "leaf",
+      content: "timeline match in old summary",
+      tokenCount: 10,
+    });
+    await sumStore.insertSummary({
+      summaryId: "sum_timeline_new",
+      conversationId: CONV_ID,
+      kind: "leaf",
+      content: "timeline match in new summary",
+      tokenCount: 10,
+    });
+
+    const oldTime = new Date("2026-01-01T00:00:00.000Z");
+    const midTime = new Date("2026-01-02T00:00:00.000Z");
+    const newTime = new Date("2026-01-03T00:00:00.000Z");
+
+    const firstMessage = convStore._messages.find((m) => m.messageId === msgs[0].messageId);
+    const secondMessage = convStore._messages.find((m) => m.messageId === msgs[1].messageId);
+    if (firstMessage) {
+      firstMessage.createdAt = oldTime;
+    }
+    if (secondMessage) {
+      secondMessage.createdAt = newTime;
+    }
+
+    const oldSummary = sumStore._summaries.find((s) => s.summaryId === "sum_timeline_old");
+    const newSummary = sumStore._summaries.find((s) => s.summaryId === "sum_timeline_new");
+    if (oldSummary) {
+      oldSummary.createdAt = midTime;
+    }
+    if (newSummary) {
+      newSummary.createdAt = newTime;
+    }
+
+    const result = await retrieval.grep({
+      query: "timeline",
+      mode: "full_text",
+      scope: "both",
+      conversationId: CONV_ID,
+    });
+
+    expect(result.messages[0]?.createdAt.toISOString()).toBe(newTime.toISOString());
+    expect(result.messages[result.messages.length - 1]?.createdAt.toISOString()).toBe(
+      oldTime.toISOString(),
+    );
+    expect(result.summaries[0]?.createdAt.toISOString()).toBe(newTime.toISOString());
+    expect(result.summaries[result.summaries.length - 1]?.createdAt.toISOString()).toBe(
+      midTime.toISOString(),
+    );
+  });
+
+  it("grep applies since/before time filters", async () => {
+    const msgs = await ingestMessages(convStore, sumStore, 3, {
+      contentFn: () => "windowed match",
+    });
+
+    const t1 = new Date("2026-01-01T00:00:00.000Z");
+    const t2 = new Date("2026-01-02T00:00:00.000Z");
+    const t3 = new Date("2026-01-03T00:00:00.000Z");
+    const [m1, m2, m3] = msgs;
+    const row1 = convStore._messages.find((m) => m.messageId === m1.messageId);
+    const row2 = convStore._messages.find((m) => m.messageId === m2.messageId);
+    const row3 = convStore._messages.find((m) => m.messageId === m3.messageId);
+    if (row1) {
+      row1.createdAt = t1;
+    }
+    if (row2) {
+      row2.createdAt = t2;
+    }
+    if (row3) {
+      row3.createdAt = t3;
+    }
+
+    const result = await retrieval.grep({
+      query: "windowed",
+      mode: "full_text",
+      scope: "messages",
+      conversationId: CONV_ID,
+      since: new Date("2026-01-02T00:00:00.000Z"),
+      before: new Date("2026-01-03T00:00:00.000Z"),
+    });
+
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]?.createdAt.toISOString()).toBe(t2.toISOString());
   });
 
   it("expand returns children of a condensed parent summary", async () => {

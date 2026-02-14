@@ -1,14 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import {
-  ExpansionAuthManager,
-  wrapWithAuth,
-} from "./expansion-auth.js";
-import {
-  ExpansionOrchestrator,
-  distillForSubagent,
-} from "./expansion.js";
 import type { ExpansionRequest, ExpansionResult } from "./expansion.js";
 import type { RetrievalEngine, ExpandResult, GrepResult } from "./retrieval.js";
+import { ExpansionAuthManager, wrapWithAuth } from "./expansion-auth.js";
+import { ExpansionOrchestrator, distillForSubagent } from "./expansion.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -594,9 +588,7 @@ describe("ExpansionOrchestrator", () => {
 
   beforeEach(() => {
     mockRetrieval = makeMockRetrieval();
-    orchestrator = new ExpansionOrchestrator(
-      mockRetrieval as unknown as RetrievalEngine,
-    );
+    orchestrator = new ExpansionOrchestrator(mockRetrieval as unknown as RetrievalEngine);
   });
 
   it("expands multiple summaryIds and collects citedIds", async () => {
@@ -696,9 +688,7 @@ describe("ExpansionOrchestrator", () => {
   });
 
   it("stops expanding when budget is exhausted", async () => {
-    mockRetrieval.expand.mockResolvedValueOnce(
-      makeExpandResult({ estimatedTokens: 500 }),
-    );
+    mockRetrieval.expand.mockResolvedValueOnce(makeExpandResult({ estimatedTokens: 500 }));
 
     const result = await orchestrator.expand({
       summaryIds: ["sum_a", "sum_b", "sum_c"],
@@ -739,9 +729,7 @@ describe("ExpansionOrchestrator", () => {
     const longContent = "x".repeat(300);
     mockRetrieval.expand.mockResolvedValue(
       makeExpandResult({
-        children: [
-          { summaryId: "sum_c1", kind: "leaf", content: longContent, tokenCount: 75 },
-        ],
+        children: [{ summaryId: "sum_c1", kind: "leaf", content: longContent, tokenCount: 75 }],
         estimatedTokens: 75,
       }),
     );
@@ -763,8 +751,20 @@ describe("ExpansionOrchestrator", () => {
     mockRetrieval.grep.mockResolvedValue({
       messages: [],
       summaries: [
-        { summaryId: "sum_match1", conversationId: 1, kind: "leaf", snippet: "found it" },
-        { summaryId: "sum_match2", conversationId: 1, kind: "condensed", snippet: "also found" },
+        {
+          summaryId: "sum_match1",
+          conversationId: 1,
+          kind: "leaf",
+          snippet: "found it",
+          createdAt: new Date("2026-01-01T00:00:00.000Z"),
+        },
+        {
+          summaryId: "sum_match2",
+          conversationId: 1,
+          kind: "condensed",
+          snippet: "also found",
+          createdAt: new Date("2026-01-02T00:00:00.000Z"),
+        },
       ],
       totalMatches: 2,
     });
@@ -820,7 +820,13 @@ describe("ExpansionOrchestrator", () => {
     mockRetrieval.grep.mockResolvedValue({
       messages: [],
       summaries: [
-        { summaryId: "sum_x", conversationId: 42, kind: "leaf", snippet: "match" },
+        {
+          summaryId: "sum_x",
+          conversationId: 42,
+          kind: "leaf",
+          snippet: "match",
+          createdAt: new Date("2026-01-03T00:00:00.000Z"),
+        },
       ],
       totalMatches: 1,
     });
@@ -838,6 +844,68 @@ describe("ExpansionOrchestrator", () => {
       expect.objectContaining({ conversationId: 42 }),
     );
   });
+
+  it("describeAndExpand biases expansion order toward newer summaries", async () => {
+    const expandOrder: string[] = [];
+    mockRetrieval.grep.mockResolvedValue({
+      messages: [],
+      summaries: [
+        {
+          summaryId: "sum_old",
+          conversationId: 1,
+          kind: "leaf",
+          snippet: "older",
+          createdAt: new Date("2026-01-01T00:00:00.000Z"),
+        },
+        {
+          summaryId: "sum_new",
+          conversationId: 1,
+          kind: "leaf",
+          snippet: "newer",
+          createdAt: new Date("2026-01-02T00:00:00.000Z"),
+        },
+      ],
+      totalMatches: 2,
+    });
+    mockRetrieval.expand.mockImplementation(async (input: { summaryId: string }) => {
+      expandOrder.push(input.summaryId);
+      return makeExpandResult({ estimatedTokens: 10 });
+    });
+
+    await orchestrator.describeAndExpand({
+      query: "recent first",
+      mode: "full_text",
+      conversationId: 1,
+    });
+
+    expect(expandOrder).toEqual(["sum_new", "sum_old"]);
+  });
+
+  it("describeAndExpand allows query mode without conversationId", async () => {
+    mockRetrieval.grep.mockResolvedValue({
+      messages: [],
+      summaries: [
+        {
+          summaryId: "sum_any",
+          conversationId: 9,
+          kind: "leaf",
+          snippet: "match",
+          createdAt: new Date("2026-01-01T00:00:00.000Z"),
+        },
+      ],
+      totalMatches: 1,
+    });
+    mockRetrieval.expand.mockResolvedValue(makeExpandResult({ estimatedTokens: 5 }));
+
+    await orchestrator.describeAndExpand({
+      query: "global query",
+      mode: "full_text",
+    });
+
+    expect(mockRetrieval.grep).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: undefined }),
+    );
+  });
 });
 
 // ===========================================================================
@@ -852,7 +920,12 @@ describe("distillForSubagent", () => {
           summaryId: "sum_a",
           children: [
             { summaryId: "sum_child_1", kind: "leaf", snippet: "child snippet", tokenCount: 50 },
-            { summaryId: "sum_child_2", kind: "condensed", snippet: "another snippet", tokenCount: 80 },
+            {
+              summaryId: "sum_child_2",
+              kind: "condensed",
+              snippet: "another snippet",
+              tokenCount: 80,
+            },
           ],
           messages: [],
         },
@@ -924,9 +997,7 @@ describe("distillForSubagent", () => {
             { summaryId: "sum_c1", kind: "leaf", snippet: "a", tokenCount: 100 },
             { summaryId: "sum_c2", kind: "leaf", snippet: "b", tokenCount: 200 },
           ],
-          messages: [
-            { messageId: 1, role: "user", snippet: "c", tokenCount: 50 },
-          ],
+          messages: [{ messageId: 1, role: "user", snippet: "c", tokenCount: 50 }],
         },
       ],
       totalTokens: 350,

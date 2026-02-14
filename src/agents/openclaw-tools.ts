@@ -164,9 +164,15 @@ export function createOpenClawTools(options?: {
     // LCM tools — only when the LCM context engine is configured
     ...(options?.config?.plugins?.slots?.contextEngine === "lcm"
       ? [
-          createLcmDescribeTool({ config: options?.config }),
+          createLcmDescribeTool({
+            config: options?.config,
+            sessionId: options?.agentSessionKey,
+          }),
           createLcmExpandTool({ config: options?.config, sessionId: options?.agentSessionKey }),
-          createLcmGrepTool({ config: options?.config }),
+          createLcmGrepTool({
+            config: options?.config,
+            sessionId: options?.agentSessionKey,
+          }),
         ]
       : []),
   ];

@@ -6,6 +6,7 @@ import { ensureContextEnginesInitialized } from "../../context-engine/init.js";
 import { resolveContextEngine } from "../../context-engine/registry.js";
 import { ExpansionOrchestrator, distillForSubagent } from "../../plugins/lcm/expansion.js";
 import { jsonResult } from "./common.js";
+import { resolveLcmConversationScope } from "./lcm-conversation-scope.js";
 
 const LcmExpandSchema = Type.Object({
   summaryIds: Type.Optional(
@@ -42,6 +43,12 @@ const LcmExpandSchema = Type.Object({
     Type.Number({
       description:
         "Conversation ID to scope the expansion to. If omitted, uses the current session's conversation.",
+    }),
+  ),
+  allConversations: Type.Optional(
+    Type.Boolean({
+      description:
+        "Set true to explicitly allow cross-conversation expansion. Ignored when conversationId is provided.",
     }),
   ),
 });
@@ -81,18 +88,23 @@ export function createLcmExpandTool(options?: {
       const maxDepth = typeof p.maxDepth === "number" ? Math.trunc(p.maxDepth) : undefined;
       const tokenCap = typeof p.tokenCap === "number" ? Math.trunc(p.tokenCap) : undefined;
       const includeMessages = typeof p.includeMessages === "boolean" ? p.includeMessages : false;
-      const conversationId = typeof p.conversationId === "number" ? p.conversationId : undefined;
+      const conversationScope = await resolveLcmConversationScope({
+        lcm,
+        sessionId: options?.sessionId,
+        params: p,
+      });
+      if (!conversationScope.allConversations && conversationScope.conversationId == null) {
+        return jsonResult({
+          error:
+            "No LCM conversation found for this session. Provide conversationId or set allConversations=true.",
+        });
+      }
 
       if (query) {
-        if (conversationId == null) {
-          return jsonResult({
-            error: "conversationId is required when using query-based expansion.",
-          });
-        }
         const result = await orchestrator.describeAndExpand({
           query,
           mode: "full_text",
-          conversationId,
+          conversationId: conversationScope.conversationId,
           maxDepth,
           tokenCap,
         });
@@ -109,12 +121,33 @@ export function createLcmExpandTool(options?: {
       }
 
       if (summaryIds && summaryIds.length > 0) {
+        if (conversationScope.conversationId != null) {
+          const outOfScope: string[] = [];
+          for (const summaryId of summaryIds) {
+            const described = await retrieval.describe(summaryId);
+            if (
+              described?.type === "summary" &&
+              described.summary?.conversationId !== conversationScope.conversationId
+            ) {
+              outOfScope.push(summaryId);
+            }
+          }
+          if (outOfScope.length > 0) {
+            return jsonResult({
+              error:
+                `Some summaryIds are outside conversation ${conversationScope.conversationId}: ` +
+                `${outOfScope.join(", ")}`,
+              hint: "Use allConversations=true for cross-conversation expansion.",
+            });
+          }
+        }
+
         const result = await orchestrator.expand({
           summaryIds,
           maxDepth,
           tokenCap,
           includeMessages,
-          conversationId: conversationId ?? 0,
+          conversationId: conversationScope.conversationId ?? 0,
         });
         const text = distillForSubagent(result);
         return {

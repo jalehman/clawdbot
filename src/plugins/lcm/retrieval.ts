@@ -17,6 +17,7 @@ export interface DescribeResult {
   type: "summary" | "file";
   /** Summary-specific fields */
   summary?: {
+    conversationId: number;
     kind: "leaf" | "condensed";
     content: string;
     tokenCount: number;
@@ -28,6 +29,7 @@ export interface DescribeResult {
   };
   /** File-specific fields */
   file?: {
+    conversationId: number;
     fileName: string | null;
     mimeType: string | null;
     byteSize: number | null;
@@ -42,6 +44,8 @@ export interface GrepInput {
   mode: "regex" | "full_text";
   scope: "messages" | "summaries" | "both";
   conversationId?: number;
+  since?: Date;
+  before?: Date;
   limit?: number;
 }
 
@@ -118,7 +122,9 @@ export class RetrievalEngine {
 
   private async describeSummary(id: string): Promise<DescribeResult | null> {
     const summary = await this.summaryStore.getSummary(id);
-    if (!summary) return null;
+    if (!summary) {
+      return null;
+    }
 
     // Fetch lineage in parallel
     const [parents, children, messageIds] = await Promise.all([
@@ -131,6 +137,7 @@ export class RetrievalEngine {
       id,
       type: "summary",
       summary: {
+        conversationId: summary.conversationId,
         kind: summary.kind,
         content: summary.content,
         tokenCount: summary.tokenCount,
@@ -145,12 +152,15 @@ export class RetrievalEngine {
 
   private async describeFile(id: string): Promise<DescribeResult | null> {
     const file = await this.summaryStore.getLargeFile(id);
-    if (!file) return null;
+    if (!file) {
+      return null;
+    }
 
     return {
       id,
       type: "file",
       file: {
+        conversationId: file.conversationId,
         fileName: file.fileName,
         mimeType: file.mimeType,
         byteSize: file.byteSize,
@@ -169,9 +179,9 @@ export class RetrievalEngine {
    * Depending on `scope`, searches messages, summaries, or both (in parallel).
    */
   async grep(input: GrepInput): Promise<GrepResult> {
-    const { query, mode, scope, conversationId, limit } = input;
+    const { query, mode, scope, conversationId, since, before, limit } = input;
 
-    const searchInput = { query, mode, conversationId, limit };
+    const searchInput = { query, mode, conversationId, since, before, limit };
 
     let messages: MessageSearchResult[] = [];
     let summaries: SummarySearchResult[] = [];
@@ -187,6 +197,9 @@ export class RetrievalEngine {
         this.summaryStore.searchSummaries(searchInput),
       ]);
     }
+
+    messages.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    summaries.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
     return {
       messages,
@@ -228,17 +241,25 @@ export class RetrievalEngine {
     tokenCap: number,
     result: ExpandResult,
   ): Promise<void> {
-    if (depth <= 0) return;
-    if (result.truncated) return;
+    if (depth <= 0) {
+      return;
+    }
+    if (result.truncated) {
+      return;
+    }
 
     const summary = await this.summaryStore.getSummary(summaryId);
-    if (!summary) return;
+    if (!summary) {
+      return;
+    }
 
     if (summary.kind === "condensed") {
       const children = await this.summaryStore.getSummaryChildren(summaryId);
 
       for (const child of children) {
-        if (result.truncated) break;
+        if (result.truncated) {
+          break;
+        }
 
         // Check if adding this child would exceed the token cap
         if (result.estimatedTokens + child.tokenCount > tokenCap) {
@@ -256,13 +277,7 @@ export class RetrievalEngine {
 
         // Recurse into children if depth allows
         if (depth > 1) {
-          await this.expandRecursive(
-            child.summaryId,
-            depth - 1,
-            includeMessages,
-            tokenCap,
-            result,
-          );
+          await this.expandRecursive(child.summaryId, depth - 1, includeMessages, tokenCap, result);
         }
       }
     } else if (summary.kind === "leaf" && includeMessages) {
@@ -270,10 +285,14 @@ export class RetrievalEngine {
       const messageIds = await this.summaryStore.getSummaryMessages(summaryId);
 
       for (const msgId of messageIds) {
-        if (result.truncated) break;
+        if (result.truncated) {
+          break;
+        }
 
         const msg = await this.conversationStore.getMessageById(msgId);
-        if (!msg) continue;
+        if (!msg) {
+          continue;
+        }
 
         const tokenCount = msg.tokenCount || estimateTokens(msg.content);
 

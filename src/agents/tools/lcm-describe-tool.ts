@@ -5,14 +5,30 @@ import type { AnyAgentTool } from "./common.js";
 import { ensureContextEnginesInitialized } from "../../context-engine/init.js";
 import { resolveContextEngine } from "../../context-engine/registry.js";
 import { jsonResult } from "./common.js";
+import { resolveLcmConversationScope } from "./lcm-conversation-scope.js";
 
 const LcmDescribeSchema = Type.Object({
   id: Type.String({
     description: "The LCM ID to look up. Use sum_xxx for summaries, file_xxx for files.",
   }),
+  conversationId: Type.Optional(
+    Type.Number({
+      description:
+        "Conversation ID to scope describe lookups to. If omitted, uses the current session conversation.",
+    }),
+  ),
+  allConversations: Type.Optional(
+    Type.Boolean({
+      description:
+        "Set true to explicitly allow lookups across all conversations. Ignored when conversationId is provided.",
+    }),
+  ),
 });
 
-export function createLcmDescribeTool(options?: { config?: OpenClawConfig }): AnyAgentTool {
+export function createLcmDescribeTool(options?: {
+  config?: OpenClawConfig;
+  sessionId?: string;
+}): AnyAgentTool {
   return {
     name: "lcm_describe",
     label: "LCM Describe",
@@ -34,7 +50,19 @@ export function createLcmDescribeTool(options?: { config?: OpenClawConfig }): An
 
       const lcm = engine as LcmContextEngine;
       const retrieval = lcm.getRetrieval();
-      const id = (params as { id: string }).id.trim();
+      const p = params as Record<string, unknown>;
+      const id = (p.id as string).trim();
+      const conversationScope = await resolveLcmConversationScope({
+        lcm,
+        sessionId: options?.sessionId,
+        params: p,
+      });
+      if (!conversationScope.allConversations && conversationScope.conversationId == null) {
+        return jsonResult({
+          error:
+            "No LCM conversation found for this session. Provide conversationId or set allConversations=true.",
+        });
+      }
 
       const result = await retrieval.describe(id);
 
@@ -44,12 +72,23 @@ export function createLcmDescribeTool(options?: { config?: OpenClawConfig }): An
           hint: "Check the ID format (sum_xxx for summaries, file_xxx for files).",
         });
       }
+      if (conversationScope.conversationId != null) {
+        const itemConversationId =
+          result.type === "summary" ? result.summary?.conversationId : result.file?.conversationId;
+        if (itemConversationId != null && itemConversationId !== conversationScope.conversationId) {
+          return jsonResult({
+            error: `Not found in conversation ${conversationScope.conversationId}: ${id}`,
+            hint: "Use allConversations=true for cross-conversation lookup.",
+          });
+        }
+      }
 
       if (result.type === "summary" && result.summary) {
         const s = result.summary;
         const lines: string[] = [];
         lines.push(`## LCM Summary: ${id}`);
         lines.push("");
+        lines.push(`**Conversation:** ${s.conversationId}`);
         lines.push(`**Kind:** ${s.kind}`);
         lines.push(`**Tokens:** ~${s.tokenCount.toLocaleString()}`);
         lines.push(`**Created:** ${s.createdAt.toISOString()}`);
@@ -81,6 +120,7 @@ export function createLcmDescribeTool(options?: { config?: OpenClawConfig }): An
         const lines: string[] = [];
         lines.push(`## LCM File: ${id}`);
         lines.push("");
+        lines.push(`**Conversation:** ${f.conversationId}`);
         lines.push(`**Name:** ${f.fileName ?? "(no name)"}`);
         lines.push(`**Type:** ${f.mimeType ?? "unknown"}`);
         if (f.byteSize != null) {

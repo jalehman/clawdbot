@@ -1,6 +1,6 @@
 import { Type } from "@sinclair/typebox";
-import type { RetrievalEngine, ExpandResult, GrepResult } from "./retrieval.js";
 import type { LcmConfig } from "./db/config.js";
+import type { RetrievalEngine, ExpandResult, GrepResult } from "./retrieval.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -48,7 +48,9 @@ const SNIPPET_MAX_CHARS = 200;
 
 /** Truncate content to a short snippet for display. */
 function truncateSnippet(content: string, maxChars: number = SNIPPET_MAX_CHARS): string {
-  if (content.length <= maxChars) return content;
+  if (content.length <= maxChars) {
+    return content;
+  }
   return content.slice(0, maxChars) + "...";
 }
 
@@ -110,7 +112,9 @@ export class ExpansionOrchestrator {
     const citedSet = new Set<string>();
 
     for (const summaryId of request.summaryIds) {
-      if (result.truncated) break;
+      if (result.truncated) {
+        break;
+      }
 
       // Calculate remaining budget for this expansion
       const remainingBudget = tokenCap - result.totalTokens;
@@ -151,7 +155,7 @@ export class ExpansionOrchestrator {
   async describeAndExpand(input: {
     query: string;
     mode: "regex" | "full_text";
-    conversationId: number;
+    conversationId?: number;
     maxDepth?: number;
     tokenCap?: number;
   }): Promise<ExpansionResult> {
@@ -162,7 +166,17 @@ export class ExpansionOrchestrator {
       conversationId: input.conversationId,
     });
 
-    const summaryIds = grepResult.summaries.map((s) => s.summaryId);
+    const summaryIds = grepResult.summaries
+      .toSorted((a, b) => {
+        const recencyDelta = b.createdAt.getTime() - a.createdAt.getTime();
+        if (recencyDelta !== 0) {
+          return recencyDelta;
+        }
+        const aRank = a.rank ?? Number.POSITIVE_INFINITY;
+        const bRank = b.rank ?? Number.POSITIVE_INFINITY;
+        return aRank - bRank;
+      })
+      .map((s) => s.summaryId);
     if (summaryIds.length === 0) {
       return {
         expansions: [],
@@ -177,7 +191,7 @@ export class ExpansionOrchestrator {
       maxDepth: input.maxDepth,
       tokenCap: input.tokenCap,
       includeMessages: false,
-      conversationId: input.conversationId,
+      conversationId: input.conversationId ?? 0,
     });
   }
 }

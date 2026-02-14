@@ -81,6 +81,8 @@ export type MessageSearchInput = {
   conversationId?: ConversationId;
   query: string;
   mode: "regex" | "full_text";
+  since?: Date;
+  before?: Date;
   limit?: number;
 };
 
@@ -89,6 +91,7 @@ export type MessageSearchResult = {
   conversationId: ConversationId;
   role: MessageRole;
   snippet: string;
+  createdAt: Date;
   rank?: number;
 };
 
@@ -119,6 +122,7 @@ interface MessageSearchRow {
   role: MessageRole;
   snippet: string;
   rank: number;
+  created_at: string;
 }
 
 interface MessagePartRow {
@@ -174,6 +178,7 @@ function toSearchResult(row: MessageSearchRow): MessageSearchResult {
     conversationId: row.conversation_id,
     role: row.role,
     snippet: row.snippet,
+    createdAt: new Date(row.created_at),
     rank: row.rank,
   };
 }
@@ -460,51 +465,53 @@ export class ConversationStore {
     const limit = input.limit ?? 50;
 
     if (input.mode === "full_text") {
-      return this.searchFullText(input.query, limit, input.conversationId);
+      return this.searchFullText(
+        input.query,
+        limit,
+        input.conversationId,
+        input.since,
+        input.before,
+      );
     }
-    return this.searchRegex(input.query, limit, input.conversationId);
+    return this.searchRegex(input.query, limit, input.conversationId, input.since, input.before);
   }
 
   private searchFullText(
     query: string,
     limit: number,
     conversationId?: ConversationId,
+    since?: Date,
+    before?: Date,
   ): MessageSearchResult[] {
+    const where: string[] = ["messages_fts MATCH ?"];
+    const args: Array<string | number> = [query];
     if (conversationId != null) {
-      const rows = this.db
-        .prepare(
-          `SELECT
-           m.message_id,
-           m.conversation_id,
-           m.role,
-           snippet(messages_fts, 0, '', '', '...', 32) AS snippet,
-           messages_fts.rank
-         FROM messages_fts
-         JOIN messages m ON m.message_id = messages_fts.rowid
-         WHERE messages_fts MATCH ?
-           AND m.conversation_id = ?
-         ORDER BY messages_fts.rank
-         LIMIT ?`,
-        )
-        .all(query, conversationId, limit) as unknown as MessageSearchRow[];
-      return rows.map(toSearchResult);
+      where.push("m.conversation_id = ?");
+      args.push(conversationId);
     }
+    if (since) {
+      where.push("julianday(m.created_at) >= julianday(?)");
+      args.push(since.toISOString());
+    }
+    if (before) {
+      where.push("julianday(m.created_at) < julianday(?)");
+      args.push(before.toISOString());
+    }
+    args.push(limit);
 
-    const rows = this.db
-      .prepare(
-        `SELECT
+    const sql = `SELECT
          m.message_id,
          m.conversation_id,
          m.role,
          snippet(messages_fts, 0, '', '', '...', 32) AS snippet,
-         messages_fts.rank
+         messages_fts.rank,
+         m.created_at
        FROM messages_fts
        JOIN messages m ON m.message_id = messages_fts.rowid
-       WHERE messages_fts MATCH ?
-       ORDER BY messages_fts.rank
-       LIMIT ?`,
-      )
-      .all(query, limit) as unknown as MessageSearchRow[];
+       WHERE ${where.join(" AND ")}
+       ORDER BY m.created_at DESC
+       LIMIT ?`;
+    const rows = this.db.prepare(sql).all(...args) as unknown as MessageSearchRow[];
     return rows.map(toSearchResult);
   }
 
@@ -512,29 +519,35 @@ export class ConversationStore {
     pattern: string,
     limit: number,
     conversationId?: ConversationId,
+    since?: Date,
+    before?: Date,
   ): MessageSearchResult[] {
     // SQLite has no native POSIX regex; fetch candidates and filter in JS
     const re = new RegExp(pattern);
 
-    let rows: MessageRow[];
+    const where: string[] = [];
+    const args: Array<string | number> = [];
     if (conversationId != null) {
-      rows = this.db
-        .prepare(
-          `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
-         FROM messages
-         WHERE conversation_id = ?
-         ORDER BY seq`,
-        )
-        .all(conversationId) as unknown as MessageRow[];
-    } else {
-      rows = this.db
-        .prepare(
-          `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
-         FROM messages
-         ORDER BY message_id`,
-        )
-        .all() as unknown as MessageRow[];
+      where.push("conversation_id = ?");
+      args.push(conversationId);
     }
+    if (since) {
+      where.push("julianday(created_at) >= julianday(?)");
+      args.push(since.toISOString());
+    }
+    if (before) {
+      where.push("julianday(created_at) < julianday(?)");
+      args.push(before.toISOString());
+    }
+    const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+    const rows = this.db
+      .prepare(
+        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+         FROM messages
+         ${whereClause}
+         ORDER BY created_at DESC`,
+      )
+      .all(...args) as unknown as MessageRow[];
 
     const results: MessageSearchResult[] = [];
     for (const row of rows) {
@@ -548,6 +561,7 @@ export class ConversationStore {
           conversationId: row.conversation_id,
           role: row.role,
           snippet: match[0],
+          createdAt: new Date(row.created_at),
           rank: 0,
         });
       }

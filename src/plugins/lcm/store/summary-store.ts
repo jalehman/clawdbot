@@ -35,6 +35,8 @@ export type SummarySearchInput = {
   conversationId?: number;
   query: string;
   mode: "regex" | "full_text";
+  since?: Date;
+  before?: Date;
   limit?: number;
 };
 
@@ -43,6 +45,7 @@ export type SummarySearchResult = {
   conversationId: number;
   kind: SummaryKind;
   snippet: string;
+  createdAt: Date;
   rank?: number;
 };
 
@@ -94,6 +97,7 @@ interface SummarySearchRow {
   kind: SummaryKind;
   snippet: string;
   rank: number;
+  created_at: string;
 }
 
 interface MaxOrdinalRow {
@@ -156,6 +160,7 @@ function toSearchResult(row: SummarySearchRow): SummarySearchResult {
     conversationId: row.conversation_id,
     kind: row.kind,
     snippet: row.snippet,
+    createdAt: new Date(row.created_at),
     rank: row.rank,
   };
 }
@@ -468,51 +473,53 @@ export class SummaryStore {
     const limit = input.limit ?? 50;
 
     if (input.mode === "full_text") {
-      return this.searchFullText(input.query, limit, input.conversationId);
+      return this.searchFullText(
+        input.query,
+        limit,
+        input.conversationId,
+        input.since,
+        input.before,
+      );
     }
-    return this.searchRegex(input.query, limit, input.conversationId);
+    return this.searchRegex(input.query, limit, input.conversationId, input.since, input.before);
   }
 
   private searchFullText(
     query: string,
     limit: number,
     conversationId?: number,
+    since?: Date,
+    before?: Date,
   ): SummarySearchResult[] {
+    const where: string[] = ["summaries_fts MATCH ?"];
+    const args: Array<string | number> = [query];
     if (conversationId != null) {
-      const rows = this.db
-        .prepare(
-          `SELECT
-           sf.summary_id,
-           s.conversation_id,
-           s.kind,
-           snippet(summaries_fts, 1, '', '', '...', 32) AS snippet,
-           summaries_fts.rank
-         FROM summaries_fts sf
-         JOIN summaries s ON s.summary_id = sf.summary_id
-         WHERE summaries_fts MATCH ?
-           AND s.conversation_id = ?
-         ORDER BY summaries_fts.rank
-         LIMIT ?`,
-        )
-        .all(query, conversationId, limit) as unknown as SummarySearchRow[];
-      return rows.map(toSearchResult);
+      where.push("s.conversation_id = ?");
+      args.push(conversationId);
     }
+    if (since) {
+      where.push("julianday(s.created_at) >= julianday(?)");
+      args.push(since.toISOString());
+    }
+    if (before) {
+      where.push("julianday(s.created_at) < julianday(?)");
+      args.push(before.toISOString());
+    }
+    args.push(limit);
 
-    const rows = this.db
-      .prepare(
-        `SELECT
+    const sql = `SELECT
          sf.summary_id,
          s.conversation_id,
          s.kind,
          snippet(summaries_fts, 1, '', '', '...', 32) AS snippet,
-         summaries_fts.rank
+         summaries_fts.rank,
+         s.created_at
        FROM summaries_fts sf
        JOIN summaries s ON s.summary_id = sf.summary_id
-       WHERE summaries_fts MATCH ?
-       ORDER BY summaries_fts.rank
-       LIMIT ?`,
-      )
-      .all(query, limit) as unknown as SummarySearchRow[];
+       WHERE ${where.join(" AND ")}
+       ORDER BY s.created_at DESC
+       LIMIT ?`;
+    const rows = this.db.prepare(sql).all(...args) as unknown as SummarySearchRow[];
     return rows.map(toSearchResult);
   }
 
@@ -520,28 +527,34 @@ export class SummaryStore {
     pattern: string,
     limit: number,
     conversationId?: number,
+    since?: Date,
+    before?: Date,
   ): SummarySearchResult[] {
     const re = new RegExp(pattern);
 
-    let rows: SummaryRow[];
+    const where: string[] = [];
+    const args: Array<string | number> = [];
     if (conversationId != null) {
-      rows = this.db
-        .prepare(
-          `SELECT summary_id, conversation_id, kind, content, token_count, file_ids, created_at
-         FROM summaries
-         WHERE conversation_id = ?
-         ORDER BY created_at`,
-        )
-        .all(conversationId) as unknown as SummaryRow[];
-    } else {
-      rows = this.db
-        .prepare(
-          `SELECT summary_id, conversation_id, kind, content, token_count, file_ids, created_at
-         FROM summaries
-         ORDER BY summary_id`,
-        )
-        .all() as unknown as SummaryRow[];
+      where.push("conversation_id = ?");
+      args.push(conversationId);
     }
+    if (since) {
+      where.push("julianday(created_at) >= julianday(?)");
+      args.push(since.toISOString());
+    }
+    if (before) {
+      where.push("julianday(created_at) < julianday(?)");
+      args.push(before.toISOString());
+    }
+    const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+    const rows = this.db
+      .prepare(
+        `SELECT summary_id, conversation_id, kind, content, token_count, file_ids, created_at
+         FROM summaries
+         ${whereClause}
+         ORDER BY created_at DESC`,
+      )
+      .all(...args) as unknown as SummaryRow[];
 
     const results: SummarySearchResult[] = [];
     for (const row of rows) {
@@ -555,6 +568,7 @@ export class SummaryStore {
           conversationId: row.conversation_id,
           kind: row.kind,
           snippet: match[0],
+          createdAt: new Date(row.created_at),
           rank: 0,
         });
       }
