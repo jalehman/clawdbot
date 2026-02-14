@@ -81,6 +81,7 @@ export interface ContextEngine {
   compact(params: {
     sessionId: string;
     sessionFile: string;
+    tokenBudget?: number;
     customInstructions?: string;
     /** Full params needed for legacy compaction behavior */
     legacyParams?: Record<string, unknown>;

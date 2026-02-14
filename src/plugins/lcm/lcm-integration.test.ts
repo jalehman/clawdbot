@@ -1,22 +1,24 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { ContextAssembler } from "./assembler.js";
-import { CompactionEngine, type CompactionConfig } from "./compaction.js";
-import { RetrievalEngine } from "./retrieval.js";
-import type { MessageRecord, MessageRole } from "./store/conversation-store.js";
+import type { MessagePartRecord, MessageRecord, MessageRole } from "./store/conversation-store.js";
 import type {
   SummaryRecord,
   ContextItemRecord,
   SummaryKind,
   LargeFileRecord,
 } from "./store/summary-store.js";
+import { ContextAssembler } from "./assembler.js";
+import { CompactionEngine, type CompactionConfig } from "./compaction.js";
+import { RetrievalEngine } from "./retrieval.js";
 
 // ── Mock Store Factories ─────────────────────────────────────────────────────
 
 function createMockConversationStore() {
   const conversations: any[] = [];
   const messages: MessageRecord[] = [];
+  const messageParts: MessagePartRecord[] = [];
   let nextConvId = 1;
   let nextMsgId = 1;
+  let nextPartId = 1;
 
   return {
     createConversation: vi.fn(async (input: { sessionId: string; title?: string }) => {
@@ -30,15 +32,17 @@ function createMockConversationStore() {
       conversations.push(conv);
       return conv;
     }),
-    getConversation: vi.fn(async (id: number) =>
-      conversations.find((c) => c.conversationId === id) ?? null,
+    getConversation: vi.fn(
+      async (id: number) => conversations.find((c) => c.conversationId === id) ?? null,
     ),
-    getConversationBySessionId: vi.fn(async (sid: string) =>
-      conversations.find((c) => c.sessionId === sid) ?? null,
+    getConversationBySessionId: vi.fn(
+      async (sid: string) => conversations.find((c) => c.sessionId === sid) ?? null,
     ),
     getOrCreateConversation: vi.fn(async (sid: string, title?: string) => {
       const existing = conversations.find((c) => c.sessionId === sid);
-      if (existing) return existing;
+      if (existing) {
+        return existing;
+      }
       const conv = {
         conversationId: nextConvId++,
         sessionId: sid,
@@ -49,63 +53,101 @@ function createMockConversationStore() {
       conversations.push(conv);
       return conv;
     }),
-    createMessage: vi.fn(async (input: {
-      conversationId: number;
-      seq: number;
-      role: MessageRole;
-      content: string;
-      tokenCount: number;
-    }) => {
-      const msg: MessageRecord = {
-        messageId: nextMsgId++,
-        conversationId: input.conversationId,
-        seq: input.seq,
-        role: input.role,
-        content: input.content,
-        tokenCount: input.tokenCount,
-        createdAt: new Date(),
-      };
-      messages.push(msg);
-      return msg;
-    }),
+    createMessage: vi.fn(
+      async (input: {
+        conversationId: number;
+        seq: number;
+        role: MessageRole;
+        content: string;
+        tokenCount: number;
+      }) => {
+        const msg: MessageRecord = {
+          messageId: nextMsgId++,
+          conversationId: input.conversationId,
+          seq: input.seq,
+          role: input.role,
+          content: input.content,
+          tokenCount: input.tokenCount,
+          createdAt: new Date(),
+        };
+        messages.push(msg);
+        return msg;
+      },
+    ),
+    createMessageParts: vi.fn(
+      async (
+        messageId: number,
+        parts: Array<{
+          sessionId: string;
+          partType: MessagePartRecord["partType"];
+          ordinal: number;
+          textContent?: string | null;
+          toolCallId?: string | null;
+          toolName?: string | null;
+          toolInput?: string | null;
+          toolOutput?: string | null;
+          metadata?: string | null;
+        }>,
+      ) => {
+        for (const part of parts) {
+          messageParts.push({
+            partId: `part-${nextPartId++}`,
+            messageId,
+            sessionId: part.sessionId,
+            partType: part.partType,
+            ordinal: part.ordinal,
+            textContent: part.textContent ?? null,
+            toolCallId: part.toolCallId ?? null,
+            toolName: part.toolName ?? null,
+            toolInput: part.toolInput ?? null,
+            toolOutput: part.toolOutput ?? null,
+            metadata: part.metadata ?? null,
+          });
+        }
+      },
+    ),
     getMessages: vi.fn(async (convId: number, opts?: { afterSeq?: number; limit?: number }) => {
       let filtered = messages.filter((m) => m.conversationId === convId);
-      if (opts?.afterSeq != null) filtered = filtered.filter((m) => m.seq > opts.afterSeq!);
+      if (opts?.afterSeq != null) {
+        filtered = filtered.filter((m) => m.seq > opts.afterSeq!);
+      }
       filtered.sort((a, b) => a.seq - b.seq);
-      if (opts?.limit) filtered = filtered.slice(0, opts.limit);
+      if (opts?.limit) {
+        filtered = filtered.slice(0, opts.limit);
+      }
       return filtered;
     }),
-    getMessageById: vi.fn(async (id: number) =>
-      messages.find((m) => m.messageId === id) ?? null,
+    getMessageById: vi.fn(async (id: number) => messages.find((m) => m.messageId === id) ?? null),
+    getMessageParts: vi.fn(async (messageId: number) =>
+      messageParts
+        .filter((part) => part.messageId === messageId)
+        .sort((a, b) => a.ordinal - b.ordinal),
     ),
-    getMessageCount: vi.fn(async (convId: number) =>
-      messages.filter((m) => m.conversationId === convId).length,
+    getMessageCount: vi.fn(
+      async (convId: number) => messages.filter((m) => m.conversationId === convId).length,
     ),
     getMaxSeq: vi.fn(async (convId: number) => {
       const convMsgs = messages.filter((m) => m.conversationId === convId);
       return convMsgs.length > 0 ? Math.max(...convMsgs.map((m) => m.seq)) : 0;
     }),
-    searchMessages: vi.fn(async (input: {
-      query: string;
-      mode: string;
-      conversationId?: number;
-      limit?: number;
-    }) => {
-      const limit = input.limit ?? 50;
-      let filtered = messages as MessageRecord[];
-      if (input.conversationId != null) {
-        filtered = filtered.filter((m) => m.conversationId === input.conversationId);
-      }
-      // Simple in-memory search: check if content includes the query string
-      filtered = filtered.filter((m) => m.content.includes(input.query));
-      return filtered.slice(0, limit).map((m) => ({
-        messageId: m.messageId,
-        conversationId: m.conversationId,
-        role: m.role,
-        snippet: m.content.slice(0, 100),
-        rank: 0,
-      }));
-    }),
+    searchMessages: vi.fn(
+      async (input: { query: string; mode: string; conversationId?: number; limit?: number }) => {
+        const limit = input.limit ?? 50;
+        let filtered = messages;
+        if (input.conversationId != null) {
+          filtered = filtered.filter((m) => m.conversationId === input.conversationId);
+        }
+        // Simple in-memory search: check if content includes the query string
+        filtered = filtered.filter((m) => m.content.includes(input.query));
+        return filtered.slice(0, limit).map((m) => ({
+          messageId: m.messageId,
+          conversationId: m.conversationId,
+          role: m.role,
+          snippet: m.content.slice(0, 100),
+          rank: 0,
+        }));
+      },
+    ),
     // Expose internals for assertions
     _conversations: conversations,
     _messages: messages,
@@ -129,34 +171,38 @@ function createMockSummaryStore() {
     getContextItems: vi.fn(async (conversationId: number): Promise<ContextItemRecord[]> => {
       return contextItems
         .filter((ci) => ci.conversationId === conversationId)
-        .sort((a, b) => a.ordinal - b.ordinal);
+        .toSorted((a, b) => a.ordinal - b.ordinal);
     }),
 
-    appendContextMessage: vi.fn(async (conversationId: number, messageId: number): Promise<void> => {
-      const existing = contextItems.filter((ci) => ci.conversationId === conversationId);
-      const maxOrdinal = existing.length > 0 ? Math.max(...existing.map((ci) => ci.ordinal)) : -1;
-      contextItems.push({
-        conversationId,
-        ordinal: maxOrdinal + 1,
-        itemType: "message",
-        messageId,
-        summaryId: null,
-        createdAt: new Date(),
-      });
-    }),
+    appendContextMessage: vi.fn(
+      async (conversationId: number, messageId: number): Promise<void> => {
+        const existing = contextItems.filter((ci) => ci.conversationId === conversationId);
+        const maxOrdinal = existing.length > 0 ? Math.max(...existing.map((ci) => ci.ordinal)) : -1;
+        contextItems.push({
+          conversationId,
+          ordinal: maxOrdinal + 1,
+          itemType: "message",
+          messageId,
+          summaryId: null,
+          createdAt: new Date(),
+        });
+      },
+    ),
 
-    appendContextSummary: vi.fn(async (conversationId: number, summaryId: string): Promise<void> => {
-      const existing = contextItems.filter((ci) => ci.conversationId === conversationId);
-      const maxOrdinal = existing.length > 0 ? Math.max(...existing.map((ci) => ci.ordinal)) : -1;
-      contextItems.push({
-        conversationId,
-        ordinal: maxOrdinal + 1,
-        itemType: "summary",
-        messageId: null,
-        summaryId,
-        createdAt: new Date(),
-      });
-    }),
+    appendContextSummary: vi.fn(
+      async (conversationId: number, summaryId: string): Promise<void> => {
+        const existing = contextItems.filter((ci) => ci.conversationId === conversationId);
+        const maxOrdinal = existing.length > 0 ? Math.max(...existing.map((ci) => ci.ordinal)) : -1;
+        contextItems.push({
+          conversationId,
+          ordinal: maxOrdinal + 1,
+          itemType: "summary",
+          messageId: null,
+          summaryId,
+          createdAt: new Date(),
+        });
+      },
+    ),
 
     replaceContextRangeWithSummary: vi.fn(
       async (input: {
@@ -197,7 +243,7 @@ function createMockSummaryStore() {
         // Resequence: sort by ordinal then reassign dense ordinals 0..n-1
         const convItems = contextItems
           .filter((ci) => ci.conversationId === conversationId)
-          .sort((a, b) => a.ordinal - b.ordinal);
+          .toSorted((a, b) => a.ordinal - b.ordinal);
 
         // Remove all conversation items, re-add with new ordinals
         for (let i = contextItems.length - 1; i >= 0; i--) {
@@ -224,7 +270,9 @@ function createMockSummaryStore() {
           total += msgTokenCount;
         } else if (item.itemType === "summary" && item.summaryId != null) {
           const summary = summaries.find((s) => s.summaryId === item.summaryId);
-          if (summary) total += summary.tokenCount;
+          if (summary) {
+            total += summary.tokenCount;
+          }
         }
       }
       return total;
@@ -262,7 +310,7 @@ function createMockSummaryStore() {
     getSummariesByConversation: vi.fn(async (conversationId: number): Promise<SummaryRecord[]> => {
       return summaries
         .filter((s) => s.conversationId === conversationId)
-        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+        .toSorted((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
     }),
 
     // ── Lineage ─────────────────────────────────────────────────────────
@@ -292,35 +340,34 @@ function createMockSummaryStore() {
     getSummaryMessages: vi.fn(async (summaryId: string): Promise<number[]> => {
       return summaryMessages
         .filter((sm) => sm.summaryId === summaryId)
-        .sort((a, b) => a.ordinal - b.ordinal)
+        .toSorted((a, b) => a.ordinal - b.ordinal)
         .map((sm) => sm.messageId);
     }),
 
     getSummaryParents: vi.fn(async (summaryId: string): Promise<SummaryRecord[]> => {
-      const parentIds = summaryParents
-        .filter((sp) => sp.summaryId === summaryId)
-        .sort((a, b) => a.ordinal - b.ordinal)
-        .map((sp) => sp.parentSummaryId);
-      return summaries.filter((s) => parentIds.includes(s.summaryId));
+      const parentIds = new Set(
+        summaryParents
+          .filter((sp) => sp.summaryId === summaryId)
+          .toSorted((a, b) => a.ordinal - b.ordinal)
+          .map((sp) => sp.parentSummaryId),
+      );
+      return summaries.filter((s) => parentIds.has(s.summaryId));
     }),
 
     getSummaryChildren: vi.fn(async (parentSummaryId: string): Promise<SummaryRecord[]> => {
-      const childIds = summaryParents
-        .filter((sp) => sp.parentSummaryId === parentSummaryId)
-        .sort((a, b) => a.ordinal - b.ordinal)
-        .map((sp) => sp.summaryId);
-      return summaries.filter((s) => childIds.includes(s.summaryId));
+      const childIds = new Set(
+        summaryParents
+          .filter((sp) => sp.parentSummaryId === parentSummaryId)
+          .toSorted((a, b) => a.ordinal - b.ordinal)
+          .map((sp) => sp.summaryId),
+      );
+      return summaries.filter((s) => childIds.has(s.summaryId));
     }),
 
     // ── Search ──────────────────────────────────────────────────────────
 
     searchSummaries: vi.fn(
-      async (input: {
-        query: string;
-        mode: string;
-        conversationId?: number;
-        limit?: number;
-      }) => {
+      async (input: { query: string; mode: string; conversationId?: number; limit?: number }) => {
         const limit = input.limit ?? 50;
         let filtered = summaries;
         if (input.conversationId != null) {
@@ -359,9 +406,11 @@ function createMockSummaryStore() {
       return file;
     }),
 
-    getLargeFilesByConversation: vi.fn(async (conversationId: number): Promise<LargeFileRecord[]> => {
-      return largeFiles.filter((f) => f.conversationId === conversationId);
-    }),
+    getLargeFilesByConversation: vi.fn(
+      async (conversationId: number): Promise<LargeFileRecord[]> => {
+        return largeFiles.filter((f) => f.conversationId === conversationId);
+      },
+    ),
 
     // ── Internal helpers for the mock ────────────────────────────────────
 
@@ -411,10 +460,8 @@ async function ingestMessages(
 
   for (let i = 0; i < count; i++) {
     const content = opts?.contentFn ? opts.contentFn(i) : `Message ${i}`;
-    const role: MessageRole = opts?.roleFn ? opts.roleFn(i) : (i % 2 === 0 ? "user" : "assistant");
-    const tokenCount = opts?.tokenCountFn
-      ? opts.tokenCountFn(i, content)
-      : estimateTokens(content);
+    const role: MessageRole = opts?.roleFn ? opts.roleFn(i) : i % 2 === 0 ? "user" : "assistant";
+    const tokenCount = opts?.tokenCountFn ? opts.tokenCountFn(i, content) : estimateTokens(content);
 
     const msg = await convStore.createMessage({
       conversationId,
@@ -825,7 +872,10 @@ describe("LCM integration: retrieval", () => {
       content: "Summary of messages 1-3 about testing.",
       tokenCount: 20,
     });
-    await sumStore.linkSummaryToMessages(summaryId, msgs.map((m) => m.messageId));
+    await sumStore.linkSummaryToMessages(
+      summaryId,
+      msgs.map((m) => m.messageId),
+    );
 
     // Describe it
     const result = await retrieval.describe(summaryId);
@@ -870,8 +920,7 @@ describe("LCM integration: retrieval", () => {
     // Insert messages with searchable content
     await ingestMessages(convStore, sumStore, 5, {
       contentFn: (i) =>
-        i === 2 ? "This message mentions the deployment bug"
-          : `Regular message ${i}`,
+        i === 2 ? "This message mentions the deployment bug" : `Regular message ${i}`,
     });
 
     // Insert a summary with searchable content
@@ -1026,7 +1075,10 @@ describe("LCM integration: retrieval", () => {
       content: "Leaf summary of 3 messages.",
       tokenCount: 10,
     });
-    await sumStore.linkSummaryToMessages(leafId, msgs.map((m) => m.messageId));
+    await sumStore.linkSummaryToMessages(
+      leafId,
+      msgs.map((m) => m.messageId),
+    );
 
     const result = await retrieval.expand({
       summaryId: leafId,
@@ -1147,9 +1199,7 @@ describe("LCM integration: full round-trip", () => {
     expect(assembleResult.stats.rawMessageCount).toBeGreaterThan(0);
 
     // At least one assembled message should contain summary content
-    const hasSummary = assembleResult.messages.some((m) =>
-      m.content.includes("[Summary ID:"),
-    );
+    const hasSummary = assembleResult.messages.some((m) => m.content.includes("[Summary ID:"));
     expect(hasSummary).toBe(true);
 
     // Fresh tail messages (last 4) should be present
@@ -1225,9 +1275,7 @@ describe("LCM integration: full round-trip", () => {
 
     // The condensed summary should have lineage to the leaf
     const condensed = condensedSummaries[0];
-    const parents = sumStore._summaryParents.filter(
-      (sp) => sp.summaryId === condensed.summaryId,
-    );
+    const parents = sumStore._summaryParents.filter((sp) => sp.summaryId === condensed.summaryId);
     expect(parents.length).toBeGreaterThanOrEqual(1);
     // The parent of the condensed summary should be the leaf summary
     expect(parents.some((p) => leafSummaries.some((l) => l.summaryId === p.parentSummaryId))).toBe(
@@ -1280,8 +1328,7 @@ describe("LCM integration: full round-trip", () => {
     // Ingest messages with a unique keyword
     await ingestMessages(convStore, sumStore, 8, {
       contentFn: (i) =>
-        i === 3 ? "The flamingo module has a critical bug in production"
-          : `Normal turn ${i}`,
+        i === 3 ? "The flamingo module has a critical bug in production" : `Normal turn ${i}`,
     });
 
     const summarize = vi.fn(async (text: string) => {

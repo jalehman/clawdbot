@@ -685,6 +685,7 @@ export async function runEmbeddedAttempt(
             const assembled = await params.contextEngine.assemble({
               sessionId: params.sessionId,
               messages: activeSession.messages,
+              tokenBudget: params.contextTokenBudget,
             });
             if (assembled.messages !== activeSession.messages) {
               activeSession.agent.replaceMessages(assembled.messages);

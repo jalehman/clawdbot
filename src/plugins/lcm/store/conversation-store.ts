@@ -1,9 +1,23 @@
 import type { DatabaseSync } from "node:sqlite";
+import { randomUUID } from "node:crypto";
 
 export type ConversationId = number;
 export type MessageId = number;
 export type SummaryId = string;
 export type MessageRole = "system" | "user" | "assistant" | "tool";
+export type MessagePartType =
+  | "text"
+  | "reasoning"
+  | "tool"
+  | "patch"
+  | "file"
+  | "subtask"
+  | "compaction"
+  | "step_start"
+  | "step_finish"
+  | "snapshot"
+  | "agent"
+  | "retry";
 
 export type CreateMessageInput = {
   conversationId: ConversationId;
@@ -21,6 +35,32 @@ export type MessageRecord = {
   content: string;
   tokenCount: number;
   createdAt: Date;
+};
+
+export type CreateMessagePartInput = {
+  sessionId: string;
+  partType: MessagePartType;
+  ordinal: number;
+  textContent?: string | null;
+  toolCallId?: string | null;
+  toolName?: string | null;
+  toolInput?: string | null;
+  toolOutput?: string | null;
+  metadata?: string | null;
+};
+
+export type MessagePartRecord = {
+  partId: string;
+  messageId: MessageId;
+  sessionId: string;
+  partType: MessagePartType;
+  ordinal: number;
+  textContent: string | null;
+  toolCallId: string | null;
+  toolName: string | null;
+  toolInput: string | null;
+  toolOutput: string | null;
+  metadata: string | null;
 };
 
 export type CreateConversationInput = {
@@ -81,6 +121,20 @@ interface MessageSearchRow {
   rank: number;
 }
 
+interface MessagePartRow {
+  part_id: string;
+  message_id: number;
+  session_id: string;
+  part_type: MessagePartType;
+  ordinal: number;
+  text_content: string | null;
+  tool_call_id: string | null;
+  tool_name: string | null;
+  tool_input: string | null;
+  tool_output: string | null;
+  metadata: string | null;
+}
+
 interface CountRow {
   count: number;
 }
@@ -121,6 +175,22 @@ function toSearchResult(row: MessageSearchRow): MessageSearchResult {
     role: row.role,
     snippet: row.snippet,
     rank: row.rank,
+  };
+}
+
+function toMessagePartRecord(row: MessagePartRow): MessagePartRecord {
+  return {
+    partId: row.part_id,
+    messageId: row.message_id,
+    sessionId: row.session_id,
+    partType: row.part_type,
+    ordinal: row.ordinal,
+    textContent: row.text_content,
+    toolCallId: row.tool_call_id,
+    toolName: row.tool_name,
+    toolInput: row.tool_input,
+    toolOutput: row.tool_output,
+    metadata: row.metadata,
   };
 }
 
@@ -303,6 +373,68 @@ export class ConversationStore {
       )
       .get(messageId) as unknown as MessageRow | undefined;
     return row ? toMessageRecord(row) : null;
+  }
+
+  async createMessageParts(messageId: MessageId, parts: CreateMessagePartInput[]): Promise<void> {
+    if (parts.length === 0) {
+      return;
+    }
+
+    const stmt = this.db.prepare(
+      `INSERT INTO message_parts (
+         part_id,
+         message_id,
+         session_id,
+         part_type,
+         ordinal,
+         text_content,
+         tool_call_id,
+         tool_name,
+         tool_input,
+         tool_output,
+         metadata
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+
+    for (const part of parts) {
+      stmt.run(
+        randomUUID(),
+        messageId,
+        part.sessionId,
+        part.partType,
+        part.ordinal,
+        part.textContent ?? null,
+        part.toolCallId ?? null,
+        part.toolName ?? null,
+        part.toolInput ?? null,
+        part.toolOutput ?? null,
+        part.metadata ?? null,
+      );
+    }
+  }
+
+  async getMessageParts(messageId: MessageId): Promise<MessagePartRecord[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT
+         part_id,
+         message_id,
+         session_id,
+         part_type,
+         ordinal,
+         text_content,
+         tool_call_id,
+         tool_name,
+         tool_input,
+         tool_output,
+         metadata
+       FROM message_parts
+       WHERE message_id = ?
+       ORDER BY ordinal`,
+      )
+      .all(messageId) as unknown as MessagePartRow[];
+
+    return rows.map(toMessagePartRecord);
   }
 
   async getMessageCount(conversationId: ConversationId): Promise<number> {

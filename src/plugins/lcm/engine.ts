@@ -14,7 +14,11 @@ import { resolveLcmConfig, type LcmConfig } from "./db/config.js";
 import { getLcmConnection, closeLcmConnection } from "./db/connection.js";
 import { runLcmMigrations } from "./db/migration.js";
 import { RetrievalEngine } from "./retrieval.js";
-import { ConversationStore } from "./store/conversation-store.js";
+import {
+  ConversationStore,
+  type CreateMessagePartInput,
+  type MessagePartType,
+} from "./store/conversation-store.js";
 import { SummaryStore } from "./store/summary-store.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -22,6 +26,75 @@ import { SummaryStore } from "./store/summary-store.js";
 /** Rough token estimate: ~4 chars per token. */
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
+}
+
+function toJson(value: unknown): string {
+  const encoded = JSON.stringify(value);
+  return typeof encoded === "string" ? encoded : "";
+}
+
+function safeString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function normalizeUnknownBlock(value: unknown): {
+  type: string;
+  text?: string;
+  metadata: Record<string, unknown>;
+} {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {
+      type: "agent",
+      metadata: { raw: value },
+    };
+  }
+
+  const record = value as Record<string, unknown>;
+  const rawType = safeString(record.type);
+  return {
+    type: rawType ?? "agent",
+    text: safeString(record.text) ?? safeString(record.thinking),
+    metadata: { raw: record },
+  };
+}
+
+function toPartType(type: string): MessagePartType {
+  switch (type) {
+    case "text":
+      return "text";
+    case "thinking":
+    case "reasoning":
+      return "reasoning";
+    case "tool_use":
+    case "tool-use":
+    case "tool_result":
+    case "toolResult":
+    case "tool":
+      return "tool";
+    case "patch":
+      return "patch";
+    case "file":
+    case "image":
+      return "file";
+    case "subtask":
+      return "subtask";
+    case "compaction":
+      return "compaction";
+    case "step_start":
+    case "step-start":
+      return "step_start";
+    case "step_finish":
+    case "step-finish":
+      return "step_finish";
+    case "snapshot":
+      return "snapshot";
+    case "retry":
+      return "retry";
+    case "agent":
+      return "agent";
+    default:
+      return "agent";
+  }
 }
 
 /**
@@ -49,6 +122,122 @@ function extractMessageContent(content: unknown): string {
   return typeof serialized === "string" ? serialized : "";
 }
 
+function buildMessageParts(params: {
+  sessionId: string;
+  message: AgentMessage;
+  fallbackContent: string;
+}): import("./store/conversation-store.js").CreateMessagePartInput[] {
+  const { sessionId, message, fallbackContent } = params;
+  const role = typeof message.role === "string" ? message.role : "unknown";
+  const topLevel = message as unknown as Record<string, unknown>;
+  const topLevelToolCallId =
+    safeString(topLevel.toolCallId) ?? safeString(topLevel.tool_call_id) ?? safeString(topLevel.id);
+
+  // BashExecutionMessage: preserve a synthetic text part so output is round-trippable.
+  if (!("content" in message) && "command" in message && "output" in message) {
+    return [
+      {
+        sessionId,
+        partType: "text",
+        ordinal: 0,
+        textContent: fallbackContent,
+        metadata: toJson({
+          originalRole: role,
+          source: "bash-exec",
+          command: safeString((message as { command?: unknown }).command),
+        }),
+      },
+    ];
+  }
+
+  if (!("content" in message)) {
+    return [
+      {
+        sessionId,
+        partType: "agent",
+        ordinal: 0,
+        textContent: fallbackContent || null,
+        metadata: toJson({
+          originalRole: role,
+          source: "unknown-message-shape",
+          raw: message,
+        }),
+      },
+    ];
+  }
+
+  if (typeof message.content === "string") {
+    return [
+      {
+        sessionId,
+        partType: "text",
+        ordinal: 0,
+        textContent: message.content,
+        metadata: toJson({
+          originalRole: role,
+        }),
+      },
+    ];
+  }
+
+  if (!Array.isArray(message.content)) {
+    return [
+      {
+        sessionId,
+        partType: "agent",
+        ordinal: 0,
+        textContent: fallbackContent || null,
+        metadata: toJson({
+          originalRole: role,
+          source: "non-array-content",
+          raw: message.content,
+        }),
+      },
+    ];
+  }
+
+  const parts: CreateMessagePartInput[] = [];
+  for (let ordinal = 0; ordinal < message.content.length; ordinal++) {
+    const block = normalizeUnknownBlock(message.content[ordinal]);
+    const metadataRecord = block.metadata.raw as Record<string, unknown> | undefined;
+    const toolCallId =
+      safeString(metadataRecord?.toolCallId) ??
+      safeString(metadataRecord?.tool_call_id) ??
+      topLevelToolCallId;
+
+    parts.push({
+      sessionId,
+      partType: toPartType(block.type),
+      ordinal,
+      textContent: block.text ?? null,
+      toolCallId,
+      toolName:
+        safeString(metadataRecord?.name) ??
+        safeString(metadataRecord?.toolName) ??
+        safeString(metadataRecord?.tool_name),
+      toolInput:
+        metadataRecord?.input !== undefined
+          ? toJson(metadataRecord.input)
+          : metadataRecord?.toolInput !== undefined
+            ? toJson(metadataRecord.toolInput)
+            : (safeString(metadataRecord?.tool_input) ?? null),
+      toolOutput:
+        metadataRecord?.output !== undefined
+          ? toJson(metadataRecord.output)
+          : metadataRecord?.toolOutput !== undefined
+            ? toJson(metadataRecord.toolOutput)
+            : (safeString(metadataRecord?.tool_output) ?? null),
+      metadata: toJson({
+        originalRole: role,
+        rawType: block.type,
+        raw: metadataRecord ?? message.content[ordinal],
+      }),
+    });
+  }
+
+  return parts;
+}
+
 /**
  * Map AgentMessage role to the DB enum.
  *
@@ -59,14 +248,20 @@ function extractMessageContent(content: unknown): string {
  * explicit for clarity and future-proofing.
  */
 function toDbRole(role: string): "user" | "assistant" | "system" | "tool" {
+  if (role === "tool" || role === "toolResult") {
+    return "tool";
+  }
+  if (role === "system") {
+    return "system";
+  }
   if (role === "user") {
     return "user";
   }
   if (role === "assistant") {
     return "assistant";
   }
-  // Fallback — shouldn't happen with AgentMessage, but safe default
-  return "user";
+  // Unknown roles are preserved via message_parts metadata and treated as assistant.
+  return "assistant";
 }
 
 type StoredMessage = {
@@ -262,6 +457,14 @@ export class LcmContextEngine implements ContextEngine {
       content: stored.content,
       tokenCount: stored.tokenCount,
     });
+    await this.conversationStore.createMessageParts(
+      msgRecord.messageId,
+      buildMessageParts({
+        sessionId,
+        message,
+        fallbackContent: stored.content,
+      }),
+    );
 
     // Append to context items so assembler can see it
     await this.summaryStore.appendContextMessage(conversationId, msgRecord.messageId);
@@ -290,6 +493,7 @@ export class LcmContextEngine implements ContextEngine {
   async compact(params: {
     sessionId: string;
     sessionFile: string;
+    tokenBudget?: number;
     customInstructions?: string;
     legacyParams?: Record<string, unknown>;
   }): Promise<CompactResult> {
@@ -319,7 +523,12 @@ export class LcmContextEngine implements ContextEngine {
         : createDefaultSummarize(params.customInstructions);
 
     // Determine token budget from legacyParams or use a sensible default
-    const tokenBudget = typeof lp.tokenBudget === "number" ? lp.tokenBudget : 128_000;
+    const tokenBudget =
+      typeof params.tokenBudget === "number"
+        ? params.tokenBudget
+        : typeof lp.tokenBudget === "number"
+          ? lp.tokenBudget
+          : 128_000;
 
     // Evaluate whether compaction is needed
     const decision = await this.compaction.evaluate(conversationId, tokenBudget);

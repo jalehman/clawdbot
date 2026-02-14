@@ -452,6 +452,7 @@ export async function runEmbeddedPiAgent(
             agentDir,
             config: params.config,
             contextEngine,
+            contextTokenBudget: ctxInfo.tokens,
             skillsSnapshot: params.skillsSnapshot,
             prompt,
             images: params.images,
@@ -582,6 +583,7 @@ export async function runEmbeddedPiAgent(
               const compactResult = await contextEngine.compact({
                 sessionId: params.sessionId,
                 sessionFile: params.sessionFile,
+                tokenBudget: ctxInfo.tokens,
                 legacyParams: {
                   sessionKey: params.sessionKey,
                   messageChannel: params.messageChannel,

@@ -23,10 +23,7 @@ export class LegacyContextEngine implements ContextEngine {
     version: "1.0.0",
   };
 
-  async ingest(_params: {
-    sessionId: string;
-    message: AgentMessage;
-  }): Promise<IngestResult> {
+  async ingest(_params: { sessionId: string; message: AgentMessage }): Promise<IngestResult> {
     // No-op: SessionManager handles message persistence in the legacy flow
     return { ingested: false };
   }
@@ -48,16 +45,16 @@ export class LegacyContextEngine implements ContextEngine {
   async compact(params: {
     sessionId: string;
     sessionFile: string;
+    tokenBudget?: number;
     customInstructions?: string;
     legacyParams?: Record<string, unknown>;
   }): Promise<CompactResult> {
     // Import dynamically to avoid circular dependencies
-    const { compactEmbeddedPiSessionDirect } = await import(
-      "../agents/pi-embedded-runner/compact.js"
-    );
+    const { compactEmbeddedPiSessionDirect } =
+      await import("../agents/pi-embedded-runner/compact.js");
 
     // Extract legacy params - these map directly to CompactEmbeddedPiSessionParams
-    const lp = (params.legacyParams ?? {}) as Record<string, unknown>;
+    const lp = params.legacyParams ?? {};
 
     const result = await compactEmbeddedPiSessionDirect({
       sessionId: params.sessionId,

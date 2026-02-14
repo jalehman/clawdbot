@@ -97,6 +97,7 @@ export const handleCompactCommand: CommandHandler = async (params) => {
     contextEngine.compact({
       sessionId,
       sessionFile,
+      tokenBudget: params.contextTokens ?? sessionEntry.contextTokens ?? undefined,
       customInstructions,
       legacyParams: {
         sessionKey: params.sessionKey,

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LcmConfig } from "./db/config.js";
+import { ContextAssembler } from "./assembler.js";
 import { closeLcmConnection } from "./db/connection.js";
 import { LcmContextEngine } from "./engine.js";
 
@@ -36,9 +37,9 @@ function createSessionFilePath(name: string): string {
   return join(tempDir, `${name}.jsonl`);
 }
 
-function makeMessage(params: { role?: "user" | "assistant"; content: unknown }): AgentMessage {
+function makeMessage(params: { role?: string; content: unknown }): AgentMessage {
   return {
-    role: params.role ?? "assistant",
+    role: (params.role ?? "assistant") as AgentMessage["role"],
     content: params.content,
     timestamp: Date.now(),
   } as AgentMessage;
@@ -394,5 +395,105 @@ describe("LcmContextEngine.assemble pass-through", () => {
 
     expect(await engine.getConversationStore().getMessageCount(conversationId)).toBe(2);
     expect((await engine.getSummaryStore().getContextItems(conversationId)).length).toBe(2);
+  });
+});
+
+describe("LcmContextEngine fidelity and token budget", () => {
+  it("preserves structured toolResult content via message_parts and assembler", async () => {
+    const engine = createEngine();
+    const sessionId = randomUUID();
+    const toolResult = {
+      role: "toolResult",
+      toolCallId: "call_123",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "call_123",
+          content: [{ type: "text", text: "command output" }],
+        },
+      ],
+    } as AgentMessage;
+
+    await engine.ingest({
+      sessionId,
+      message: toolResult,
+    });
+
+    const conversation = await engine.getConversationStore().getConversationBySessionId(sessionId);
+    expect(conversation).not.toBeNull();
+
+    const storedMessages = await engine
+      .getConversationStore()
+      .getMessages(conversation!.conversationId);
+    expect(storedMessages).toHaveLength(1);
+    expect(storedMessages[0].role).toBe("tool");
+
+    const parts = await engine.getConversationStore().getMessageParts(storedMessages[0].messageId);
+    expect(parts).toHaveLength(1);
+    expect(parts[0].partType).toBe("tool");
+    expect(parts[0].toolCallId).toBe("call_123");
+
+    const assembler = new ContextAssembler(engine.getConversationStore(), engine.getSummaryStore());
+    const assembled = await assembler.assemble({
+      conversationId: conversation!.conversationId,
+      tokenBudget: 10_000,
+    });
+    expect(assembled.messages).toHaveLength(1);
+
+    const assembledMessage = assembled.messages[0] as {
+      role: string;
+      toolCallId?: string;
+      content?: unknown;
+    };
+    expect(assembledMessage.role).toBe("toolResult");
+    expect(assembledMessage.toolCallId).toBe("call_123");
+    expect(Array.isArray(assembledMessage.content)).toBe(true);
+    expect((assembledMessage.content as Array<{ type?: string }>)[0]?.type).toBe("tool_result");
+  });
+
+  it("maps unknown roles to assistant instead of silently coercing to user", async () => {
+    const engine = createEngine();
+    const sessionId = randomUUID();
+
+    await engine.ingest({
+      sessionId,
+      message: makeMessage({ role: "custom-event", content: "opaque payload" }),
+    });
+
+    const conversation = await engine.getConversationStore().getConversationBySessionId(sessionId);
+    expect(conversation).not.toBeNull();
+    const storedMessages = await engine
+      .getConversationStore()
+      .getMessages(conversation!.conversationId);
+    expect(storedMessages).toHaveLength(1);
+    expect(storedMessages[0].role).toBe("assistant");
+  });
+
+  it("uses explicit compact tokenBudget over legacy tokenBudget", async () => {
+    const engine = createEngine();
+    const evaluateSpy = vi.spyOn((engine as any).compaction, "evaluate").mockResolvedValue({
+      shouldCompact: false,
+      reason: "none",
+      currentTokens: 12,
+      threshold: 9,
+    });
+    const compactSpy = vi.spyOn((engine as any).compaction, "compactUntilUnder");
+
+    await engine.ingest({
+      sessionId: "budget-session",
+      message: makeMessage({ role: "user", content: "hello world" }),
+    });
+
+    const result = await engine.compact({
+      sessionId: "budget-session",
+      sessionFile: "/tmp/unused.jsonl",
+      tokenBudget: 123,
+      legacyParams: { tokenBudget: 999 },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.compacted).toBe(false);
+    expect(evaluateSpy).toHaveBeenCalledWith(expect.any(Number), 123);
+    expect(compactSpy).not.toHaveBeenCalled();
   });
 });

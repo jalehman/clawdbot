@@ -1,5 +1,9 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { ConversationStore, MessageRole } from "./store/conversation-store.js";
+import type {
+  ConversationStore,
+  MessagePartRecord,
+  MessageRole,
+} from "./store/conversation-store.js";
 import type { SummaryStore, ContextItemRecord, SummaryRecord } from "./store/summary-store.js";
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -39,11 +43,145 @@ function estimateTokens(text: string): number {
  *   system    -> user       (system prompts presented as user messages)
  *   tool      -> assistant  (tool results are part of assistant turns)
  */
-function mapRole(role: MessageRole): "user" | "assistant" {
-  if (role === "user" || role === "system") {
+function parseJson(value: string | null): unknown {
+  if (typeof value !== "string" || !value.trim()) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function getOriginalRole(parts: MessagePartRecord[]): string | null {
+  for (const part of parts) {
+    const decoded = parseJson(part.metadata);
+    if (!decoded || typeof decoded !== "object") {
+      continue;
+    }
+    const role = (decoded as { originalRole?: unknown }).originalRole;
+    if (typeof role === "string" && role.length > 0) {
+      return role;
+    }
+  }
+  return null;
+}
+
+function toRuntimeRole(
+  dbRole: MessageRole,
+  parts: MessagePartRecord[],
+): "user" | "assistant" | "toolResult" {
+  const originalRole = getOriginalRole(parts);
+  if (originalRole === "toolResult") {
+    return "toolResult";
+  }
+  if (originalRole === "assistant") {
+    return "assistant";
+  }
+  if (originalRole === "user") {
     return "user";
   }
-  return "assistant"; // assistant | tool
+  if (originalRole === "system") {
+    // Runtime system prompts are managed via setSystemPrompt(), not message history.
+    return "user";
+  }
+
+  if (dbRole === "tool") {
+    return "toolResult";
+  }
+  if (dbRole === "assistant") {
+    return "assistant";
+  }
+  return "user"; // user | system
+}
+
+function blockFromPart(part: MessagePartRecord): unknown {
+  const decoded = parseJson(part.metadata);
+  if (decoded && typeof decoded === "object") {
+    const raw = (decoded as { raw?: unknown }).raw;
+    if (raw && typeof raw === "object") {
+      return raw;
+    }
+  }
+
+  if (part.partType === "text" || part.partType === "reasoning") {
+    return { type: "text", text: part.textContent ?? "" };
+  }
+  if (part.partType === "tool") {
+    const toolOutput = parseJson(part.toolOutput);
+    if (toolOutput !== undefined) {
+      return toolOutput;
+    }
+    if (typeof part.textContent === "string") {
+      return { type: "text", text: part.textContent };
+    }
+    return { type: "text", text: part.toolOutput ?? part.toolInput ?? "" };
+  }
+
+  if (typeof part.textContent === "string" && part.textContent.length > 0) {
+    return { type: "text", text: part.textContent };
+  }
+
+  const decodedFallback = parseJson(part.metadata);
+  if (decodedFallback && typeof decodedFallback === "object") {
+    return {
+      type: "text",
+      text: JSON.stringify(decodedFallback),
+    };
+  }
+  return { type: "text", text: "" };
+}
+
+function contentFromParts(
+  parts: MessagePartRecord[],
+  role: "user" | "assistant" | "toolResult",
+  fallbackContent: string,
+): unknown {
+  if (parts.length === 0) {
+    if (role === "toolResult") {
+      return [{ type: "text", text: fallbackContent }];
+    }
+    return fallbackContent;
+  }
+
+  const blocks = parts.map(blockFromPart);
+  if (
+    role === "user" &&
+    blocks.length === 1 &&
+    blocks[0] &&
+    typeof blocks[0] === "object" &&
+    (blocks[0] as { type?: unknown }).type === "text" &&
+    typeof (blocks[0] as { text?: unknown }).text === "string"
+  ) {
+    return (blocks[0] as { text: string }).text;
+  }
+  return blocks;
+}
+
+function pickToolCallId(parts: MessagePartRecord[]): string | undefined {
+  for (const part of parts) {
+    if (typeof part.toolCallId === "string" && part.toolCallId.length > 0) {
+      return part.toolCallId;
+    }
+    const decoded = parseJson(part.metadata);
+    if (!decoded || typeof decoded !== "object") {
+      continue;
+    }
+    const raw = (decoded as { raw?: unknown }).raw;
+    if (!raw || typeof raw !== "object") {
+      continue;
+    }
+    const maybe = (raw as { toolCallId?: unknown; tool_call_id?: unknown }).toolCallId;
+    if (typeof maybe === "string" && maybe.length > 0) {
+      return maybe;
+    }
+    const maybeSnake = (raw as { tool_call_id?: unknown }).tool_call_id;
+    if (typeof maybeSnake === "string" && maybeSnake.length > 0) {
+      return maybeSnake;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -247,19 +385,23 @@ export class ContextAssembler {
       return null;
     }
 
-    const content = msg.content;
-    const role = mapRole(msg.role);
-    const tokenCount = msg.tokenCount > 0 ? msg.tokenCount : estimateTokens(content);
+    const parts = await this.conversationStore.getMessageParts(msg.messageId);
+    const role = toRuntimeRole(msg.role, parts);
+    const content = contentFromParts(parts, role, msg.content);
+    const contentText =
+      typeof content === "string" ? content : (JSON.stringify(content) ?? msg.content);
+    const tokenCount = msg.tokenCount > 0 ? msg.tokenCount : estimateTokens(contentText);
+    const toolCallId = role === "toolResult" ? pickToolCallId(parts) : undefined;
 
     // Cast: these are reconstructed from DB storage, not live agent messages,
     // so they won't carry the full AgentMessage metadata (timestamp, usage, etc.)
     return {
       ordinal: item.ordinal,
-      message: {
-        role,
-        content: role === "assistant" ? [{ type: "text", text: content }] : content,
-        ...(role === "assistant"
-          ? {
+      message:
+        role === "assistant"
+          ? ({
+              role,
+              content,
               usage: {
                 input: 0,
                 output: tokenCount,
@@ -274,9 +416,12 @@ export class ContextAssembler {
                   total: 0,
                 },
               },
-            }
-          : {}),
-      } as AgentMessage,
+            } as AgentMessage)
+          : ({
+              role,
+              content,
+              ...(toolCallId ? { toolCallId } : {}),
+            } as AgentMessage),
       tokens: tokenCount,
       isMessage: true,
     };

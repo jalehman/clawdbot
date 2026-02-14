@@ -7,19 +7,17 @@ import type {
   CompactResult,
   IngestResult,
 } from "./types.js";
-
 // ---------------------------------------------------------------------------
 // We dynamically import the registry so we can get a fresh module per test
 // group when needed.  For most groups we use the shared singleton directly.
 // ---------------------------------------------------------------------------
-
+import { LegacyContextEngine, registerLegacyContextEngine } from "./legacy.js";
 import {
   registerContextEngine,
   getContextEngineFactory,
   listContextEngineIds,
   resolveContextEngine,
 } from "./registry.js";
-import { LegacyContextEngine, registerLegacyContextEngine } from "./legacy.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -37,10 +35,7 @@ class MockContextEngine implements ContextEngine {
     version: "0.0.1",
   };
 
-  async ingest(_params: {
-    sessionId: string;
-    message: AgentMessage;
-  }): Promise<IngestResult> {
+  async ingest(_params: { sessionId: string; message: AgentMessage }): Promise<IngestResult> {
     return { ingested: true };
   }
 
@@ -58,6 +53,7 @@ class MockContextEngine implements ContextEngine {
   async compact(_params: {
     sessionId: string;
     sessionFile: string;
+    tokenBudget?: number;
     customInstructions?: string;
     legacyParams?: Record<string, unknown>;
   }): Promise<CompactResult> {
