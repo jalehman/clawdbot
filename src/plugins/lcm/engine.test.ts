@@ -621,6 +621,57 @@ describe("LcmContextEngine.compact token budget plumbing", () => {
     expect(result.reason).toBe("below threshold");
   });
 
+  it("forces one compaction round for manual compaction requests", async () => {
+    const engine = createEngine();
+    const privateEngine = engine as unknown as {
+      compaction: {
+        evaluate: (conversationId: number, tokenBudget: number) => Promise<unknown>;
+        compact: (input: unknown) => Promise<unknown>;
+        compactUntilUnder: (input: unknown) => Promise<unknown>;
+      };
+    };
+
+    const evaluateSpy = vi.spyOn(privateEngine.compaction, "evaluate").mockResolvedValue({
+      shouldCompact: false,
+      reason: "none",
+      currentTokens: 116_000,
+      threshold: 150_000,
+    });
+    const compactSpy = vi.spyOn(privateEngine.compaction, "compact").mockResolvedValue({
+      actionTaken: true,
+      tokensBefore: 116_000,
+      tokensAfter: 92_000,
+      condensed: false,
+    });
+    const compactUntilUnderSpy = vi.spyOn(privateEngine.compaction, "compactUntilUnder");
+
+    await engine.ingest({
+      sessionId: "manual-compact-session",
+      message: { role: "user", content: "trigger manual compact" } as AgentMessage,
+    });
+
+    const result = await engine.compact({
+      sessionId: "manual-compact-session",
+      sessionFile: "/tmp/session.jsonl",
+      tokenBudget: 200_000,
+      legacyParams: {
+        manualCompaction: true,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.compacted).toBe(true);
+    expect(result.reason).toBe("compacted");
+    expect(evaluateSpy).toHaveBeenCalledWith(expect.any(Number), 200_000);
+    expect(compactSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tokenBudget: 200_000,
+        force: true,
+      }),
+    );
+    expect(compactUntilUnderSpy).not.toHaveBeenCalled();
+  });
+
   it("uses threshold target for proactive threshold compaction mode", async () => {
     const engine = createEngine();
     const privateEngine = engine as unknown as {

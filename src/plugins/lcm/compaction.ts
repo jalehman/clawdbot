@@ -234,7 +234,10 @@ export class CompactionEngine {
         : 0;
     let lastTokens = Math.max(storedTokens, liveTokens);
 
-    if (lastTokens <= targetTokens) {
+    // For forced overflow recovery, callers may pass an observed count that
+    // equals the context budget. Treat equality as still needing a compaction
+    // attempt so we can create headroom for provider-side framing overhead.
+    if (lastTokens < targetTokens) {
       return { success: true, rounds: 0, finalTokens: lastTokens };
     }
 

@@ -636,6 +636,13 @@ export class LcmContextEngine implements ContextEngine {
       const conversationId = conversation.conversationId;
 
       const lp = params.legacyParams ?? {};
+      const manualCompactionRequested =
+        (
+          lp as {
+            manualCompaction?: unknown;
+          }
+        ).manualCompaction === true;
+      const forceCompaction = force || manualCompactionRequested;
       const tokenBudget =
         typeof params.tokenBudget === "number" &&
         Number.isFinite(params.tokenBudget) &&
@@ -691,7 +698,7 @@ export class LcmContextEngine implements ContextEngine {
           ? await this.compaction.evaluate(conversationId, tokenBudget, observedTokens)
           : await this.compaction.evaluate(conversationId, tokenBudget);
 
-      if (!force && !decision.shouldCompact) {
+      if (!forceCompaction && !decision.shouldCompact) {
         return {
           ok: true,
           compacted: false,
@@ -702,8 +709,31 @@ export class LcmContextEngine implements ContextEngine {
         };
       }
 
+      if (manualCompactionRequested) {
+        const forcedRound = await this.compaction.compact({
+          conversationId,
+          tokenBudget,
+          summarize,
+          force: true,
+        });
+
+        return {
+          ok: true,
+          compacted: forcedRound.actionTaken,
+          reason: forcedRound.actionTaken ? "compacted" : "nothing to compact",
+          result: {
+            tokensBefore: decision.currentTokens,
+            tokensAfter: forcedRound.tokensAfter,
+            details: {
+              rounds: forcedRound.actionTaken ? 1 : 0,
+              targetTokens: tokenBudget,
+            },
+          },
+        };
+      }
+
       // When forced, use the token budget as target
-      const targetTokens = force
+      const targetTokens = forceCompaction
         ? tokenBudget
         : params.compactionTarget === "threshold"
           ? decision.threshold
