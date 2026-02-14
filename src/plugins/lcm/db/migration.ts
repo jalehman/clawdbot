@@ -132,11 +132,28 @@ export function runLcmMigrations(db: DatabaseSync): void {
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'")
     .get();
 
-  if (!hasFts) {
+  if (hasFts) {
+    // Check for stale schema: external-content FTS tables with content_rowid cause errors.
+    // Drop and recreate as standalone FTS if the old schema is detected.
+    const ftsSchema = (
+      db
+        .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='messages_fts'")
+        .get() as { sql: string } | undefined
+    )?.sql;
+    if (ftsSchema && ftsSchema.includes("content_rowid")) {
+      db.exec("DROP TABLE messages_fts");
+      db.exec(`
+        CREATE VIRTUAL TABLE messages_fts USING fts5(
+          content,
+          tokenize='porter unicode61'
+        );
+        INSERT INTO messages_fts(rowid, content) SELECT message_id, content FROM messages;
+      `);
+    }
+  } else {
     db.exec(`
       CREATE VIRTUAL TABLE messages_fts USING fts5(
         content,
-        content_rowid='message_id',
         tokenize='porter unicode61'
       );
     `);
