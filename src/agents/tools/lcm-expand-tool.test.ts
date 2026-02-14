@@ -36,6 +36,31 @@ function makeEngine(mockRetrieval: ReturnType<typeof makeMockRetrieval>): LcmCon
   } as unknown as LcmContextEngine;
 }
 
+/**
+ * Parse the single JSON payload block embedded in delegated pass instructions.
+ */
+function parseDelegatedPassPayload(message: string): {
+  summaryIds: string[];
+  conversationId: number;
+  maxDepth?: number;
+  tokenCap: number;
+  includeMessages: boolean;
+} {
+  const match = message.match(
+    /JSON payload:\n([\s\S]*?)\n\nThen return ONLY JSON with this shape:/,
+  );
+  if (!match?.[1]) {
+    throw new Error("missing delegated pass payload in task message");
+  }
+  return JSON.parse(match[1]) as {
+    summaryIds: string[];
+    conversationId: number;
+    maxDepth?: number;
+    tokenCap: number;
+    includeMessages: boolean;
+  };
+}
+
 const ORIGINAL_MAX_EXPAND = process.env.LCM_MAX_EXPAND_TOKENS;
 
 describe("createLcmExpandTool tokenCap bounds", () => {
@@ -325,11 +350,41 @@ describe("createLcmExpandTool tokenCap bounds", () => {
       delegated: {
         status: "ok",
       },
+      observability: {
+        decisionPath: {
+          policyAction: "delegate_traversal",
+          executionPath: "delegated",
+        },
+      },
     });
     const details = result.details as {
-      delegated?: { passes?: Array<unknown> };
+      delegated?: {
+        passes?: Array<{
+          runId?: string;
+          childSessionKey?: string;
+        }>;
+      };
+      observability?: {
+        delegatedRunRefs?: Array<{
+          pass?: number;
+          status?: string;
+          runId?: string;
+          childSessionKey?: string;
+        }>;
+      };
     };
     expect(details.delegated?.passes).toHaveLength(2);
+    expect(details.observability?.delegatedRunRefs).toHaveLength(2);
+    expect(details.observability?.delegatedRunRefs?.[0]?.runId).toBe("run-1");
+    expect(details.observability?.delegatedRunRefs?.[1]?.runId).toBe("run-2");
+    expect(details.observability?.delegatedRunRefs?.[0]?.status).toBe("ok");
+    expect(details.observability?.delegatedRunRefs?.[1]?.status).toBe("ok");
+    expect(details.observability?.delegatedRunRefs?.[0]?.childSessionKey).toMatch(
+      /^agent:main:subagent:/,
+    );
+    expect(details.observability?.delegatedRunRefs?.[1]?.childSessionKey).toMatch(
+      /^agent:main:subagent:/,
+    );
 
     const methods = callGatewayMock.mock.calls.map(
       ([opts]) => (opts as { method?: string }).method,
@@ -337,6 +392,32 @@ describe("createLcmExpandTool tokenCap bounds", () => {
     expect(methods.filter((method) => method === "agent")).toHaveLength(2);
     expect(methods.filter((method) => method === "agent.wait")).toHaveLength(2);
     expect(methods.filter((method) => method === "sessions.delete")).toHaveLength(2);
+
+    const delegatedAgentCalls = callGatewayMock.mock.calls.filter(
+      ([opts]) => (opts as { method?: string }).method === "agent",
+    );
+    const firstPayload = parseDelegatedPassPayload(
+      (delegatedAgentCalls[0]?.[0] as { params?: { message?: string } })?.params?.message ?? "",
+    );
+    const secondPayload = parseDelegatedPassPayload(
+      (delegatedAgentCalls[1]?.[0] as { params?: { message?: string } })?.params?.message ?? "",
+    );
+
+    // Pass 2 must consume follow-up IDs and stay within remaining token budget.
+    expect(firstPayload).toMatchObject({
+      summaryIds: ["sum_1", "sum_2", "sum_3", "sum_4", "sum_5", "sum_6"],
+      conversationId: 7,
+      maxDepth: 6,
+      tokenCap: 120,
+      includeMessages: false,
+    });
+    expect(secondPayload).toMatchObject({
+      summaryIds: ["sum_9"],
+      conversationId: 7,
+      maxDepth: 6,
+      tokenCap: 70,
+      includeMessages: false,
+    });
   });
 
   it("falls back to direct expansion when delegated wait times out", async () => {
@@ -387,6 +468,19 @@ describe("createLcmExpandTool tokenCap bounds", () => {
       executionPath: "direct_fallback",
       delegated: {
         status: "timeout",
+      },
+      observability: {
+        decisionPath: {
+          policyAction: "delegate_traversal",
+          executionPath: "direct_fallback",
+        },
+        delegatedRunRefs: [
+          {
+            pass: 1,
+            status: "timeout",
+            runId: "run-timeout",
+          },
+        ],
       },
     });
   });
@@ -440,6 +534,19 @@ describe("createLcmExpandTool tokenCap bounds", () => {
       delegated: {
         status: "error",
         error: "auth denied",
+      },
+      observability: {
+        decisionPath: {
+          policyAction: "delegate_traversal",
+          executionPath: "direct_fallback",
+        },
+        delegatedRunRefs: [
+          {
+            pass: 1,
+            status: "error",
+            runId: "run-error",
+          },
+        ],
       },
     });
   });

@@ -9,6 +9,95 @@ import {
 } from "./expansion-policy.js";
 
 describe("decideLcmExpansionRouting", () => {
+  it("applies the expected route-vs-delegate decision matrix", () => {
+    const cases: Array<{
+      name: string;
+      input: Parameters<typeof decideLcmExpansionRouting>[0];
+      expectedAction: ReturnType<typeof decideLcmExpansionRouting>["action"];
+      expectedTrigger: keyof ReturnType<typeof decideLcmExpansionRouting>["triggers"];
+    }> = [
+      {
+        name: "query probe with zero candidates",
+        input: {
+          intent: "query_probe",
+          query: "recent auth failures",
+          candidateSummaryCount: 0,
+          requestedMaxDepth: 3,
+          tokenCap: 1200,
+        },
+        expectedAction: "answer_directly",
+        expectedTrigger: "directByNoCandidates",
+      },
+      {
+        name: "query probe at low-complexity bounds",
+        input: {
+          intent: "query_probe",
+          query: "failed login",
+          candidateSummaryCount: 1,
+          requestedMaxDepth: 2,
+          tokenCap: 10_000,
+        },
+        expectedAction: "answer_directly",
+        expectedTrigger: "directByLowComplexityProbe",
+      },
+      {
+        name: "explicit expand under delegation thresholds",
+        input: {
+          intent: "explicit_expand",
+          candidateSummaryCount: 2,
+          requestedMaxDepth: 2,
+          tokenCap: 10_000,
+        },
+        expectedAction: "expand_shallow",
+        expectedTrigger: "delegateByDepth",
+      },
+      {
+        name: "query probe crossing depth threshold",
+        input: {
+          intent: "query_probe",
+          query: "auth chain",
+          candidateSummaryCount: 2,
+          requestedMaxDepth: EXPANSION_ROUTING_THRESHOLDS.delegateDepthThreshold,
+          tokenCap: 10_000,
+        },
+        expectedAction: "delegate_traversal",
+        expectedTrigger: "delegateByDepth",
+      },
+      {
+        name: "query probe crossing candidate threshold",
+        input: {
+          intent: "query_probe",
+          query: "incident spread",
+          candidateSummaryCount: EXPANSION_ROUTING_THRESHOLDS.delegateCandidateThreshold,
+          requestedMaxDepth: 2,
+          tokenCap: 10_000,
+        },
+        expectedAction: "delegate_traversal",
+        expectedTrigger: "delegateByCandidateCount",
+      },
+      {
+        name: "query probe with broad range and multi-hop indicators",
+        input: {
+          intent: "query_probe",
+          query: "build timeline from 2021 to 2025 and explain root cause chain",
+          candidateSummaryCount: 2,
+          requestedMaxDepth: 2,
+          tokenCap: 10_000,
+        },
+        expectedAction: "delegate_traversal",
+        expectedTrigger: "delegateByBroadTimeRangeAndMultiHop",
+      },
+    ];
+
+    for (const scenario of cases) {
+      const decision = decideLcmExpansionRouting(scenario.input);
+      expect(decision.action, scenario.name).toBe(scenario.expectedAction);
+      expect(decision.triggers[scenario.expectedTrigger], scenario.name).toBe(
+        scenario.expectedAction === "expand_shallow" ? false : true,
+      );
+    }
+  });
+
   it("answers directly when no candidate summaries are available", () => {
     const decision = decideLcmExpansionRouting({
       intent: "query_probe",
