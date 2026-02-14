@@ -370,6 +370,7 @@ export async function runEmbeddedAttempt(
           senderE164: params.senderE164,
           senderIsOwner: params.senderIsOwner,
           sessionKey: params.sessionKey ?? params.sessionId,
+          lcmSessionId: params.sessionId,
           agentDir,
           workspaceDir: effectiveWorkspace,
           config: params.config,

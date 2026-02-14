@@ -29,6 +29,8 @@ export function createOpenClawTools(options?: {
   sandboxBrowserBridgeUrl?: string;
   allowHostBrowserControl?: boolean;
   agentSessionKey?: string;
+  /** UUID session ID for LCM conversation scoping. */
+  lcmSessionId?: string;
   agentChannel?: GatewayMessageChannel;
   agentAccountId?: string;
   /** Delivery target (e.g. telegram:group:123:topic:456) for topic/thread routing. */
@@ -166,12 +168,15 @@ export function createOpenClawTools(options?: {
       ? [
           createLcmDescribeTool({
             config: options?.config,
-            sessionId: options?.agentSessionKey,
+            sessionId: options?.lcmSessionId ?? options?.agentSessionKey,
           }),
-          createLcmExpandTool({ config: options?.config, sessionId: options?.agentSessionKey }),
+          createLcmExpandTool({
+            config: options?.config,
+            sessionId: options?.lcmSessionId ?? options?.agentSessionKey,
+          }),
           createLcmGrepTool({
             config: options?.config,
-            sessionId: options?.agentSessionKey,
+            sessionId: options?.lcmSessionId ?? options?.agentSessionKey,
           }),
         ]
       : []),
