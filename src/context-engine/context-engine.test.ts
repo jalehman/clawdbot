@@ -54,6 +54,7 @@ class MockContextEngine implements ContextEngine {
     sessionId: string;
     sessionFile: string;
     tokenBudget?: number;
+    compactionTarget?: "budget" | "threshold";
     customInstructions?: string;
     legacyParams?: Record<string, unknown>;
   }): Promise<CompactResult> {

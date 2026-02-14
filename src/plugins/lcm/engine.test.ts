@@ -516,6 +516,31 @@ describe("LcmContextEngine fidelity and token budget", () => {
     expect(evaluateSpy).toHaveBeenCalledWith(expect.any(Number), 123);
     expect(compactSpy).not.toHaveBeenCalled();
   });
+
+  it("ingests completed turn batches with ingestBatch", async () => {
+    const engine = createEngine();
+    const sessionId = "batch-ingest-session";
+    const messages: AgentMessage[] = [
+      makeMessage({ role: "user", content: "turn user 1" }),
+      makeMessage({ role: "assistant", content: "turn assistant 1" }),
+      makeMessage({ role: "user", content: "turn user 2" }),
+    ];
+
+    const result = await engine.ingestBatch({
+      sessionId,
+      messages,
+    });
+    expect(result.ingestedCount).toBe(3);
+
+    const conversation = await engine.getConversationStore().getConversationBySessionId(sessionId);
+    expect(conversation).not.toBeNull();
+    expect(await engine.getConversationStore().getMessageCount(conversation!.conversationId)).toBe(
+      3,
+    );
+    expect(
+      (await engine.getSummaryStore().getContextItems(conversation!.conversationId)).length,
+    ).toBe(3);
+  });
 });
 
 // ── Compact token budget plumbing ───────────────────────────────────────────
@@ -564,5 +589,49 @@ describe("LcmContextEngine.compact token budget plumbing", () => {
     expect(result.ok).toBe(true);
     expect(result.compacted).toBe(false);
     expect(result.reason).toBe("below threshold");
+  });
+
+  it("uses threshold target for proactive threshold compaction mode", async () => {
+    const engine = createEngine();
+    const privateEngine = engine as unknown as {
+      compaction: {
+        evaluate: (conversationId: number, tokenBudget: number) => Promise<unknown>;
+        compactUntilUnder: (input: unknown) => Promise<unknown>;
+      };
+    };
+
+    const evaluateSpy = vi.spyOn(privateEngine.compaction, "evaluate").mockResolvedValue({
+      shouldCompact: true,
+      reason: "threshold",
+      currentTokens: 380,
+      threshold: 300,
+    });
+    const compactSpy = vi.spyOn(privateEngine.compaction, "compactUntilUnder").mockResolvedValue({
+      success: true,
+      rounds: 1,
+      finalTokens: 280,
+    });
+
+    await engine.ingest({
+      sessionId: "threshold-target-session",
+      message: { role: "user", content: "trigger" } as AgentMessage,
+    });
+
+    const result = await engine.compact({
+      sessionId: "threshold-target-session",
+      sessionFile: "/tmp/session.jsonl",
+      tokenBudget: 400,
+      compactionTarget: "threshold",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.compacted).toBe(true);
+    expect(evaluateSpy).toHaveBeenCalledWith(expect.any(Number), 400);
+    expect(compactSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tokenBudget: 400,
+        targetTokens: 300,
+      }),
+    );
   });
 });

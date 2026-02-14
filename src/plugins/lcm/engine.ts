@@ -6,6 +6,7 @@ import type {
   AssembleResult,
   BootstrapResult,
   CompactResult,
+  IngestBatchResult,
   IngestResult,
 } from "../../context-engine/types.js";
 import { ContextAssembler } from "./assembler.js";
@@ -334,6 +335,7 @@ export class LcmContextEngine implements ContextEngine {
   private compaction: CompactionEngine;
   private retrieval: RetrievalEngine;
   private migrated = false;
+  private sessionOperationQueues = new Map<string, Promise<void>>();
 
   constructor(config?: LcmConfig) {
     this.config = config ?? resolveLcmConfig();
@@ -369,6 +371,31 @@ export class LcmContextEngine implements ContextEngine {
     const db = getLcmConnection(this.config.databasePath);
     runLcmMigrations(db);
     this.migrated = true;
+  }
+
+  /**
+   * Serialize mutating operations per session to prevent ingest/compaction races.
+   */
+  private async withSessionQueue<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.sessionOperationQueues.get(sessionId) ?? Promise.resolve();
+    let releaseQueue: () => void = () => {};
+    const current = new Promise<void>((resolve) => {
+      releaseQueue = resolve;
+    });
+    const next = previous.catch(() => {}).then(() => current);
+    this.sessionOperationQueues.set(sessionId, next);
+
+    await previous.catch(() => {});
+    try {
+      return await operation();
+    } finally {
+      releaseQueue();
+      void next.finally(() => {
+        if (this.sessionOperationQueues.get(sessionId) === next) {
+          this.sessionOperationQueues.delete(sessionId);
+        }
+      });
+    }
   }
 
   // ── ContextEngine interface ─────────────────────────────────────────────
@@ -436,9 +463,10 @@ export class LcmContextEngine implements ContextEngine {
     });
   }
 
-  async ingest(params: { sessionId: string; message: AgentMessage }): Promise<IngestResult> {
-    this.ensureMigrated();
-
+  private async ingestSingle(params: {
+    sessionId: string;
+    message: AgentMessage;
+  }): Promise<IngestResult> {
     const { sessionId, message } = params;
     const stored = toStoredMessage(message);
 
@@ -471,6 +499,34 @@ export class LcmContextEngine implements ContextEngine {
     await this.summaryStore.appendContextMessage(conversationId, msgRecord.messageId);
 
     return { ingested: true };
+  }
+
+  async ingest(params: { sessionId: string; message: AgentMessage }): Promise<IngestResult> {
+    this.ensureMigrated();
+    return this.withSessionQueue(params.sessionId, () => this.ingestSingle(params));
+  }
+
+  async ingestBatch(params: {
+    sessionId: string;
+    messages: AgentMessage[];
+  }): Promise<IngestBatchResult> {
+    this.ensureMigrated();
+    if (params.messages.length === 0) {
+      return { ingestedCount: 0 };
+    }
+    return this.withSessionQueue(params.sessionId, async () => {
+      let ingestedCount = 0;
+      for (const message of params.messages) {
+        const result = await this.ingestSingle({
+          sessionId: params.sessionId,
+          message,
+        });
+        if (result.ingested) {
+          ingestedCount += 1;
+        }
+      }
+      return { ingestedCount };
+    });
   }
 
   async assemble(params: {
@@ -548,100 +604,106 @@ export class LcmContextEngine implements ContextEngine {
     sessionId: string;
     sessionFile: string;
     tokenBudget?: number;
+    compactionTarget?: "budget" | "threshold";
     customInstructions?: string;
     legacyParams?: Record<string, unknown>;
   }): Promise<CompactResult> {
     this.ensureMigrated();
+    return this.withSessionQueue(params.sessionId, async () => {
+      const { sessionId } = params;
 
-    const { sessionId } = params;
-
-    // Look up conversation
-    const conversation = await this.conversationStore.getConversationBySessionId(sessionId);
-    if (!conversation) {
-      return {
-        ok: true,
-        compacted: false,
-        reason: "no conversation found for session",
-      };
-    }
-
-    const conversationId = conversation.conversationId;
-
-    const lp = params.legacyParams ?? {};
-    const tokenBudget =
-      typeof params.tokenBudget === "number" &&
-      Number.isFinite(params.tokenBudget) &&
-      params.tokenBudget > 0
-        ? Math.floor(params.tokenBudget)
-        : typeof lp.tokenBudget === "number" &&
-            Number.isFinite(lp.tokenBudget) &&
-            lp.tokenBudget > 0
-          ? Math.floor(lp.tokenBudget)
-          : undefined;
-    if (!tokenBudget) {
-      return {
-        ok: false,
-        compacted: false,
-        reason: "missing token budget in compact params",
-      };
-    }
-
-    // 1) Honor an explicitly injected summarize callback.
-    // 2) Try model-backed summarization from runtime provider/model params.
-    // 3) Fall back to deterministic truncation only if summarizer setup fails.
-    const summarize = await (async (): Promise<
-      (text: string, aggressive?: boolean) => Promise<string>
-    > => {
-      if (typeof lp.summarize === "function") {
-        return lp.summarize as (text: string, aggressive?: boolean) => Promise<string>;
+      // Look up conversation
+      const conversation = await this.conversationStore.getConversationBySessionId(sessionId);
+      if (!conversation) {
+        return {
+          ok: true,
+          compacted: false,
+          reason: "no conversation found for session",
+        };
       }
-      try {
-        const runtimeSummarizer = await createLcmSummarizeFromLegacyParams({
-          legacyParams: lp,
-          customInstructions: params.customInstructions,
-        });
-        if (runtimeSummarizer) {
-          return runtimeSummarizer;
+
+      const conversationId = conversation.conversationId;
+
+      const lp = params.legacyParams ?? {};
+      const tokenBudget =
+        typeof params.tokenBudget === "number" &&
+        Number.isFinite(params.tokenBudget) &&
+        params.tokenBudget > 0
+          ? Math.floor(params.tokenBudget)
+          : typeof lp.tokenBudget === "number" &&
+              Number.isFinite(lp.tokenBudget) &&
+              lp.tokenBudget > 0
+            ? Math.floor(lp.tokenBudget)
+            : undefined;
+      if (!tokenBudget) {
+        return {
+          ok: false,
+          compacted: false,
+          reason: "missing token budget in compact params",
+        };
+      }
+
+      // 1) Honor an explicitly injected summarize callback.
+      // 2) Try model-backed summarization from runtime provider/model params.
+      // 3) Fall back to deterministic truncation only if summarizer setup fails.
+      const summarize = await (async (): Promise<
+        (text: string, aggressive?: boolean) => Promise<string>
+      > => {
+        if (typeof lp.summarize === "function") {
+          return lp.summarize as (text: string, aggressive?: boolean) => Promise<string>;
         }
-      } catch {
-        // Preserve compaction behavior even when model-backed setup fails.
+        try {
+          const runtimeSummarizer = await createLcmSummarizeFromLegacyParams({
+            legacyParams: lp,
+            customInstructions: params.customInstructions,
+          });
+          if (runtimeSummarizer) {
+            return runtimeSummarizer;
+          }
+        } catch {
+          // Preserve compaction behavior even when model-backed setup fails.
+        }
+        return createEmergencyFallbackSummarize();
+      })();
+
+      // Evaluate whether compaction is needed
+      const decision = await this.compaction.evaluate(conversationId, tokenBudget);
+
+      if (!decision.shouldCompact) {
+        return {
+          ok: true,
+          compacted: false,
+          reason: "below threshold",
+          result: {
+            tokensBefore: decision.currentTokens,
+          },
+        };
       }
-      return createEmergencyFallbackSummarize();
-    })();
 
-    // Evaluate whether compaction is needed
-    const decision = await this.compaction.evaluate(conversationId, tokenBudget);
+      const targetTokens =
+        params.compactionTarget === "threshold" ? decision.threshold : tokenBudget;
 
-    if (!decision.shouldCompact) {
+      const compactResult = await this.compaction.compactUntilUnder({
+        conversationId,
+        tokenBudget,
+        targetTokens,
+        summarize,
+      });
+
       return {
-        ok: true,
-        compacted: false,
-        reason: "below threshold",
+        ok: compactResult.success,
+        compacted: compactResult.rounds > 0,
+        reason: compactResult.success ? "compacted" : "could not reach target",
         result: {
           tokensBefore: decision.currentTokens,
+          tokensAfter: compactResult.finalTokens,
+          details: {
+            rounds: compactResult.rounds,
+            targetTokens,
+          },
         },
       };
-    }
-
-    // Run compaction until under budget
-    const compactResult = await this.compaction.compactUntilUnder({
-      conversationId,
-      tokenBudget,
-      summarize,
     });
-
-    return {
-      ok: compactResult.success,
-      compacted: compactResult.rounds > 0,
-      reason: compactResult.success ? "compacted" : "could not reach target",
-      result: {
-        tokensBefore: decision.currentTokens,
-        tokensAfter: compactResult.finalTokens,
-        details: {
-          rounds: compactResult.rounds,
-        },
-      },
-    };
   }
 
   async dispose(): Promise<void> {

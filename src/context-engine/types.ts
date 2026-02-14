@@ -27,6 +27,11 @@ export type IngestResult = {
   ingested: boolean;
 };
 
+export type IngestBatchResult = {
+  /** Number of messages ingested from the supplied batch */
+  ingestedCount: number;
+};
+
 export type BootstrapResult = {
   /** Whether bootstrap imported historical context into the canonical store */
   bootstrapped: boolean;
@@ -65,6 +70,12 @@ export interface ContextEngine {
   ingest(params: { sessionId: string; message: AgentMessage }): Promise<IngestResult>;
 
   /**
+   * Ingest a completed turn batch in one engine-managed unit.
+   * Engines can omit this and rely on per-message ingest calls.
+   */
+  ingestBatch?(params: { sessionId: string; messages: AgentMessage[] }): Promise<IngestBatchResult>;
+
+  /**
    * Assemble model context under a token budget.
    * Returns an ordered set of messages ready for the model.
    */
@@ -82,6 +93,8 @@ export interface ContextEngine {
     sessionId: string;
     sessionFile: string;
     tokenBudget?: number;
+    /** Controls convergence target; defaults to budget for compatibility. */
+    compactionTarget?: "budget" | "threshold";
     customInstructions?: string;
     /** Full params needed for legacy compaction behavior */
     legacyParams?: Record<string, unknown>;

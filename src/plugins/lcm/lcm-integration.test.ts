@@ -799,6 +799,27 @@ describe("LCM integration: compaction", () => {
     }
   });
 
+  it("compactUntilUnder respects an explicit threshold target", async () => {
+    await ingestMessages(convStore, sumStore, 16, {
+      contentFn: (i) => `Turn ${i}: ${"z".repeat(220)}`,
+      tokenCountFn: (_i, content) => estimateTokens(content),
+    });
+
+    const summarize = vi.fn(async (text: string) => {
+      return `summary ${text.length}`;
+    });
+
+    const result = await compactionEngine.compactUntilUnder({
+      conversationId: CONV_ID,
+      tokenBudget: 600,
+      targetTokens: 450,
+      summarize,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.finalTokens).toBeLessThanOrEqual(450);
+  });
+
   it("evaluate returns shouldCompact=false when under threshold", async () => {
     await ingestMessages(convStore, sumStore, 2, {
       contentFn: () => "Short msg",

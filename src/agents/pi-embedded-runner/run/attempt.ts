@@ -4,6 +4,7 @@ import { streamSimple } from "@mariozechner/pi-ai";
 import { createAgentSession, SessionManager, SettingsManager } from "@mariozechner/pi-coding-agent";
 import fs from "node:fs/promises";
 import os from "node:os";
+import type { CompactEmbeddedPiSessionParams } from "../compact.js";
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
 import { resolveHeartbeatPrompt } from "../../../auto-reply/heartbeat.js";
 import { resolveChannelCapabilities } from "../../../config/channel-capabilities.js";
@@ -1071,29 +1072,76 @@ export async function runEmbeddedAttempt(
         // Legacy engine: no-op. LCM engine: persists to SQLite for future assembly/compaction.
         if (params.contextEngine) {
           const autoCompactionResult = getLastCompactionResult?.();
+          const ingestBatch: AgentMessage[] = [];
           if (autoCompactionResult?.summary) {
-            try {
-              await params.contextEngine.ingest({
-                sessionId: params.sessionId,
-                message: {
-                  role: "user",
-                  content: autoCompactionResult.summary,
-                } as AgentMessage,
-              });
-            } catch (ingestErr) {
-              log.warn(`context engine auto-compaction ingest failed: ${String(ingestErr)}`);
-            }
+            ingestBatch.push({
+              role: "user",
+              content: autoCompactionResult.summary,
+            } as AgentMessage);
           }
 
           const newMessages = messagesSnapshot.slice(prePromptMessageCount);
-          for (const msg of newMessages) {
-            try {
-              await params.contextEngine.ingest({
-                sessionId: sessionIdUsed,
-                message: msg,
-              });
-            } catch (ingestErr) {
-              log.warn(`context engine ingest failed: ${String(ingestErr)}`);
+          ingestBatch.push(...newMessages);
+          if (ingestBatch.length > 0) {
+            if (typeof params.contextEngine.ingestBatch === "function") {
+              try {
+                await params.contextEngine.ingestBatch({
+                  sessionId: sessionIdUsed,
+                  messages: ingestBatch,
+                });
+              } catch (ingestErr) {
+                log.warn(`context engine ingest failed: ${String(ingestErr)}`);
+              }
+            } else {
+              for (const msg of ingestBatch) {
+                try {
+                  await params.contextEngine.ingest({
+                    sessionId: sessionIdUsed,
+                    message: msg,
+                  });
+                } catch (ingestErr) {
+                  log.warn(`context engine ingest failed: ${String(ingestErr)}`);
+                }
+              }
+            }
+
+            if (
+              params.contextEngine.info.id === "lcm" &&
+              typeof params.contextTokenBudget === "number" &&
+              Number.isFinite(params.contextTokenBudget) &&
+              params.contextTokenBudget > 0
+            ) {
+              const proactiveCompactLegacyParams = {
+                sessionKey: params.sessionKey,
+                messageChannel: params.messageChannel,
+                messageProvider: params.messageProvider,
+                agentAccountId: params.agentAccountId,
+                workspaceDir: effectiveWorkspace,
+                agentDir,
+                config: params.config,
+                skillsSnapshot: params.skillsSnapshot,
+                senderIsOwner: params.senderIsOwner,
+                provider: params.provider,
+                model: params.modelId,
+                tokenBudget: params.contextTokenBudget,
+                thinkLevel: params.thinkLevel,
+                reasoningLevel: params.reasoningLevel,
+                bashElevated: params.bashElevated,
+                extraSystemPrompt: params.extraSystemPrompt,
+                ownerNumbers: params.ownerNumbers,
+              } satisfies Partial<CompactEmbeddedPiSessionParams>;
+
+              try {
+                await params.contextEngine.compact({
+                  sessionId: params.sessionId,
+                  sessionFile: params.sessionFile,
+                  tokenBudget: params.contextTokenBudget,
+                  compactionTarget: "threshold",
+                  legacyParams: proactiveCompactLegacyParams,
+                });
+              } catch (compactErr) {
+                log.warn(`context engine proactive compact failed: ${String(compactErr)}`);
+              }
             }
           }
         }
