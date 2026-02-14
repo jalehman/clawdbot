@@ -1,8 +1,4 @@
-import type {
-  ExpansionOrchestrator,
-  ExpansionRequest,
-  ExpansionResult,
-} from "./expansion.js";
+import type { ExpansionOrchestrator, ExpansionRequest, ExpansionResult } from "./expansion.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -35,6 +31,10 @@ export type CreateGrantInput = {
   tokenCap?: number;
   /** TTL in milliseconds (default: 5 minutes) */
   ttlMs?: number;
+};
+
+export type CreateDelegatedExpansionGrantInput = CreateGrantInput & {
+  delegatedSessionKey: string;
 };
 
 export type ValidationResult = {
@@ -88,9 +88,15 @@ export class ExpansionAuthManager {
    */
   getGrant(grantId: string): ExpansionGrant | null {
     const grant = this.grants.get(grantId);
-    if (!grant) return null;
-    if (grant.revoked) return null;
-    if (grant.expiresAt.getTime() <= Date.now()) return null;
+    if (!grant) {
+      return null;
+    }
+    if (grant.revoked) {
+      return null;
+    }
+    if (grant.expiresAt.getTime() <= Date.now()) {
+      return null;
+    }
     return grant;
   }
 
@@ -100,7 +106,9 @@ export class ExpansionAuthManager {
    */
   revokeGrant(grantId: string): boolean {
     const grant = this.grants.get(grantId);
-    if (!grant) return false;
+    if (!grant) {
+      return false;
+    }
     grant.revoked = true;
     return true;
   }
@@ -192,6 +200,91 @@ export class ExpansionAuthManager {
 
     return removed;
   }
+}
+
+const runtimeExpansionAuthManager = new ExpansionAuthManager();
+const delegatedSessionGrantIds = new Map<string, string>();
+
+/**
+ * Return the singleton auth manager used by runtime delegated expansion flows.
+ */
+export function getRuntimeExpansionAuthManager(): ExpansionAuthManager {
+  return runtimeExpansionAuthManager;
+}
+
+/**
+ * Create a delegated expansion grant and bind it to the child session key.
+ */
+export function createDelegatedExpansionGrant(
+  input: CreateDelegatedExpansionGrantInput,
+): ExpansionGrant {
+  const delegatedSessionKey = input.delegatedSessionKey.trim();
+  if (!delegatedSessionKey) {
+    throw new Error("delegatedSessionKey is required for delegated expansion grants");
+  }
+
+  const grant = runtimeExpansionAuthManager.createGrant({
+    issuerSessionId: input.issuerSessionId,
+    allowedConversationIds: input.allowedConversationIds,
+    allowedSummaryIds: input.allowedSummaryIds,
+    maxDepth: input.maxDepth,
+    tokenCap: input.tokenCap,
+    ttlMs: input.ttlMs,
+  });
+  delegatedSessionGrantIds.set(delegatedSessionKey, grant.grantId);
+  return grant;
+}
+
+/**
+ * Resolve the delegated expansion grant id bound to a session key.
+ */
+export function resolveDelegatedExpansionGrantId(sessionKey: string): string | null {
+  const key = sessionKey.trim();
+  if (!key) {
+    return null;
+  }
+  return delegatedSessionGrantIds.get(key) ?? null;
+}
+
+/**
+ * Revoke the delegated grant bound to a session key.
+ * Optionally remove the binding after revocation.
+ */
+export function revokeDelegatedExpansionGrantForSession(
+  sessionKey: string,
+  opts?: { removeBinding?: boolean },
+): boolean {
+  const key = sessionKey.trim();
+  if (!key) {
+    return false;
+  }
+  const grantId = delegatedSessionGrantIds.get(key);
+  if (!grantId) {
+    return false;
+  }
+  const didRevoke = runtimeExpansionAuthManager.revokeGrant(grantId);
+  if (opts?.removeBinding) {
+    delegatedSessionGrantIds.delete(key);
+  }
+  return didRevoke;
+}
+
+/**
+ * Remove delegated grant binding for a session key without revoking.
+ */
+export function removeDelegatedExpansionGrantForSession(sessionKey: string): boolean {
+  const key = sessionKey.trim();
+  if (!key) {
+    return false;
+  }
+  return delegatedSessionGrantIds.delete(key);
+}
+
+/**
+ * Test-only reset helper for delegated runtime grants.
+ */
+export function resetDelegatedExpansionGrantsForTests(): void {
+  delegatedSessionGrantIds.clear();
 }
 
 // ── Authorized wrapper ───────────────────────────────────────────────────────
