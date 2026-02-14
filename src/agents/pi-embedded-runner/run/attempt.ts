@@ -213,7 +213,72 @@ function summarizeSessionContext(messages: AgentMessage[]): {
     maxMessageTextChars,
   };
 }
+export function repairAssembledMessagesForLcm(params: {
+  messages: AgentMessage[];
+  contextEngineId?: string;
+  repairToolUseResultPairing: boolean;
+}): AgentMessage[] {
+  if (!params.repairToolUseResultPairing || params.contextEngineId !== "lcm") {
+    return params.messages;
+  }
+  return sanitizeToolUseResultPairing(params.messages);
+}
 
+function estimateTextTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+function estimateMessageContentTokens(content: unknown): number {
+  if (typeof content === "string") {
+    return estimateTextTokens(content);
+  }
+  if (Array.isArray(content)) {
+    let total = 0;
+    for (const part of content) {
+      if (!part || typeof part !== "object") {
+        continue;
+      }
+      const record = part as Record<string, unknown>;
+      const text =
+        typeof record.text === "string"
+          ? record.text
+          : typeof record.thinking === "string"
+            ? record.thinking
+            : "";
+      if (text) {
+        total += estimateTextTokens(text);
+      }
+    }
+    return total;
+  }
+  if (content == null) {
+    return 0;
+  }
+  const serialized = JSON.stringify(content);
+  return estimateTextTokens(typeof serialized === "string" ? serialized : "");
+}
+
+function estimateSessionTokenCount(messages: AgentMessage[]): number {
+  let total = 0;
+  for (const message of messages) {
+    if ("content" in message) {
+      total += estimateMessageContentTokens(message.content);
+      continue;
+    }
+    if ("command" in message || "output" in message) {
+      const commandText =
+        typeof (message as { command?: unknown }).command === "string"
+          ? (message as { command?: string }).command
+          : "";
+      const outputText =
+        typeof (message as { output?: unknown }).output === "string"
+          ? (message as { output?: string }).output
+          : "";
+      total += estimateTextTokens(`${commandText}\n${outputText}`);
+    }
+  }
+  return total;
+}
 export async function runEmbeddedAttempt(
   params: EmbeddedRunAttemptParams,
 ): Promise<EmbeddedRunAttemptResult> {
@@ -694,8 +759,13 @@ export async function runEmbeddedAttempt(
               messages: activeSession.messages,
               tokenBudget: params.contextTokenBudget,
             });
-            if (assembled.messages !== activeSession.messages) {
-              activeSession.agent.replaceMessages(assembled.messages);
+            const repairedAssembled = repairAssembledMessagesForLcm({
+              messages: assembled.messages,
+              contextEngineId: params.contextEngine.info.id,
+              repairToolUseResultPairing: transcriptPolicy.repairToolUseResultPairing,
+            });
+            if (repairedAssembled !== activeSession.messages) {
+              activeSession.agent.replaceMessages(repairedAssembled);
             }
           } catch (assembleErr) {
             log.warn(
@@ -1117,6 +1187,7 @@ export async function runEmbeddedAttempt(
               Number.isFinite(params.contextTokenBudget) &&
               params.contextTokenBudget > 0
             ) {
+              const liveContextTokens = estimateSessionTokenCount(messagesSnapshot);
               const proactiveCompactLegacyParams = {
                 sessionKey: params.sessionKey,
                 messageChannel: params.messageChannel,
@@ -1142,6 +1213,7 @@ export async function runEmbeddedAttempt(
                   sessionId: params.sessionId,
                   sessionFile: params.sessionFile,
                   tokenBudget: params.contextTokenBudget,
+                  currentTokenCount: liveContextTokens,
                   compactionTarget: "threshold",
                   legacyParams: proactiveCompactLegacyParams,
                 });

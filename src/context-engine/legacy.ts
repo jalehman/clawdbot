@@ -46,6 +46,7 @@ export class LegacyContextEngine implements ContextEngine {
     sessionId: string;
     sessionFile: string;
     tokenBudget?: number;
+    currentTokenCount?: number;
     compactionTarget?: "budget" | "threshold";
     customInstructions?: string;
     legacyParams?: Record<string, unknown>;

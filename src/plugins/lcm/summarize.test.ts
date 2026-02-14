@@ -151,4 +151,23 @@ describe("createLcmSummarizeFromLegacyParams", () => {
     expect(mockedResolveCopilotApiToken).toHaveBeenCalledWith({ githubToken: "gh-token" });
     expect(mockedCompleteSimple.mock.calls[0]?.[2]?.apiKey).toBe("copilot-runtime-token");
   });
+
+  it("falls back deterministically when model returns empty summary output", async () => {
+    mockedCompleteSimple.mockResolvedValue({
+      content: [],
+    } as never);
+
+    const summarize = await createLcmSummarizeFromLegacyParams({
+      legacyParams: {
+        provider: "anthropic",
+        model: "claude-opus-4-5",
+      },
+    });
+
+    const longInput = "A".repeat(12_000);
+    const summary = await summarize!(longInput, false);
+
+    expect(summary.length).toBeGreaterThan(0);
+    expect(summary).toContain("[LCM fallback summary; truncated for context management]");
+  });
 });

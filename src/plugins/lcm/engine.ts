@@ -398,6 +398,14 @@ export class LcmContextEngine implements ContextEngine {
     }
   }
 
+  /** Normalize optional live token estimates supplied by runtime callers. */
+  private normalizeObservedTokenCount(value: unknown): number | undefined {
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+      return undefined;
+    }
+    return Math.floor(value);
+  }
+
   // ── ContextEngine interface ─────────────────────────────────────────────
 
   async bootstrap(params: { sessionId: string; sessionFile: string }): Promise<BootstrapResult> {
@@ -604,6 +612,7 @@ export class LcmContextEngine implements ContextEngine {
     sessionId: string;
     sessionFile: string;
     tokenBudget?: number;
+    currentTokenCount?: number;
     compactionTarget?: "budget" | "threshold";
     customInstructions?: string;
     legacyParams?: Record<string, unknown>;
@@ -669,7 +678,18 @@ export class LcmContextEngine implements ContextEngine {
       })();
 
       // Evaluate whether compaction is needed (unless forced)
-      const decision = await this.compaction.evaluate(conversationId, tokenBudget);
+      const observedTokens = this.normalizeObservedTokenCount(
+        params.currentTokenCount ??
+          (
+            lp as {
+              currentTokenCount?: unknown;
+            }
+          ).currentTokenCount,
+      );
+      const decision =
+        observedTokens !== undefined
+          ? await this.compaction.evaluate(conversationId, tokenBudget, observedTokens)
+          : await this.compaction.evaluate(conversationId, tokenBudget);
 
       if (!force && !decision.shouldCompact) {
         return {
@@ -693,13 +713,19 @@ export class LcmContextEngine implements ContextEngine {
         conversationId,
         tokenBudget,
         targetTokens,
+        ...(observedTokens !== undefined ? { currentTokens: observedTokens } : {}),
         summarize,
       });
+      const didCompact = compactResult.rounds > 0;
 
       return {
         ok: compactResult.success,
-        compacted: compactResult.rounds > 0,
-        reason: compactResult.success ? "compacted" : "could not reach target",
+        compacted: didCompact,
+        reason: compactResult.success
+          ? didCompact
+            ? "compacted"
+            : "already under target"
+          : "could not reach target",
         result: {
           tokensBefore: decision.currentTokens,
           tokensAfter: compactResult.finalTokens,

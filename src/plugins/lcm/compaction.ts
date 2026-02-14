@@ -71,8 +71,19 @@ export class CompactionEngine {
   // ── evaluate ─────────────────────────────────────────────────────────────
 
   /** Evaluate whether compaction is needed. */
-  async evaluate(conversationId: number, tokenBudget: number): Promise<CompactionDecision> {
-    const currentTokens = await this.summaryStore.getContextTokenCount(conversationId);
+  async evaluate(
+    conversationId: number,
+    tokenBudget: number,
+    observedTokenCount?: number,
+  ): Promise<CompactionDecision> {
+    const storedTokens = await this.summaryStore.getContextTokenCount(conversationId);
+    const liveTokens =
+      typeof observedTokenCount === "number" &&
+      Number.isFinite(observedTokenCount) &&
+      observedTokenCount > 0
+        ? Math.floor(observedTokenCount)
+        : 0;
+    const currentTokens = Math.max(storedTokens, liveTokens);
     const threshold = Math.floor(this.config.contextThreshold * tokenBudget);
 
     if (currentTokens > threshold) {
@@ -203,6 +214,7 @@ export class CompactionEngine {
     conversationId: number;
     tokenBudget: number;
     targetTokens?: number;
+    currentTokens?: number;
     summarize: (text: string, aggressive?: boolean) => Promise<string>;
   }): Promise<{ success: boolean; rounds: number; finalTokens: number }> {
     const { conversationId, tokenBudget, summarize } = input;
@@ -213,7 +225,14 @@ export class CompactionEngine {
         ? Math.floor(input.targetTokens)
         : tokenBudget;
 
-    let lastTokens = await this.summaryStore.getContextTokenCount(conversationId);
+    const storedTokens = await this.summaryStore.getContextTokenCount(conversationId);
+    const liveTokens =
+      typeof input.currentTokens === "number" &&
+      Number.isFinite(input.currentTokens) &&
+      input.currentTokens > 0
+        ? Math.floor(input.currentTokens)
+        : 0;
+    let lastTokens = Math.max(storedTokens, liveTokens);
 
     if (lastTokens <= targetTokens) {
       return { success: true, rounds: 0, finalTokens: lastTokens };

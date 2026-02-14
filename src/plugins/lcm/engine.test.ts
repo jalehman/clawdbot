@@ -664,4 +664,91 @@ describe("LcmContextEngine.compact token budget plumbing", () => {
       }),
     );
   });
+
+  it("passes currentTokenCount through to compaction evaluation and loop", async () => {
+    const engine = createEngine();
+    const privateEngine = engine as unknown as {
+      compaction: {
+        evaluate: (
+          conversationId: number,
+          tokenBudget: number,
+          observed?: number,
+        ) => Promise<unknown>;
+        compactUntilUnder: (input: unknown) => Promise<unknown>;
+      };
+    };
+
+    const evaluateSpy = vi.spyOn(privateEngine.compaction, "evaluate").mockResolvedValue({
+      shouldCompact: true,
+      reason: "threshold",
+      currentTokens: 500,
+      threshold: 300,
+    });
+    const compactSpy = vi.spyOn(privateEngine.compaction, "compactUntilUnder").mockResolvedValue({
+      success: true,
+      rounds: 1,
+      finalTokens: 280,
+    });
+
+    await engine.ingest({
+      sessionId: "observed-token-session",
+      message: { role: "user", content: "trigger" } as AgentMessage,
+    });
+
+    const result = await engine.compact({
+      sessionId: "observed-token-session",
+      sessionFile: "/tmp/session.jsonl",
+      tokenBudget: 400,
+      currentTokenCount: 500,
+      compactionTarget: "threshold",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.compacted).toBe(true);
+    expect(evaluateSpy).toHaveBeenCalledWith(expect.any(Number), 400, 500);
+    expect(compactSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tokenBudget: 400,
+        targetTokens: 300,
+        currentTokens: 500,
+      }),
+    );
+  });
+
+  it("reports already under target when compaction rounds are zero", async () => {
+    const engine = createEngine();
+    const privateEngine = engine as unknown as {
+      compaction: {
+        evaluate: (conversationId: number, tokenBudget: number) => Promise<unknown>;
+        compactUntilUnder: (input: unknown) => Promise<unknown>;
+      };
+    };
+
+    vi.spyOn(privateEngine.compaction, "evaluate").mockResolvedValue({
+      shouldCompact: true,
+      reason: "threshold",
+      currentTokens: 2_050,
+      threshold: 1_500,
+    });
+    vi.spyOn(privateEngine.compaction, "compactUntilUnder").mockResolvedValue({
+      success: true,
+      rounds: 0,
+      finalTokens: 2_000,
+    });
+
+    await engine.ingest({
+      sessionId: "under-target-session",
+      message: { role: "user", content: "trigger" } as AgentMessage,
+    });
+
+    const result = await engine.compact({
+      sessionId: "under-target-session",
+      sessionFile: "/tmp/session.jsonl",
+      tokenBudget: 2_000,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.compacted).toBe(false);
+    expect(result.reason).toBe("already under target");
+  });
 });

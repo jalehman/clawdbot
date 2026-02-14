@@ -584,6 +584,7 @@ export async function runEmbeddedPiAgent(
                 sessionId: params.sessionId,
                 sessionFile: params.sessionFile,
                 tokenBudget: ctxInfo.tokens,
+                currentTokenCount: ctxInfo.tokens,
                 legacyParams: {
                   sessionKey: params.sessionKey,
                   messageChannel: params.messageChannel,

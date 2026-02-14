@@ -88,6 +88,26 @@ function buildSummaryPrompt(params: {
 }
 
 /**
+ * Deterministic fallback summary when model output is empty.
+ *
+ * Keeps compaction progress monotonic instead of throwing and aborting the
+ * whole compaction pass.
+ */
+function buildDeterministicFallbackSummary(text: string, targetTokens: number): string {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const maxChars = Math.max(256, targetTokens * 4);
+  if (trimmed.length <= maxChars) {
+    return trimmed;
+  }
+
+  return `${trimmed.slice(0, maxChars)}\n[LCM fallback summary; truncated for context management]`;
+}
+
+/**
  * Builds a model-backed LCM summarize callback from runtime legacy params.
  *
  * Returns `undefined` when model/provider context is unavailable so callers can
@@ -186,7 +206,7 @@ export async function createLcmSummarizeFromLegacyParams(params: {
         .trim();
 
       if (!summary) {
-        throw new Error("LCM summarizer returned empty output");
+        return buildDeterministicFallbackSummary(text, targetTokens);
       }
 
       return summary;

@@ -882,6 +882,41 @@ describe("LCM integration: compaction", () => {
     expect(decision.currentTokens).toBeGreaterThan(decision.threshold);
   });
 
+  it("evaluate uses observed live token count when it exceeds stored count", async () => {
+    await ingestMessages(convStore, sumStore, 2, {
+      contentFn: () => "Short msg",
+      tokenCountFn: (_i, content) => estimateTokens(content),
+    });
+
+    const decision = await compactionEngine.evaluate(CONV_ID, 600, 500);
+    expect(decision.shouldCompact).toBe(true);
+    expect(decision.reason).toBe("threshold");
+    expect(decision.currentTokens).toBe(500);
+    expect(decision.threshold).toBe(450);
+  });
+
+  it("compactUntilUnder uses currentTokens when stored tokens are stale", async () => {
+    await ingestMessages(convStore, sumStore, 10, {
+      contentFn: (i) => `Turn ${i}: ${"x".repeat(200)}`,
+      tokenCountFn: (_i, content) => estimateTokens(content),
+    });
+
+    const summarize = vi.fn(async (text: string) => {
+      return `summary ${text.length}`;
+    });
+
+    const result = await compactionEngine.compactUntilUnder({
+      conversationId: CONV_ID,
+      tokenBudget: 2_000,
+      targetTokens: 1_000,
+      currentTokens: 1_500,
+      summarize,
+    });
+
+    expect(result.rounds).toBeGreaterThanOrEqual(1);
+    expect(summarize).toHaveBeenCalled();
+  });
+
   it("compact skips when under threshold and not forced", async () => {
     await ingestMessages(convStore, sumStore, 2, {
       contentFn: () => "Short",

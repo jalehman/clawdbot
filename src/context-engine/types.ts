@@ -93,6 +93,8 @@ export interface ContextEngine {
     sessionId: string;
     sessionFile: string;
     tokenBudget?: number;
+    /** Optional live token estimate from the caller's active context. */
+    currentTokenCount?: number;
     /** Controls convergence target; defaults to budget for compatibility. */
     compactionTarget?: "budget" | "threshold";
     customInstructions?: string;
