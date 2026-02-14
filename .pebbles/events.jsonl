@@ -274,3 +274,4 @@
 {"type":"status_update","timestamp":"2026-02-14T22:32:12.066835Z","issue_id":"openclaw-b70","payload":{"status":"in_progress"}}
 {"type":"close","timestamp":"2026-02-14T22:40:47.492477Z","issue_id":"openclaw-b70","payload":{}}
 {"type":"create","timestamp":"2026-02-14T22:48:15.650974Z","issue_id":"openclaw-fe7","payload":{"description":"After /compact, the reported token count (e.g. '48k → 1.7k') only reflects LCM conversation data (summaries + messages). It excludes system prompts, workspace files, and skills — making 'Context 1.7k/200k (1%)' misleadingly low. Fix: estimate system prompt overhead and add to tokensAfter in commands-compact.ts.","priority":"2","title":"Post-compaction token display excludes system prompts","type":"bug"}}
+{"type":"close","timestamp":"2026-02-14T22:49:14.696054Z","issue_id":"openclaw-fe7","payload":{}}
