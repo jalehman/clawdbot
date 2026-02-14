@@ -45,6 +45,7 @@ import {
 } from "../../pi-embedded-helpers.js";
 import { subscribeEmbeddedPiSession } from "../../pi-embedded-subscribe.js";
 import {
+  applyPiAutoCompactionGuard,
   ensurePiCompactionReserveTokens,
   resolveCompactionReserveTokensFloor,
 } from "../../pi-settings.js";
@@ -533,6 +534,11 @@ export async function runEmbeddedAttempt(
       ensurePiCompactionReserveTokens({
         settingsManager,
         minReserveTokens: resolveCompactionReserveTokensFloor(params.config),
+      });
+      applyPiAutoCompactionGuard({
+        settingsManager,
+        contextEngineId: params.contextEngine?.info.id,
+        env: process.env,
       });
 
       // Call for side effects (sets compaction/pruning runtime state)

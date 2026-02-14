@@ -5,6 +5,7 @@ export const DEFAULT_PI_COMPACTION_RESERVE_TOKENS_FLOOR = 20_000;
 type PiSettingsManagerLike = {
   getCompactionReserveTokens: () => number;
   applyOverrides: (overrides: { compaction: { reserveTokens: number } }) => void;
+  setCompactionEnabled?: (enabled: boolean) => void;
 };
 
 export function ensurePiCompactionReserveTokens(params: {
@@ -31,4 +32,33 @@ export function resolveCompactionReserveTokensFloor(cfg?: OpenClawConfig): numbe
     return Math.floor(raw);
   }
   return DEFAULT_PI_COMPACTION_RESERVE_TOKENS_FLOOR;
+}
+
+/** Decide whether Pi's internal auto-compaction should be disabled for this run. */
+export function shouldDisablePiAutoCompaction(params: {
+  contextEngineId?: string;
+  env?: NodeJS.ProcessEnv;
+}): boolean {
+  if (params.contextEngineId === "lcm") {
+    return true;
+  }
+  return params.env?.LCM_AUTOCOMPACT_DISABLED === "true";
+}
+
+/** Disable Pi auto-compaction via settings when LCM (or explicit runtime flag) is active. */
+export function applyPiAutoCompactionGuard(params: {
+  settingsManager: PiSettingsManagerLike;
+  contextEngineId?: string;
+  env?: NodeJS.ProcessEnv;
+}): { supported: boolean; disabled: boolean } {
+  const disable = shouldDisablePiAutoCompaction({
+    contextEngineId: params.contextEngineId,
+    env: params.env,
+  });
+  const setCompactionEnabled = params.settingsManager.setCompactionEnabled;
+  if (!disable || typeof setCompactionEnabled !== "function") {
+    return { supported: typeof setCompactionEnabled === "function", disabled: false };
+  }
+  setCompactionEnabled(false);
+  return { supported: true, disabled: true };
 }
