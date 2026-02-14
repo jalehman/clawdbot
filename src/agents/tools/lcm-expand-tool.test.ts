@@ -26,6 +26,10 @@ function makeMockRetrieval() {
   return {
     expand: vi.fn(),
     grep: vi.fn(),
+    describe: vi.fn().mockResolvedValue({
+      type: "summary",
+      summary: { conversationId: 7 },
+    }),
   };
 }
 
@@ -33,6 +37,9 @@ function makeEngine(mockRetrieval: ReturnType<typeof makeMockRetrieval>): LcmCon
   return {
     info: { id: "lcm" },
     getRetrieval: () => mockRetrieval,
+    getConversationStore: () => ({
+      getConversationBySessionId: vi.fn().mockResolvedValue(null),
+    }),
   } as unknown as LcmContextEngine;
 }
 
@@ -231,7 +238,7 @@ describe("createLcmExpandTool tokenCap bounds", () => {
     });
 
     expect(result.details).toMatchObject({
-      error: expect.stringContaining("Conversation 8"),
+      error: expect.stringMatching(/conversation 8/i),
     });
     expect(mockRetrieval.expand).not.toHaveBeenCalled();
   });
