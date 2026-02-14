@@ -508,7 +508,7 @@ export class SummaryStore {
     args.push(limit);
 
     const sql = `SELECT
-         sf.summary_id,
+         summaries_fts.summary_id,
          s.conversation_id,
          s.kind,
          snippet(summaries_fts, 1, '', '', '...', 32) AS snippet,
