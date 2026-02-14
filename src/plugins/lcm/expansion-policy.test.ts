@@ -15,6 +15,7 @@ describe("decideLcmExpansionRouting", () => {
       input: Parameters<typeof decideLcmExpansionRouting>[0];
       expectedAction: ReturnType<typeof decideLcmExpansionRouting>["action"];
       expectedTrigger: keyof ReturnType<typeof decideLcmExpansionRouting>["triggers"];
+      expectedTriggerValue: boolean;
     }> = [
       {
         name: "query probe with zero candidates",
@@ -27,6 +28,7 @@ describe("decideLcmExpansionRouting", () => {
         },
         expectedAction: "answer_directly",
         expectedTrigger: "directByNoCandidates",
+        expectedTriggerValue: true,
       },
       {
         name: "query probe at low-complexity bounds",
@@ -39,6 +41,7 @@ describe("decideLcmExpansionRouting", () => {
         },
         expectedAction: "answer_directly",
         expectedTrigger: "directByLowComplexityProbe",
+        expectedTriggerValue: true,
       },
       {
         name: "explicit expand under delegation thresholds",
@@ -50,6 +53,7 @@ describe("decideLcmExpansionRouting", () => {
         },
         expectedAction: "expand_shallow",
         expectedTrigger: "delegateByDepth",
+        expectedTriggerValue: false,
       },
       {
         name: "query probe crossing depth threshold",
@@ -62,6 +66,7 @@ describe("decideLcmExpansionRouting", () => {
         },
         expectedAction: "delegate_traversal",
         expectedTrigger: "delegateByDepth",
+        expectedTriggerValue: true,
       },
       {
         name: "query probe crossing candidate threshold",
@@ -74,6 +79,7 @@ describe("decideLcmExpansionRouting", () => {
         },
         expectedAction: "delegate_traversal",
         expectedTrigger: "delegateByCandidateCount",
+        expectedTriggerValue: true,
       },
       {
         name: "query probe with broad range and multi-hop indicators",
@@ -86,6 +92,7 @@ describe("decideLcmExpansionRouting", () => {
         },
         expectedAction: "delegate_traversal",
         expectedTrigger: "delegateByBroadTimeRangeAndMultiHop",
+        expectedTriggerValue: true,
       },
     ];
 
@@ -93,7 +100,7 @@ describe("decideLcmExpansionRouting", () => {
       const decision = decideLcmExpansionRouting(scenario.input);
       expect(decision.action, scenario.name).toBe(scenario.expectedAction);
       expect(decision.triggers[scenario.expectedTrigger], scenario.name).toBe(
-        scenario.expectedAction === "expand_shallow" ? false : true,
+        scenario.expectedTriggerValue,
       );
     }
   });
