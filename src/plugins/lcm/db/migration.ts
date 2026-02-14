@@ -142,17 +142,23 @@ export function runLcmMigrations(db: DatabaseSync): void {
     `);
   }
 
-  const hasSummariesFts = db
-    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='summaries_fts'")
-    .get();
+  // Recreate FTS tables to fix schema issues:
+  // - summaries_fts: was using content_rowid=summary_id but summary_id is TEXT not INTEGER
+  // - messages_fts: same issue
+  // Drop and recreate without content_rowid to work with any primary key type
+  db.exec(`DROP TABLE IF EXISTS summaries_fts;`);
+  db.exec(`
+    CREATE VIRTUAL TABLE summaries_fts USING fts5(
+      content,
+      tokenize='porter unicode61'
+    );
+  `);
 
-  if (!hasSummariesFts) {
-    db.exec(`
-      CREATE VIRTUAL TABLE summaries_fts USING fts5(
-        content,
-        content_rowid='summary_id',
-        tokenize='porter unicode61'
-      );
-    `);
-  }
+  db.exec(`DROP TABLE IF EXISTS messages_fts;`);
+  db.exec(`
+    CREATE VIRTUAL TABLE messages_fts USING fts5(
+      content,
+      tokenize='porter unicode61'
+    );
+  `);
 }
