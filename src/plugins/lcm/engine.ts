@@ -607,10 +607,12 @@ export class LcmContextEngine implements ContextEngine {
     compactionTarget?: "budget" | "threshold";
     customInstructions?: string;
     legacyParams?: Record<string, unknown>;
+    /** Force compaction even if below threshold */
+    force?: boolean;
   }): Promise<CompactResult> {
     this.ensureMigrated();
     return this.withSessionQueue(params.sessionId, async () => {
-      const { sessionId } = params;
+      const { sessionId, force = false } = params;
 
       // Look up conversation
       const conversation = await this.conversationStore.getConversationBySessionId(sessionId);
@@ -666,10 +668,10 @@ export class LcmContextEngine implements ContextEngine {
         return createEmergencyFallbackSummarize();
       })();
 
-      // Evaluate whether compaction is needed
+      // Evaluate whether compaction is needed (unless forced)
       const decision = await this.compaction.evaluate(conversationId, tokenBudget);
 
-      if (!decision.shouldCompact) {
+      if (!force && !decision.shouldCompact) {
         return {
           ok: true,
           compacted: false,
@@ -680,8 +682,12 @@ export class LcmContextEngine implements ContextEngine {
         };
       }
 
-      const targetTokens =
-        params.compactionTarget === "threshold" ? decision.threshold : tokenBudget;
+      // When forced, use the token budget as target
+      const targetTokens = force
+        ? tokenBudget
+        : params.compactionTarget === "threshold"
+          ? decision.threshold
+          : tokenBudget;
 
       const compactResult = await this.compaction.compactUntilUnder({
         conversationId,
