@@ -146,9 +146,10 @@ export const handleCompactCommand: CommandHandler = async (params) => {
       tokensAfter: result.result?.tokensAfter,
     });
   }
-  // Use the post-compaction token count for context summary if available
-  const tokensAfterCompaction = result.result?.tokensAfter;
-  const totalTokens = tokensAfterCompaction ?? resolveFreshSessionTotalTokens(params.sessionEntry);
+  // For context summary, prefer the pre-compaction observed token count (which includes system
+  // prompts) over the raw LCM tokensAfter (which only counts conversation data and would be
+  // misleadingly low).  The next turn will refresh with the real assembled token count.
+  const totalTokens = resolveFreshSessionTotalTokens(params.sessionEntry);
   const contextSummary = formatContextUsageShort(
     typeof totalTokens === "number" && totalTokens > 0 ? totalTokens : null,
     params.contextTokens ?? params.sessionEntry.contextTokens ?? null,
