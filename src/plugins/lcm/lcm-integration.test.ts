@@ -435,6 +435,25 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
+function extractMessageText(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .map((block) => {
+      if (!block || typeof block !== "object") {
+        return "";
+      }
+      const rec = block as { text?: unknown };
+      return typeof rec.text === "string" ? rec.text : "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
 const CONV_ID = 1;
 
 /**
@@ -536,7 +555,7 @@ describe("LCM integration: ingest -> assemble", () => {
 
     // Verify chronological order by checking content
     for (let i = 0; i < 5; i++) {
-      expect(result.messages[i].content).toBe(`Message ${i}`);
+      expect(extractMessageText(result.messages[i].content)).toBe(`Message ${i}`);
     }
   });
 
@@ -560,7 +579,7 @@ describe("LCM integration: ingest -> assemble", () => {
     // Fresh tail (last 4) should always be included
     const lastFour = result.messages.slice(-4);
     for (let i = 0; i < 4; i++) {
-      expect(lastFour[i].content).toContain(`M${6 + i}`);
+      expect(extractMessageText(lastFour[i].content)).toContain(`M${6 + i}`);
     }
 
     // We should have fewer than 10 messages total (oldest dropped)
@@ -638,6 +657,24 @@ describe("LCM integration: ingest -> assemble", () => {
 
     // All 3 messages should still be present (fresh tail is never dropped)
     expect(result.messages).toHaveLength(3);
+  });
+
+  it("degrades tool rows without toolCallId to assistant text", async () => {
+    await ingestMessages(convStore, sumStore, 1, {
+      roleFn: () => "tool",
+      contentFn: () => "legacy tool output without call id",
+    });
+
+    const result = await assembler.assemble({
+      conversationId: CONV_ID,
+      tokenBudget: 100_000,
+    });
+
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0].role).toBe("assistant");
+    expect(extractMessageText(result.messages[0].content)).toContain(
+      "legacy tool output without call id",
+    );
   });
 });
 
@@ -1225,7 +1262,7 @@ describe("LCM integration: full round-trip", () => {
 
     // Fresh tail messages (last 4) should be present
     const lastMsgContent = assembleResult.messages[assembleResult.messages.length - 1].content;
-    expect(lastMsgContent).toContain("Discussion turn 19");
+    expect(extractMessageText(lastMsgContent)).toContain("Discussion turn 19");
 
     // 4. Use retrieval to describe the created summary
     const createdSummaryId = compactResult.createdSummaryId!;

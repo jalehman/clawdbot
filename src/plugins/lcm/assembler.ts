@@ -139,6 +139,9 @@ function contentFromParts(
   fallbackContent: string,
 ): unknown {
   if (parts.length === 0) {
+    if (role === "assistant") {
+      return fallbackContent ? [{ type: "text", text: fallbackContent }] : [];
+    }
     if (role === "toolResult") {
       return [{ type: "text", text: fallbackContent }];
     }
@@ -386,12 +389,17 @@ export class ContextAssembler {
     }
 
     const parts = await this.conversationStore.getMessageParts(msg.messageId);
-    const role = toRuntimeRole(msg.role, parts);
+    const roleFromStore = toRuntimeRole(msg.role, parts);
+    const toolCallId = roleFromStore === "toolResult" ? pickToolCallId(parts) : undefined;
+    // Tool results without a call id cannot be serialized for Anthropic-compatible APIs.
+    // This happens for legacy/bootstrap rows that have role=tool but no message_parts.
+    // Preserve the text by degrading to assistant content instead of emitting invalid toolResult.
+    const role: "user" | "assistant" | "toolResult" =
+      roleFromStore === "toolResult" && !toolCallId ? "assistant" : roleFromStore;
     const content = contentFromParts(parts, role, msg.content);
     const contentText =
       typeof content === "string" ? content : (JSON.stringify(content) ?? msg.content);
     const tokenCount = msg.tokenCount > 0 ? msg.tokenCount : estimateTokens(contentText);
-    const toolCallId = role === "toolResult" ? pickToolCallId(parts) : undefined;
 
     // Cast: these are reconstructed from DB storage, not live agent messages,
     // so they won't carry the full AgentMessage metadata (timestamp, usage, etc.)
