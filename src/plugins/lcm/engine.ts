@@ -478,17 +478,70 @@ export class LcmContextEngine implements ContextEngine {
     messages: AgentMessage[];
     tokenBudget?: number;
   }): Promise<AssembleResult> {
-    this.ensureMigrated();
+    try {
+      this.ensureMigrated();
 
-    // Pass through the live session messages unchanged.
-    // LCM ingest currently runs post-prompt and does not capture the full
-    // live context (for example system prompts and pre-prompt session history).
-    // Replacing active session messages with DB-assembled context causes
-    // context loss across turns.
-    return {
-      messages: params.messages,
-      estimatedTokens: 0,
-    };
+      const conversation = await this.conversationStore.getConversationBySessionId(
+        params.sessionId,
+      );
+      if (!conversation) {
+        return {
+          messages: params.messages,
+          estimatedTokens: 0,
+        };
+      }
+
+      const contextItems = await this.summaryStore.getContextItems(conversation.conversationId);
+      if (contextItems.length === 0) {
+        return {
+          messages: params.messages,
+          estimatedTokens: 0,
+        };
+      }
+
+      // Guard against incomplete bootstrap/coverage: if the DB only has
+      // raw context items and clearly trails the current live history, keep
+      // the live path to avoid dropping prompt context.
+      const hasSummaryItems = contextItems.some((item) => item.itemType === "summary");
+      if (!hasSummaryItems && contextItems.length < params.messages.length) {
+        return {
+          messages: params.messages,
+          estimatedTokens: 0,
+        };
+      }
+
+      const tokenBudget =
+        typeof params.tokenBudget === "number" &&
+        Number.isFinite(params.tokenBudget) &&
+        params.tokenBudget > 0
+          ? Math.floor(params.tokenBudget)
+          : 128_000;
+
+      const assembled = await this.assembler.assemble({
+        conversationId: conversation.conversationId,
+        tokenBudget,
+        freshTailCount: this.config.freshTailCount,
+      });
+
+      // If assembly produced no messages for a non-empty live session,
+      // fail safe to the live context.
+      if (assembled.messages.length === 0 && params.messages.length > 0) {
+        return {
+          messages: params.messages,
+          estimatedTokens: 0,
+        };
+      }
+
+      return {
+        messages: assembled.messages,
+        estimatedTokens: assembled.estimatedTokens,
+      };
+    } catch {
+      return {
+        messages: params.messages,
+        estimatedTokens: 0,
+      };
+    }
   }
 
   async compact(params: {

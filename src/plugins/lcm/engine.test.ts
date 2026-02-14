@@ -285,10 +285,10 @@ describe("LcmContextEngine.bootstrap", () => {
   });
 });
 
-// ── Assemble pass-through ───────────────────────────────────────────────────
+// ── Assemble canonical path with fallback ───────────────────────────────────
 
-describe("LcmContextEngine.assemble pass-through", () => {
-  it("returns the same message array reference", async () => {
+describe("LcmContextEngine.assemble canonical path", () => {
+  it("falls back to live messages when no DB conversation exists", async () => {
     const engine = createEngine();
     const liveMessages: AgentMessage[] = [
       { role: "user", content: "first turn" },
@@ -296,7 +296,7 @@ describe("LcmContextEngine.assemble pass-through", () => {
     ] as AgentMessage[];
 
     const result = await engine.assemble({
-      sessionId: "session-identity",
+      sessionId: "session-missing",
       messages: liveMessages,
       tokenBudget: 100,
     });
@@ -305,105 +305,110 @@ describe("LcmContextEngine.assemble pass-through", () => {
     expect(result.estimatedTokens).toBe(0);
   });
 
-  it("does not modify or reorder live messages", async () => {
+  it("falls back when DB context clearly trails live context", async () => {
     const engine = createEngine();
-    const liveMessages: AgentMessage[] = [
-      { role: "user", content: "system bootstrap context" },
-      { role: "assistant", content: "assistant setup response" },
-      { role: "user", content: "current user turn" },
-    ] as AgentMessage[];
-    const before = liveMessages.map((message) => ({ ...message }));
-
-    const result = await engine.assemble({
-      sessionId: "session-order",
-      messages: liveMessages,
-    });
-
-    expect(result.messages).toBe(liveMessages);
-    expect(result.messages).toEqual(before);
-  });
-
-  it("passes through even when a conversation exists in the DB", async () => {
-    const engine = createEngine();
-    const sessionId = "session-with-conversation";
+    const sessionId = "session-incomplete";
     await engine.ingest({
       sessionId,
-      message: { role: "user", content: "persisted message" } as AgentMessage,
+      message: { role: "user", content: "persisted only one message" } as AgentMessage,
     });
 
-    const conversation = await engine.getConversationStore().getConversationBySessionId(sessionId);
-    expect(conversation).not.toBeNull();
-
     const liveMessages: AgentMessage[] = [
-      { role: "assistant", content: "pre-prompt boot message" },
-      { role: "user", content: "latest prompt message" },
+      { role: "user", content: "live message 1" },
+      { role: "assistant", content: "live message 2" },
+      { role: "user", content: "live message 3" },
     ] as AgentMessage[];
 
     const result = await engine.assemble({
       sessionId,
       messages: liveMessages,
-      tokenBudget: 32,
+      tokenBudget: 256,
     });
 
     expect(result.messages).toBe(liveMessages);
     expect(result.estimatedTokens).toBe(0);
   });
 
-  it("keeps live messages unchanged after ingest plus assemble roundtrip", async () => {
+  it("assembles context from DB when coverage exists", async () => {
     const engine = createEngine();
-    const sessionId = "session-roundtrip";
-    const liveMessages: AgentMessage[] = [
-      { role: "user", content: "bootstrap context" },
-      { role: "assistant", content: "assistant guidance" },
-      { role: "user", content: "next question" },
-    ] as AgentMessage[];
-    const before = liveMessages.map((message) => ({ ...message }));
+    const sessionId = "session-canonical";
 
-    for (const message of liveMessages) {
-      await engine.ingest({ sessionId, message });
+    await engine.ingest({
+      sessionId,
+      message: { role: "user", content: "persisted message one" } as AgentMessage,
+    });
+    await engine.ingest({
+      sessionId,
+      message: { role: "assistant", content: "persisted message two" } as AgentMessage,
+    });
+
+    const liveMessages: AgentMessage[] = [{ role: "user", content: "live turn" }] as AgentMessage[];
+    const result = await engine.assemble({
+      sessionId,
+      messages: liveMessages,
+      tokenBudget: 10_000,
+    });
+
+    expect(result.messages).not.toBe(liveMessages);
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[0].role).toBe("user");
+    expect(result.messages[0].content).toBe("persisted message one");
+    expect(result.messages[1].role).toBe("assistant");
+    expect(result.estimatedTokens).toBeGreaterThan(0);
+  });
+
+  it("respects token budget in assembled output", async () => {
+    const engine = createEngine();
+    const sessionId = "session-budget";
+
+    for (let i = 0; i < 12; i++) {
+      await engine.ingest({
+        sessionId,
+        message: {
+          role: "user",
+          content: `turn ${i} ${"x".repeat(396)}`,
+        } as AgentMessage,
+      });
     }
 
     const result = await engine.assemble({
       sessionId,
+      messages: [{ role: "user", content: "live tail marker" }] as AgentMessage[],
+      tokenBudget: 500,
+    });
+
+    expect(result.messages.length).toBeLessThan(12);
+    expect(result.messages[0].content).not.toBe(`turn 0 ${"x".repeat(396)}`);
+  });
+
+  it("falls back to live messages if assembler throws", async () => {
+    const engine = createEngine();
+    const sessionId = "session-assemble-error";
+
+    await engine.ingest({
+      sessionId,
+      message: { role: "user", content: "persisted message" } as AgentMessage,
+    });
+
+    const originalAssembler = (engine as unknown as { assembler: { assemble: unknown } }).assembler;
+    (engine as unknown as { assembler: { assemble: () => Promise<never> } }).assembler = {
+      ...originalAssembler,
+      assemble: async () => {
+        throw new Error("boom");
+      },
+    };
+
+    const liveMessages: AgentMessage[] = [
+      { role: "user", content: "live fallback message" },
+    ] as AgentMessage[];
+    const result = await engine.assemble({
+      sessionId,
       messages: liveMessages,
+      tokenBudget: 1000,
     });
 
     expect(result.messages).toBe(liveMessages);
-    expect(result.messages).toEqual(before);
-  });
-
-  it("continues populating DB via ingest while assemble remains pass-through", async () => {
-    const engine = createEngine();
-    const sessionId = "session-ingest-db";
-    await engine.ingest({
-      sessionId,
-      message: { role: "user", content: "message one" } as AgentMessage,
-    });
-    await engine.ingest({
-      sessionId,
-      message: { role: "assistant", content: "message two" } as AgentMessage,
-    });
-
-    const conversation = await engine.getConversationStore().getConversationBySessionId(sessionId);
-    expect(conversation).not.toBeNull();
-    const conversationId = conversation!.conversationId;
-
-    expect(await engine.getConversationStore().getMessageCount(conversationId)).toBe(2);
-    const contextItems = await engine.getSummaryStore().getContextItems(conversationId);
-    expect(contextItems).toHaveLength(2);
-    expect(contextItems.every((item) => item.itemType === "message")).toBe(true);
-
-    const liveMessages: AgentMessage[] = [
-      { role: "user", content: "latest live turn" },
-    ] as AgentMessage[];
-    const assembleResult = await engine.assemble({
-      sessionId,
-      messages: liveMessages,
-    });
-    expect(assembleResult.messages).toBe(liveMessages);
-
-    expect(await engine.getConversationStore().getMessageCount(conversationId)).toBe(2);
-    expect((await engine.getSummaryStore().getContextItems(conversationId)).length).toBe(2);
+    expect(result.estimatedTokens).toBe(0);
   });
 });
 
