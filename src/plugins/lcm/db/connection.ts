@@ -6,20 +6,18 @@ import { requireNodeSqlite } from "../../../memory/sqlite.js";
 let _db: DatabaseSync | null = null;
 
 export function getLcmConnection(dbPath: string): DatabaseSync {
-  // Always try to create a fresh connection if there's any issue with the existing one.
-  // This handles: closed connections, corrupted state, race conditions from dispose().
-  // The overhead of creating a new connection is minimal for SQLite.
+  // If we have a connection but it fails any health check, create a fresh one
+  // instead of failing later with "database is not open" (or other sqlite errors).
   if (_db) {
     try {
-      // Try any query to verify the connection is valid
-      _db.exec("SELECT 1");
+      _db.prepare("SELECT 1").get();
       return _db;
     } catch {
-      // Any error means we need a fresh connection
+      // Connection is closed or invalid - close defensively and recreate it.
       try {
         _db.close();
       } catch {
-        // Ignore close errors
+        // Ignore close failures and replace the handle.
       }
       _db = null;
     }

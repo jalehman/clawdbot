@@ -142,23 +142,29 @@ export function runLcmMigrations(db: DatabaseSync): void {
     `);
   }
 
-  // Recreate FTS tables to fix schema issues:
-  // - summaries_fts: was using content_rowid=summary_id but summary_id is TEXT not INTEGER
-  // - messages_fts: same issue
-  // Drop and recreate without content_rowid to work with any primary key type
-  db.exec(`DROP TABLE IF EXISTS summaries_fts;`);
-  db.exec(`
-    CREATE VIRTUAL TABLE summaries_fts USING fts5(
-      content,
-      tokenize='porter unicode61'
-    );
-  `);
-
-  db.exec(`DROP TABLE IF EXISTS messages_fts;`);
-  db.exec(`
-    CREATE VIRTUAL TABLE messages_fts USING fts5(
-      content,
-      tokenize='porter unicode61'
-    );
-  `);
+  const summariesFtsInfo = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='summaries_fts'")
+    .get() as { sql?: string } | undefined;
+  const summariesFtsSql = summariesFtsInfo?.sql ?? "";
+  const summariesFtsColumns = db.prepare(`PRAGMA table_info(summaries_fts)`).all() as Array<{
+    name?: string;
+  }>;
+  const hasSummaryIdColumn = summariesFtsColumns.some((col) => col.name === "summary_id");
+  const shouldRecreateSummariesFts =
+    !summariesFtsInfo ||
+    !hasSummaryIdColumn ||
+    summariesFtsSql.includes("content_rowid='summary_id'") ||
+    summariesFtsSql.includes('content_rowid="summary_id"');
+  if (shouldRecreateSummariesFts) {
+    db.exec(`
+      DROP TABLE IF EXISTS summaries_fts;
+      CREATE VIRTUAL TABLE summaries_fts USING fts5(
+        summary_id UNINDEXED,
+        content,
+        tokenize='porter unicode61'
+      );
+      INSERT INTO summaries_fts(summary_id, content)
+      SELECT summary_id, content FROM summaries;
+    `);
+  }
 }
