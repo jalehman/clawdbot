@@ -56,30 +56,30 @@ describe("decideLcmExpansionRouting", () => {
         expectedTriggerValue: false,
       },
       {
-        name: "query probe crossing depth threshold",
+        name: "query probe with deep depth does not auto-delegate",
         input: {
           intent: "query_probe",
           query: "auth chain",
           candidateSummaryCount: 2,
-          requestedMaxDepth: EXPANSION_ROUTING_THRESHOLDS.delegateDepthThreshold,
+          requestedMaxDepth: 4,
           tokenCap: 10_000,
         },
-        expectedAction: "delegate_traversal",
+        expectedAction: "expand_shallow",
         expectedTrigger: "delegateByDepth",
-        expectedTriggerValue: true,
+        expectedTriggerValue: false,
       },
       {
-        name: "query probe crossing candidate threshold",
+        name: "query probe with many candidates does not auto-delegate",
         input: {
           intent: "query_probe",
           query: "incident spread",
-          candidateSummaryCount: EXPANSION_ROUTING_THRESHOLDS.delegateCandidateThreshold,
+          candidateSummaryCount: 6,
           requestedMaxDepth: 2,
           tokenCap: 10_000,
         },
-        expectedAction: "delegate_traversal",
+        expectedAction: "expand_shallow",
         expectedTrigger: "delegateByCandidateCount",
-        expectedTriggerValue: true,
+        expectedTriggerValue: false,
       },
       {
         name: "query probe with broad range and multi-hop indicators",
@@ -142,46 +142,46 @@ describe("decideLcmExpansionRouting", () => {
     expect(decision.action).toBe("expand_shallow");
   });
 
-  it("delegates exactly at the depth threshold boundary", () => {
+  it("does not delegate solely due to depth", () => {
     const below = decideLcmExpansionRouting({
       intent: "query_probe",
       query: "auth chain",
       candidateSummaryCount: 2,
-      requestedMaxDepth: EXPANSION_ROUTING_THRESHOLDS.delegateDepthThreshold - 1,
+      requestedMaxDepth: 3,
       tokenCap: 10_000,
     });
     const at = decideLcmExpansionRouting({
       intent: "query_probe",
       query: "auth chain",
       candidateSummaryCount: 2,
-      requestedMaxDepth: EXPANSION_ROUTING_THRESHOLDS.delegateDepthThreshold,
+      requestedMaxDepth: 4,
       tokenCap: 10_000,
     });
 
     expect(below.action).toBe("expand_shallow");
-    expect(at.action).toBe("delegate_traversal");
-    expect(at.triggers.delegateByDepth).toBe(true);
+    expect(at.action).toBe("expand_shallow");
+    expect(at.triggers.delegateByDepth).toBe(false);
   });
 
-  it("delegates exactly at the candidate-count threshold boundary", () => {
+  it("does not delegate solely due to candidate-count", () => {
     const below = decideLcmExpansionRouting({
       intent: "query_probe",
       query: "incident spread",
-      candidateSummaryCount: EXPANSION_ROUTING_THRESHOLDS.delegateCandidateThreshold - 1,
+      candidateSummaryCount: 5,
       requestedMaxDepth: 2,
       tokenCap: 10_000,
     });
     const at = decideLcmExpansionRouting({
       intent: "query_probe",
       query: "incident spread",
-      candidateSummaryCount: EXPANSION_ROUTING_THRESHOLDS.delegateCandidateThreshold,
+      candidateSummaryCount: 6,
       requestedMaxDepth: 2,
       tokenCap: 10_000,
     });
 
     expect(below.action).toBe("expand_shallow");
-    expect(at.action).toBe("delegate_traversal");
-    expect(at.triggers.delegateByCandidateCount).toBe(true);
+    expect(at.action).toBe("expand_shallow");
+    expect(at.triggers.delegateByCandidateCount).toBe(false);
   });
 
   it("delegates when token risk crosses the high-risk boundary", () => {

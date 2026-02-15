@@ -42,8 +42,6 @@ export const EXPANSION_ROUTING_THRESHOLDS = {
   maxDepth: 10,
   directMaxDepth: 2,
   directMaxCandidates: 1,
-  delegateDepthThreshold: 4,
-  delegateCandidateThreshold: 6,
   moderateTokenRiskRatio: 0.35,
   highTokenRiskRatio: 0.7,
   baseTokensPerSummary: 220,
@@ -245,19 +243,14 @@ export function decideLcmExpansionRouting(
     !broadTimeRange &&
     !multiHopRetrieval;
 
-  const delegateByDepth = normalizedMaxDepth >= EXPANSION_ROUTING_THRESHOLDS.delegateDepthThreshold;
-  const delegateByCandidateCount =
-    candidateSummaryCount >= EXPANSION_ROUTING_THRESHOLDS.delegateCandidateThreshold;
+  const delegateByDepth = false;
+  const delegateByCandidateCount = false;
   const delegateByTokenRisk = tokenRisk.level === "high";
   const delegateByBroadTimeRangeAndMultiHop = broadTimeRange && multiHopRetrieval;
 
   const shouldDirect = directByNoCandidates || directByLowComplexityProbe;
   const shouldDelegate =
-    !shouldDirect &&
-    (delegateByDepth ||
-      delegateByCandidateCount ||
-      delegateByTokenRisk ||
-      delegateByBroadTimeRangeAndMultiHop);
+    !shouldDirect && (delegateByTokenRisk || delegateByBroadTimeRangeAndMultiHop);
 
   const action: LcmExpansionRoutingAction = shouldDirect
     ? "answer_directly"
@@ -271,18 +264,6 @@ export function decideLcmExpansionRouting(
   }
   if (directByLowComplexityProbe) {
     reasons.push("Query probe is low complexity and below retrieval-risk thresholds.");
-  }
-  if (delegateByDepth) {
-    reasons.push(
-      `Requested depth ${normalizedMaxDepth} meets delegate threshold ` +
-        `${EXPANSION_ROUTING_THRESHOLDS.delegateDepthThreshold}.`,
-    );
-  }
-  if (delegateByCandidateCount) {
-    reasons.push(
-      `Candidate summary count ${candidateSummaryCount} meets delegate threshold ` +
-        `${EXPANSION_ROUTING_THRESHOLDS.delegateCandidateThreshold}.`,
-    );
   }
   if (delegateByTokenRisk) {
     reasons.push(

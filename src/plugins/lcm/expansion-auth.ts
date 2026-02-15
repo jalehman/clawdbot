@@ -115,8 +115,7 @@ export class ExpansionAuthManager {
 
   /**
    * Validate an expansion request against a grant.
-   * Checks existence, expiry, revocation, conversation scope, summary scope,
-   * depth limit, and token cap.
+   * Checks existence, expiry, revocation, conversation scope, and summary scope.
    */
   validateExpansion(
     grantId: string,
@@ -162,22 +161,6 @@ export class ExpansionAuthManager {
           reason: `Summary IDs not authorized: ${unauthorized.join(", ")}`,
         };
       }
-    }
-
-    // 6. Depth must not exceed grant's maxDepth
-    if (request.depth > grant.maxDepth) {
-      return {
-        valid: false,
-        reason: `Requested depth ${request.depth} exceeds maximum allowed depth ${grant.maxDepth}`,
-      };
-    }
-
-    // 7. Token cap must not exceed grant's tokenCap
-    if (request.tokenCap > grant.tokenCap) {
-      return {
-        valid: false,
-        reason: `Requested token cap ${request.tokenCap} exceeds maximum allowed ${grant.tokenCap}`,
-      };
     }
 
     return { valid: true };
@@ -292,7 +275,7 @@ export function resetDelegatedExpansionGrantsForTests(): void {
 /**
  * Create a thin authorization wrapper around an ExpansionOrchestrator.
  * The wrapper validates the grant before delegating to the underlying
- * orchestrator, and clamps the request's tokenCap to the grant's tokenCap.
+ * orchestrator.
  */
 export function wrapWithAuth(
   orchestrator: ExpansionOrchestrator,
@@ -310,15 +293,7 @@ export function wrapWithAuth(
       if (!validation.valid) {
         throw new Error(`Expansion authorization failed: ${validation.reason}`);
       }
-
-      // Clamp tokenCap to the grant's limit
-      const grant = authManager.getGrant(grantId)!;
-      const clampedRequest: ExpansionRequest = {
-        ...request,
-        tokenCap: Math.min(request.tokenCap ?? Infinity, grant.tokenCap),
-      };
-
-      return orchestrator.expand(clampedRequest);
+      return orchestrator.expand(request);
     },
   };
 }

@@ -4,7 +4,6 @@ import type { LcmContextEngine } from "../../plugins/lcm/engine.js";
 import type { AnyAgentTool } from "./common.js";
 import { ensureContextEnginesInitialized } from "../../context-engine/init.js";
 import { resolveContextEngine } from "../../context-engine/registry.js";
-import { resolveLcmConfig } from "../../plugins/lcm/db/config.js";
 import {
   getRuntimeExpansionAuthManager,
   resolveDelegatedExpansionGrantId,
@@ -15,7 +14,6 @@ import {
   ExpansionOrchestrator,
   distillForSubagent,
   type ExpansionResult,
-  resolveExpansionTokenCap,
 } from "../../plugins/lcm/expansion.js";
 import { isSubagentSessionKey } from "../../routing/session-key.js";
 import { jsonResult } from "./common.js";
@@ -43,7 +41,6 @@ const LcmExpandSchema = Type.Object({
     Type.Number({
       description: "Max traversal depth per summary (default: 3).",
       minimum: 1,
-      maximum: 10,
     }),
   ),
   tokenCap: Type.Optional(
@@ -162,10 +159,10 @@ export function createLcmExpandTool(options?: {
       const query = typeof p.query === "string" ? p.query.trim() : undefined;
       const maxDepth = typeof p.maxDepth === "number" ? Math.trunc(p.maxDepth) : undefined;
       const requestedTokenCap = typeof p.tokenCap === "number" ? Math.trunc(p.tokenCap) : undefined;
-      const tokenCap = resolveExpansionTokenCap({
-        requestedTokenCap,
-        maxExpandTokens: resolveLcmConfig().maxExpandTokens,
-      });
+      const tokenCap =
+        typeof requestedTokenCap === "number" && Number.isFinite(requestedTokenCap)
+          ? Math.max(1, requestedTokenCap)
+          : undefined;
       const includeMessages = typeof p.includeMessages === "boolean" ? p.includeMessages : false;
       const sessionKey = typeof options?.sessionId === "string" ? options.sessionId.trim() : "";
       const isDelegatedSession = isSubagentSessionKey(sessionKey);
@@ -194,7 +191,7 @@ export function createLcmExpandTool(options?: {
         summaryIds: string[];
         conversationId: number;
         maxDepth?: number;
-        tokenCap: number;
+        tokenCap?: number;
         includeMessages?: boolean;
       }) => {
         if (!authorizedOrchestrator || !delegatedGrantId) {
@@ -225,7 +222,7 @@ export function createLcmExpandTool(options?: {
               query,
               requestedMaxDepth: maxDepth,
               candidateSummaryCount: result.expansions.length,
-              tokenCap,
+              tokenCap: tokenCap ?? Number.MAX_SAFE_INTEGER,
               includeMessages: false,
             });
             return {
@@ -256,7 +253,7 @@ export function createLcmExpandTool(options?: {
             query,
             requestedMaxDepth: maxDepth,
             candidateSummaryCount: matchedSummaryIds.length,
-            tokenCap,
+            tokenCap: tokenCap ?? Number.MAX_SAFE_INTEGER,
             includeMessages: false,
           });
           const canDelegate =
@@ -365,7 +362,7 @@ export function createLcmExpandTool(options?: {
             intent: "explicit_expand",
             requestedMaxDepth: maxDepth,
             candidateSummaryCount: summaryIds.length,
-            tokenCap,
+            tokenCap: tokenCap ?? Number.MAX_SAFE_INTEGER,
             includeMessages,
           });
           const normalizedSummaryIds = normalizeSummaryIds(summaryIds);

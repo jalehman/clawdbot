@@ -16,8 +16,7 @@ import { AGENT_LANE_SUBAGENT } from "../lanes.js";
 import { buildSubagentSystemPrompt } from "../subagent-announce.js";
 import { readLatestAssistantReply } from "./agent-step.js";
 
-const DELEGATED_EXPANSION_PASS_LIMIT = 2;
-const DELEGATED_EXPANSION_TIMEOUT_MS = 45_000;
+const MAX_GATEWAY_TIMEOUT_MS = 2_147_483_647;
 
 type DelegatedPassStatus = "ok" | "timeout" | "error";
 
@@ -163,25 +162,32 @@ function buildDelegatedExpansionTask(params: {
   summaryIds: string[];
   conversationId: number;
   maxDepth?: number;
-  tokenCap: number;
+  tokenCap?: number;
   includeMessages: boolean;
   pass: number;
-  passLimit: number;
   query?: string;
 }) {
-  const payload = {
+  const payload: {
+    summaryIds: string[];
+    conversationId: number;
+    maxDepth?: number;
+    tokenCap?: number;
+    includeMessages: boolean;
+  } = {
     summaryIds: params.summaryIds,
     conversationId: params.conversationId,
     maxDepth: params.maxDepth,
-    tokenCap: params.tokenCap,
     includeMessages: params.includeMessages,
   };
+  if (typeof params.tokenCap === "number" && Number.isFinite(params.tokenCap)) {
+    payload.tokenCap = params.tokenCap;
+  }
   return [
-    "Run bounded LCM expansion and report distilled findings.",
+    "Run LCM expansion and report distilled findings.",
     params.query ? `Original query: ${params.query}` : undefined,
-    `Pass ${params.pass}/${params.passLimit}`,
+    `Pass ${params.pass}`,
     "",
-    "Call `lcm_expand` once using exactly this JSON payload:",
+    "Call `lcm_expand` using exactly this JSON payload:",
     JSON.stringify(payload, null, 2),
     "",
     "Then return ONLY JSON with this shape:",
@@ -246,11 +252,10 @@ async function runDelegatedExpansionPass(params: {
   conversationId: number;
   summaryIds: string[];
   maxDepth?: number;
-  tokenCap: number;
+  tokenCap?: number;
   includeMessages: boolean;
   query?: string;
   pass: number;
-  passLimit: number;
 }): Promise<DelegatedExpansionPassResult> {
   const requesterAgentId = normalizeAgentId(
     parseAgentSessionKey(params.requesterSessionKey)?.agentId,
@@ -262,8 +267,7 @@ async function runDelegatedExpansionPass(params: {
     delegatedSessionKey: childSessionKey,
     issuerSessionId: params.requesterSessionKey,
     allowedConversationIds: [params.conversationId],
-    tokenCap: params.tokenCap,
-    ttlMs: DELEGATED_EXPANSION_TIMEOUT_MS + 60_000,
+    ttlMs: MAX_GATEWAY_TIMEOUT_MS,
   });
 
   try {
@@ -274,7 +278,6 @@ async function runDelegatedExpansionPass(params: {
       tokenCap: params.tokenCap,
       includeMessages: params.includeMessages,
       pass: params.pass,
-      passLimit: params.passLimit,
       query: params.query,
     });
     const response = await callGateway<{ runId?: string }>({
@@ -284,12 +287,11 @@ async function runDelegatedExpansionPass(params: {
         sessionKey: childSessionKey,
         deliver: false,
         lane: AGENT_LANE_SUBAGENT,
-        timeout: Math.ceil(DELEGATED_EXPANSION_TIMEOUT_MS / 1000),
         extraSystemPrompt: buildSubagentSystemPrompt({
           requesterSessionKey: params.requesterSessionKey,
           childSessionKey,
           label: "LCM delegated expansion",
-          task: "Run bounded lcm_expand and return JSON findings",
+          task: "Run lcm_expand and return JSON findings",
         }),
       },
       timeoutMs: 10_000,
@@ -301,9 +303,9 @@ async function runDelegatedExpansionPass(params: {
       method: "agent.wait",
       params: {
         runId,
-        timeoutMs: DELEGATED_EXPANSION_TIMEOUT_MS,
+        timeoutMs: MAX_GATEWAY_TIMEOUT_MS,
       },
-      timeoutMs: DELEGATED_EXPANSION_TIMEOUT_MS + 2000,
+      timeoutMs: MAX_GATEWAY_TIMEOUT_MS,
     });
     const status = typeof wait?.status === "string" ? wait.status : "error";
     if (status === "timeout") {
@@ -381,17 +383,17 @@ export async function runDelegatedExpansionLoop(params: {
   conversationId: number;
   summaryIds: string[];
   maxDepth?: number;
-  tokenCap: number;
+  tokenCap?: number;
   includeMessages: boolean;
   query?: string;
 }): Promise<DelegatedExpansionLoopResult> {
   const passes: DelegatedExpansionPassResult[] = [];
   const visited = new Set<string>();
   const cited = new Set<string>();
-  let remainingTokenCap = Math.max(1, params.tokenCap);
   let queue = normalizeSummaryIds(params.summaryIds);
 
-  for (let pass = 1; pass <= DELEGATED_EXPANSION_PASS_LIMIT && queue.length > 0; pass += 1) {
+  let pass = 1;
+  while (queue.length > 0) {
     for (const summaryId of queue) {
       visited.add(summaryId);
     }
@@ -400,11 +402,10 @@ export async function runDelegatedExpansionLoop(params: {
       conversationId: params.conversationId,
       summaryIds: queue,
       maxDepth: params.maxDepth,
-      tokenCap: remainingTokenCap,
+      tokenCap: params.tokenCap,
       includeMessages: params.includeMessages,
       query: params.query,
       pass,
-      passLimit: DELEGATED_EXPANSION_PASS_LIMIT,
     });
     passes.push(result);
 
@@ -433,12 +434,10 @@ export async function runDelegatedExpansionLoop(params: {
     for (const summaryId of result.citedIds) {
       cited.add(summaryId);
     }
-    remainingTokenCap = Math.max(1, remainingTokenCap - Math.max(0, result.totalTokens));
 
-    const nextQueue = result.followUpSummaryIds
-      .filter((summaryId) => !visited.has(summaryId))
-      .slice(0, 12);
+    const nextQueue = result.followUpSummaryIds.filter((summaryId) => !visited.has(summaryId));
     queue = nextQueue;
+    pass += 1;
   }
 
   return {

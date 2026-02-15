@@ -70,7 +70,7 @@ function parseDelegatedPassPayload(message: string): {
 
 const ORIGINAL_MAX_EXPAND = process.env.LCM_MAX_EXPAND_TOKENS;
 
-describe("createLcmExpandTool tokenCap bounds", () => {
+describe("createLcmExpandTool expansion limits", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     callGatewayMock.mockReset();
@@ -87,7 +87,7 @@ describe("createLcmExpandTool tokenCap bounds", () => {
     process.env.LCM_MAX_EXPAND_TOKENS = ORIGINAL_MAX_EXPAND;
   });
 
-  it("defaults omitted tokenCap to configured max for summary expansion", async () => {
+  it("uses unbounded tokenCap when tokenCap is omitted for summary expansion", async () => {
     const mockRetrieval = makeMockRetrieval();
     mockRetrieval.expand.mockResolvedValue({
       children: [],
@@ -104,12 +104,12 @@ describe("createLcmExpandTool tokenCap bounds", () => {
     expect(mockRetrieval.expand).toHaveBeenCalledWith(
       expect.objectContaining({
         summaryId: "sum_a",
-        tokenCap: 120,
+        tokenCap: Infinity,
       }),
     );
   });
 
-  it("clamps oversized tokenCap to configured max for query expansion", async () => {
+  it("passes through oversized tokenCap for query expansion", async () => {
     const mockRetrieval = makeMockRetrieval();
     mockRetrieval.grep.mockResolvedValue({
       messages: [],
@@ -134,7 +134,7 @@ describe("createLcmExpandTool tokenCap bounds", () => {
     expect(mockRetrieval.expand).toHaveBeenCalledWith(
       expect.objectContaining({
         summaryId: "sum_match",
-        tokenCap: 120,
+        tokenCap: 9_999,
       }),
     );
   });
@@ -243,8 +243,14 @@ describe("createLcmExpandTool tokenCap bounds", () => {
     expect(mockRetrieval.expand).not.toHaveBeenCalled();
   });
 
-  it("rejects delegated expansion over token cap", async () => {
+  it("allows delegated expansion over grant token cap", async () => {
     const mockRetrieval = makeMockRetrieval();
+    mockRetrieval.expand.mockResolvedValue({
+      children: [],
+      messages: [],
+      estimatedTokens: 5,
+      truncated: false,
+    });
     vi.mocked(resolveContextEngine).mockResolvedValue(makeEngine(mockRetrieval));
 
     createDelegatedExpansionGrant({
@@ -262,9 +268,11 @@ describe("createLcmExpandTool tokenCap bounds", () => {
     });
 
     expect(result.details).toMatchObject({
-      error: expect.stringMatching(/authorization failed.*token cap/i),
+      expansionCount: 1,
+      totalTokens: 5,
+      truncated: false,
     });
-    expect(mockRetrieval.expand).not.toHaveBeenCalled();
+    expect(mockRetrieval.expand).toHaveBeenCalled();
   });
 
   it("keeps route-only query probes local when there are no matches", async () => {
@@ -410,7 +418,7 @@ describe("createLcmExpandTool tokenCap bounds", () => {
       (delegatedAgentCalls[1]?.[0] as { params?: { message?: string } })?.params?.message ?? "",
     );
 
-    // Pass 2 must consume follow-up IDs and stay within remaining token budget.
+    // Pass 2 consumes follow-up IDs with the same token budget (no loop cap decrement).
     expect(firstPayload).toMatchObject({
       summaryIds: ["sum_1", "sum_2", "sum_3", "sum_4", "sum_5", "sum_6"],
       conversationId: 7,
@@ -422,7 +430,7 @@ describe("createLcmExpandTool tokenCap bounds", () => {
       summaryIds: ["sum_9"],
       conversationId: 7,
       maxDepth: 6,
-      tokenCap: 70,
+      tokenCap: 120,
       includeMessages: false,
     });
   });

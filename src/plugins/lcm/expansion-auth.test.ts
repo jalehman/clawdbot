@@ -307,26 +307,26 @@ describe("ExpansionAuthManager", () => {
       expect(result.valid).toBe(true);
     });
 
-    it("rejects depth exceeding maxDepth", () => {
+    it("does not enforce maxDepth against grant limits", () => {
       const result = manager.validateExpansion(grantId, {
         conversationId: 1,
         summaryIds: ["sum_a"],
         depth: 5,
         tokenCap: 1000,
       });
-      expect(result.valid).toBe(false);
-      expect(result.reason).toContain("depth");
+      expect(result.valid).toBe(true);
+      expect(result.reason).toBeUndefined();
     });
 
-    it("rejects tokenCap exceeding grant tokenCap", () => {
+    it("does not enforce tokenCap against grant limits", () => {
       const result = manager.validateExpansion(grantId, {
         conversationId: 1,
         summaryIds: ["sum_a"],
         depth: 1,
         tokenCap: 5000,
       });
-      expect(result.valid).toBe(false);
-      expect(result.reason).toContain("token");
+      expect(result.valid).toBe(true);
+      expect(result.reason).toBeUndefined();
     });
 
     it("checks validation in priority order: existence > revocation > expiry > scope", () => {
@@ -513,7 +513,7 @@ describe("wrapWithAuth", () => {
     );
   });
 
-  it("clamps tokenCap to grant limit", async () => {
+  it("passes through explicit tokenCap values", async () => {
     const grant = manager.createGrant({
       issuerSessionId: "sess1",
       allowedConversationIds: [1],
@@ -525,35 +525,21 @@ describe("wrapWithAuth", () => {
 
     const authorized = wrapWithAuth(mockOrchestrator, manager);
 
-    // Request with tokenCap far below the grant's limit (within grant check)
-    // but we need to ensure the wrapper doesn't reject the request first.
-    // The wrapWithAuth validation checks request.tokenCap against grant.tokenCap,
-    // so if we pass tokenCap=5000, it would fail validation. Instead we test
-    // that when tokenCap is undefined (defaults to DEFAULT_TOKEN_CAP=4000),
-    // the wrapper clamps it to the grant's 1000.
     const request: ExpansionRequest = {
       summaryIds: ["sum_a"],
       conversationId: 1,
       maxDepth: 2,
-      // Omit tokenCap — defaults to DEFAULT_TOKEN_CAP=4000 in validation,
-      // which exceeds grant's 1000, so this would fail validation.
-      // Actually let's look at what happens: wrapWithAuth validates with
-      // tokenCap ?? DEFAULT_TOKEN_CAP (4000) which exceeds grant (1000).
-      // So we need tokenCap <= grant.tokenCap for validation to pass.
       tokenCap: 800,
     };
 
     await authorized.expand(grant.grantId, request);
 
-    // The orchestrator should be called with tokenCap clamped to min(800, 1000) = 800
+    // The wrapper should pass request values through unchanged.
     const calledWith = mockExpand.mock.calls[0][0];
     expect(calledWith.tokenCap).toBe(800);
   });
 
-  it("clamps tokenCap when request omits it and grant is smaller than default", async () => {
-    // Grant with tokenCap=4000 (matches DEFAULT_TOKEN_CAP), so validation passes
-    // when request.tokenCap is undefined (defaults to 4000 in validation).
-    // Then the clamp should set it to min(Infinity, 4000) = 4000.
+  it("does not inject tokenCap when request omits it", async () => {
     const grant = manager.createGrant({
       issuerSessionId: "sess1",
       allowedConversationIds: [1],
@@ -567,14 +553,12 @@ describe("wrapWithAuth", () => {
     const request: ExpansionRequest = {
       summaryIds: ["sum_a"],
       conversationId: 1,
-      // tokenCap omitted -> validation uses DEFAULT_TOKEN_CAP (4000), which equals grant
-      // clamp: min(Infinity, 4000) = 4000
     };
 
     await authorized.expand(grant.grantId, request);
 
     const calledWith = mockExpand.mock.calls[0][0];
-    expect(calledWith.tokenCap).toBe(4000);
+    expect(calledWith.tokenCap).toBeUndefined();
   });
 });
 
