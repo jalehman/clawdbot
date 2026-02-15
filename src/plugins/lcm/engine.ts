@@ -124,6 +124,67 @@ function extractMessageContent(content: unknown): string {
   return typeof serialized === "string" ? serialized : "";
 }
 
+function toRuntimeRoleForTokenEstimate(role: string): "user" | "assistant" | "toolResult" {
+  if (role === "tool" || role === "toolResult") {
+    return "toolResult";
+  }
+  if (role === "user" || role === "system") {
+    return "user";
+  }
+  return "assistant";
+}
+
+function isTextBlock(value: unknown): value is { type: "text"; text: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return record.type === "text" && typeof record.text === "string";
+}
+
+/**
+ * Estimate token usage for the content shape that the assembler will emit.
+ *
+ * LCM stores a plain-text fallback copy in messages.content, but message_parts
+ * can rehydrate larger structured/raw blocks. This estimator mirrors the
+ * rehydrated shape so compaction decisions use realistic token totals.
+ */
+function estimateContentTokensForRole(params: {
+  role: "user" | "assistant" | "toolResult";
+  content: unknown;
+  fallbackContent: string;
+}): number {
+  const { role, content, fallbackContent } = params;
+
+  if (typeof content === "string") {
+    return estimateTokens(content);
+  }
+
+  if (Array.isArray(content)) {
+    if (content.length === 0) {
+      return estimateTokens(fallbackContent);
+    }
+
+    if (role === "user" && content.length === 1 && isTextBlock(content[0])) {
+      return estimateTokens(content[0].text);
+    }
+
+    const serialized = JSON.stringify(content);
+    return estimateTokens(typeof serialized === "string" ? serialized : "");
+  }
+
+  if (content && typeof content === "object") {
+    if (role === "user" && isTextBlock(content)) {
+      return estimateTokens(content.text);
+    }
+
+    const serialized = JSON.stringify([content]);
+    return estimateTokens(typeof serialized === "string" ? serialized : "");
+  }
+
+  return estimateTokens(fallbackContent);
+}
+
 function buildMessageParts(params: {
   sessionId: string;
   message: AgentMessage;
@@ -282,11 +343,20 @@ function toStoredMessage(message: AgentMessage): StoredMessage {
       : "output" in message
         ? `$ ${(message as { command: string; output: string }).command}\n${(message as { command: string; output: string }).output}`
         : "";
+  const runtimeRole = toRuntimeRoleForTokenEstimate(message.role);
+  const tokenCount =
+    "content" in message
+      ? estimateContentTokensForRole({
+          role: runtimeRole,
+          content: message.content,
+          fallbackContent: content,
+        })
+      : estimateTokens(content);
 
   return {
     role: toDbRole(message.role),
     content,
-    tokenCount: estimateTokens(content),
+    tokenCount,
   };
 }
 

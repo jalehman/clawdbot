@@ -58,6 +58,21 @@ function makeMessage(params: { role?: string; content: unknown }): AgentMessage 
   } as AgentMessage;
 }
 
+function estimateAssembledPayloadTokens(messages: AgentMessage[]): number {
+  let total = 0;
+  for (const message of messages) {
+    if ("content" in message) {
+      if (typeof message.content === "string") {
+        total += Math.ceil(message.content.length / 4);
+        continue;
+      }
+      const serialized = JSON.stringify(message.content);
+      total += Math.ceil((typeof serialized === "string" ? serialized : "").length / 4);
+    }
+  }
+  return total;
+}
+
 async function ingestAndReadStoredContent(params: {
   engine: LcmContextEngine;
   sessionId: string;
@@ -443,6 +458,46 @@ describe("LcmContextEngine.assemble canonical path", () => {
 });
 
 describe("LcmContextEngine fidelity and token budget", () => {
+  it("counts large raw metadata blocks in stored context token totals", async () => {
+    const engine = createEngine();
+    const sessionId = randomUUID();
+    const rawBlob = "x".repeat(24_000);
+
+    await engine.ingest({
+      sessionId,
+      message: makeMessage({
+        role: "assistant",
+        content: [
+          { type: "text", text: "small visible text" },
+          {
+            type: "tool_result",
+            tool_use_id: "call_large_raw",
+            metadata: {
+              raw: rawBlob,
+              details: { payload: rawBlob.slice(0, 8_000) },
+            },
+          },
+        ],
+      }),
+    });
+
+    const conversation = await engine.getConversationStore().getConversationBySessionId(sessionId);
+    expect(conversation).not.toBeNull();
+
+    const contextTokens = await engine
+      .getSummaryStore()
+      .getContextTokenCount(conversation!.conversationId);
+    const assembler = new ContextAssembler(engine.getConversationStore(), engine.getSummaryStore());
+    const assembled = await assembler.assemble({
+      conversationId: conversation!.conversationId,
+      tokenBudget: 500_000,
+    });
+    const assembledPayloadTokens = estimateAssembledPayloadTokens(assembled.messages);
+
+    expect(contextTokens).toBe(assembledPayloadTokens);
+    expect(contextTokens).toBeGreaterThan(8_000);
+  });
+
   it("preserves structured toolResult content via message_parts and assembler", async () => {
     const engine = createEngine();
     const sessionId = randomUUID();
