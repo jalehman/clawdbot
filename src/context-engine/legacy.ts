@@ -23,7 +23,11 @@ export class LegacyContextEngine implements ContextEngine {
     version: "1.0.0",
   };
 
-  async ingest(_params: { sessionId: string; message: AgentMessage }): Promise<IngestResult> {
+  async ingest(_params: {
+    sessionId: string;
+    message: AgentMessage;
+    isHeartbeat?: boolean;
+  }): Promise<IngestResult> {
     // No-op: SessionManager handles message persistence in the legacy flow
     return { ingested: false };
   }

@@ -571,6 +571,51 @@ describe("LcmContextEngine fidelity and token budget", () => {
       (await engine.getSummaryStore().getContextItems(conversation!.conversationId)).length,
     ).toBe(3);
   });
+
+  it("skips heartbeat turn batches in ingestBatch", async () => {
+    const engine = createEngine();
+    const sessionId = "batch-ingest-heartbeat-session";
+
+    await engine.ingest({
+      sessionId,
+      message: makeMessage({ role: "user", content: "keep this turn" }),
+    });
+
+    const heartbeatBatch: AgentMessage[] = [
+      makeMessage({ role: "user", content: "heartbeat poll: pending" }),
+      makeMessage({ role: "assistant", content: "worker snapshot: large payload" }),
+    ];
+
+    const result = await engine.ingestBatch({
+      sessionId,
+      messages: heartbeatBatch,
+      isHeartbeat: true,
+    });
+
+    expect(result.ingestedCount).toBe(0);
+
+    const conversation = await engine.getConversationStore().getConversationBySessionId(sessionId);
+    expect(conversation).not.toBeNull();
+    expect(await engine.getConversationStore().getMessageCount(conversation!.conversationId)).toBe(
+      1,
+    );
+    expect(
+      (await engine.getSummaryStore().getContextItems(conversation!.conversationId)).length,
+    ).toBe(1);
+
+    const assembled = await engine.assemble({
+      sessionId,
+      messages: [],
+      tokenBudget: 10_000,
+    });
+
+    const assembledText = assembled.messages
+      .map((message) => (typeof message.content === "string" ? message.content : ""))
+      .join("\n");
+    expect(assembledText).toContain("keep this turn");
+    expect(assembledText).not.toContain("heartbeat poll");
+    expect(assembledText).not.toContain("worker snapshot");
+  });
 });
 
 // ── Compact token budget plumbing ───────────────────────────────────────────

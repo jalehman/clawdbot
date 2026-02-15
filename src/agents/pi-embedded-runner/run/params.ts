@@ -105,6 +105,8 @@ export type RunEmbeddedPiAgentParams = {
   extraSystemPrompt?: string;
   inputProvenance?: InputProvenance;
   streamParams?: AgentStreamParams;
+  /** True when this run originates from the heartbeat runner. */
+  isHeartbeat?: boolean;
   ownerNumbers?: string[];
   enforceFinalTag?: boolean;
 };

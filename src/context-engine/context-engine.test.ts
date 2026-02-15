@@ -35,7 +35,11 @@ class MockContextEngine implements ContextEngine {
     version: "0.0.1",
   };
 
-  async ingest(_params: { sessionId: string; message: AgentMessage }): Promise<IngestResult> {
+  async ingest(_params: {
+    sessionId: string;
+    message: AgentMessage;
+    isHeartbeat?: boolean;
+  }): Promise<IngestResult> {
     return { ingested: true };
   }
 

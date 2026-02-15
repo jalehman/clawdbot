@@ -1149,6 +1149,7 @@ export async function runEmbeddedAttempt(
         // Legacy engine: no-op. LCM engine: persists to SQLite for future assembly/compaction.
         if (params.contextEngine) {
           const autoCompactionResult = getLastCompactionResult?.();
+          const isHeartbeatIngest = params.isHeartbeat === true;
           const ingestBatch: AgentMessage[] = [];
           if (autoCompactionResult?.summary) {
             ingestBatch.push({
@@ -1165,6 +1166,7 @@ export async function runEmbeddedAttempt(
                 await params.contextEngine.ingestBatch({
                   sessionId: sessionIdUsed,
                   messages: ingestBatch,
+                  isHeartbeat: isHeartbeatIngest,
                 });
               } catch (ingestErr) {
                 log.warn(`context engine ingest failed: ${String(ingestErr)}`);
@@ -1175,6 +1177,7 @@ export async function runEmbeddedAttempt(
                   await params.contextEngine.ingest({
                     sessionId: sessionIdUsed,
                     message: msg,
+                    isHeartbeat: isHeartbeatIngest,
                   });
                 } catch (ingestErr) {
                   log.warn(`context engine ingest failed: ${String(ingestErr)}`);

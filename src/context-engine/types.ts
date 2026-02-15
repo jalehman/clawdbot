@@ -67,13 +67,23 @@ export interface ContextEngine {
    * Ingest a message into the canonical store.
    * For legacy engine, this is a no-op (messages are managed by SessionManager).
    */
-  ingest(params: { sessionId: string; message: AgentMessage }): Promise<IngestResult>;
+  ingest(params: {
+    sessionId: string;
+    message: AgentMessage;
+    /** True when the message belongs to a heartbeat run and should not be persisted by LCM. */
+    isHeartbeat?: boolean;
+  }): Promise<IngestResult>;
 
   /**
    * Ingest a completed turn batch in one engine-managed unit.
    * Engines can omit this and rely on per-message ingest calls.
    */
-  ingestBatch?(params: { sessionId: string; messages: AgentMessage[] }): Promise<IngestBatchResult>;
+  ingestBatch?(params: {
+    sessionId: string;
+    messages: AgentMessage[];
+    /** True when the batch belongs to a heartbeat run and should not be persisted by LCM. */
+    isHeartbeat?: boolean;
+  }): Promise<IngestBatchResult>;
 
   /**
    * Assemble model context under a token budget.

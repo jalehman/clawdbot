@@ -486,6 +486,7 @@ export async function runEmbeddedPiAgent(
             extraSystemPrompt: params.extraSystemPrompt,
             inputProvenance: params.inputProvenance,
             streamParams: params.streamParams,
+            isHeartbeat: params.isHeartbeat,
             ownerNumbers: params.ownerNumbers,
             enforceFinalTag: params.enforceFinalTag,
           });

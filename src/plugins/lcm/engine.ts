@@ -474,8 +474,12 @@ export class LcmContextEngine implements ContextEngine {
   private async ingestSingle(params: {
     sessionId: string;
     message: AgentMessage;
+    isHeartbeat?: boolean;
   }): Promise<IngestResult> {
-    const { sessionId, message } = params;
+    const { sessionId, message, isHeartbeat } = params;
+    if (isHeartbeat) {
+      return { ingested: false };
+    }
     const stored = toStoredMessage(message);
 
     // Get or create conversation for this session
@@ -509,7 +513,11 @@ export class LcmContextEngine implements ContextEngine {
     return { ingested: true };
   }
 
-  async ingest(params: { sessionId: string; message: AgentMessage }): Promise<IngestResult> {
+  async ingest(params: {
+    sessionId: string;
+    message: AgentMessage;
+    isHeartbeat?: boolean;
+  }): Promise<IngestResult> {
     this.ensureMigrated();
     return this.withSessionQueue(params.sessionId, () => this.ingestSingle(params));
   }
@@ -517,6 +525,7 @@ export class LcmContextEngine implements ContextEngine {
   async ingestBatch(params: {
     sessionId: string;
     messages: AgentMessage[];
+    isHeartbeat?: boolean;
   }): Promise<IngestBatchResult> {
     this.ensureMigrated();
     if (params.messages.length === 0) {
@@ -528,6 +537,7 @@ export class LcmContextEngine implements ContextEngine {
         const result = await this.ingestSingle({
           sessionId: params.sessionId,
           message,
+          isHeartbeat: params.isHeartbeat,
         });
         if (result.ingested) {
           ingestedCount += 1;
