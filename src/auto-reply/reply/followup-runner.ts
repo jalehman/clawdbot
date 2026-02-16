@@ -265,16 +265,25 @@ export function createFollowupRunner(params: {
         return;
       }
 
-      if (autoCompactionCompleted) {
+      const compactionsThisRun = Math.max(
+        0,
+        runResult.meta.agentMeta?.compactionCount ?? (autoCompactionCompleted ? 1 : 0),
+      );
+      if (compactionsThisRun > 0) {
         const count = await incrementRunCompactionCount({
           sessionEntry,
           sessionStore,
           sessionKey,
           storePath,
+          amount: compactionsThisRun,
           lastCallUsage: runResult.meta.agentMeta?.lastCallUsage,
           contextTokensUsed,
         });
-        if (queued.run.verboseLevel && queued.run.verboseLevel !== "off") {
+        if (
+          autoCompactionCompleted &&
+          queued.run.verboseLevel &&
+          queued.run.verboseLevel !== "off"
+        ) {
           const suffix = typeof count === "number" ? ` (count ${count})` : "";
           finalPayloads.unshift({
             text: `🧹 Auto-compaction complete${suffix}.`,
