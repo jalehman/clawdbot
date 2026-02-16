@@ -18,8 +18,6 @@ export type EmbeddedRunAttemptParams = EmbeddedRunAttemptBase & {
   contextEngine?: ContextEngine;
   /** Resolved model context window in tokens for assemble/compact budgeting. */
   contextTokenBudget?: number;
-  /** Controls LCM summary carryover when creating a fresh conversation. */
-  lcmCarryoverMode?: "allow" | "deny";
   provider: string;
   modelId: string;
   model: Model<Api>;

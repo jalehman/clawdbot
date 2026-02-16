@@ -220,7 +220,6 @@ describe("initSessionState RawBody", () => {
     });
 
     expect(result.isNewSession).toBe(true);
-    expect(result.resetCommand).toBe("new");
     expect(result.bodyStripped).toBe("KeepThisCase");
     expect(result.triggerBodyNormalized).toBe("/NEW KeepThisCase");
   });

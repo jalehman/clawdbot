@@ -582,8 +582,6 @@ export async function runEmbeddedAttempt(
           await params.contextEngine.bootstrap({
             sessionId: params.sessionId,
             sessionFile: params.sessionFile,
-            agentId: params.agentId,
-            carryoverMode: params.lcmCarryoverMode,
           });
         } catch (bootstrapErr) {
           log.warn(`context engine bootstrap failed: ${String(bootstrapErr)}`);
@@ -760,8 +758,6 @@ export async function runEmbeddedAttempt(
             const assembled = await params.contextEngine.assemble({
               sessionId: params.sessionId,
               messages: activeSession.messages,
-              agentId: params.agentId,
-              carryoverMode: params.lcmCarryoverMode,
               tokenBudget: params.contextTokenBudget,
             });
             const repairedAssembled = repairAssembledMessagesForLcm({
@@ -1170,8 +1166,6 @@ export async function runEmbeddedAttempt(
                 await params.contextEngine.ingestBatch({
                   sessionId: sessionIdUsed,
                   messages: ingestBatch,
-                  agentId: params.agentId,
-                  carryoverMode: params.lcmCarryoverMode,
                   isHeartbeat: isHeartbeatIngest,
                 });
               } catch (ingestErr) {
@@ -1183,8 +1177,6 @@ export async function runEmbeddedAttempt(
                   await params.contextEngine.ingest({
                     sessionId: sessionIdUsed,
                     message: msg,
-                    agentId: params.agentId,
-                    carryoverMode: params.lcmCarryoverMode,
                     isHeartbeat: isHeartbeatIngest,
                   });
                 } catch (ingestErr) {
@@ -1224,8 +1216,6 @@ export async function runEmbeddedAttempt(
                 await params.contextEngine.compact({
                   sessionId: params.sessionId,
                   sessionFile: params.sessionFile,
-                  agentId: params.agentId,
-                  carryoverMode: params.lcmCarryoverMode,
                   tokenBudget: params.contextTokenBudget,
                   currentTokenCount: liveContextTokens,
                   compactionTarget: "threshold",

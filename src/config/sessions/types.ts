@@ -58,8 +58,6 @@ export type SessionEntry = {
   groupActivation?: "mention" | "always";
   groupActivationNeedsSystemIntro?: boolean;
   sendPolicy?: "allow" | "deny";
-  /** LCM summary carryover policy when creating a new conversation. */
-  lcmCarryoverMode?: "allow" | "deny";
   queueMode?:
     | "steer"
     | "followup"

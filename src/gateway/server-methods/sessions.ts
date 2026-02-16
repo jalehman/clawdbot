@@ -315,7 +315,6 @@ export const sessionsHandlers: GatewayRequestHandlers = {
         updatedAt: now,
         systemSent: false,
         abortedLastRun: false,
-        lcmCarryoverMode: commandReason === "reset" ? "deny" : "allow",
         thinkingLevel: entry?.thinkingLevel,
         verboseLevel: entry?.verboseLevel,
         reasoningLevel: entry?.reasoningLevel,

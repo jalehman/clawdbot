@@ -387,7 +387,6 @@ export const agentHandlers: GatewayRequestHandlers = {
         thinkingLevel: entry?.thinkingLevel,
         verboseLevel: entry?.verboseLevel,
         reasoningLevel: entry?.reasoningLevel,
-        lcmCarryoverMode: entry?.lcmCarryoverMode,
         systemSent: entry?.systemSent,
         sendPolicy: entry?.sendPolicy,
         skillsSnapshot: entry?.skillsSnapshot,

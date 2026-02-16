@@ -321,10 +321,8 @@ describe("initSessionState reset triggers in Slack channels", () => {
 
     expect(result.isNewSession).toBe(true);
     expect(result.resetTriggered).toBe(true);
-    expect(result.resetCommand).toBe("reset");
     expect(result.sessionId).not.toBe(existingSessionId);
     expect(result.bodyStripped).toBe("");
-    expect(result.sessionEntry.lcmCarryoverMode).toBe("deny");
   });
 
   it("Reset trigger /new preserves args when Slack message has a leading <@...> mention token", async () => {
@@ -363,10 +361,8 @@ describe("initSessionState reset triggers in Slack channels", () => {
 
     expect(result.isNewSession).toBe(true);
     expect(result.resetTriggered).toBe(true);
-    expect(result.resetCommand).toBe("new");
     expect(result.sessionId).not.toBe(existingSessionId);
     expect(result.bodyStripped).toBe("take notes");
-    expect(result.sessionEntry.lcmCarryoverMode).toBe("allow");
   });
 });
 
@@ -660,10 +656,8 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
 
     expect(result.isNewSession).toBe(true);
     expect(result.resetTriggered).toBe(false);
-    expect(result.resetCommand).toBeUndefined();
     expect(result.sessionEntry.verboseLevel).toBeUndefined();
     expect(result.sessionEntry.thinkingLevel).toBeUndefined();
-    expect(result.sessionEntry.lcmCarryoverMode).toBe("allow");
   });
 });
 

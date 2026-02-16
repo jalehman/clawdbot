@@ -451,7 +451,6 @@ export async function agentCommand(
             sessionId,
             sessionKey,
             agentId: sessionAgentId,
-            lcmCarryoverMode: sessionEntry?.lcmCarryoverMode,
             messageChannel,
             agentAccountId: runContext.accountId,
             messageTo: opts.replyTo ?? opts.to,
