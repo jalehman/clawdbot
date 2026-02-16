@@ -25,19 +25,12 @@ function createMockConversationStore() {
       return await operation();
     }),
     createConversation: vi.fn(
-      async (input: {
-        sessionId: string;
-        agentId: string;
-        sessionKey?: string;
-        title?: string;
-      }) => {
+      async (input: { sessionId: string; agentId: string; title?: string }) => {
         const conv = {
           conversationId: nextConvId++,
           sessionId: input.sessionId,
           agentId: input.agentId,
-          sessionKey: input.sessionKey ?? null,
           title: input.title ?? null,
-          bootstrappedAt: null,
           createdAt: new Date(),
           updatedAt: new Date(),
         };
@@ -60,9 +53,7 @@ function createMockConversationStore() {
         conversationId: nextConvId++,
         sessionId: sid,
         agentId,
-        sessionKey: null,
         title: title ?? null,
-        bootstrappedAt: null,
         createdAt: new Date(),
         updatedAt: new Date(),
       };

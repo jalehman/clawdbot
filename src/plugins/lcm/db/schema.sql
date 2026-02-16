@@ -4,15 +4,11 @@
 CREATE TABLE conversations (
   conversation_id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id TEXT NOT NULL,
-  agent_id TEXT NOT NULL DEFAULT 'unknown',
-  session_key TEXT,
   title TEXT,
   bootstrapped_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX conversations_agent_created_idx ON conversations (agent_id, created_at DESC);
-CREATE INDEX conversations_session_key_created_idx ON conversations (session_key, created_at DESC);
 
 CREATE TABLE messages (
   message_id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -582,7 +582,6 @@ export async function runEmbeddedAttempt(
           await params.contextEngine.bootstrap({
             sessionId: params.sessionId,
             sessionFile: params.sessionFile,
-            sessionKey: params.sessionKey,
             agentId: params.agentId,
             carryoverMode: params.lcmCarryoverMode,
           });
@@ -760,7 +759,6 @@ export async function runEmbeddedAttempt(
           try {
             const assembled = await params.contextEngine.assemble({
               sessionId: params.sessionId,
-              sessionKey: params.sessionKey,
               messages: activeSession.messages,
               agentId: params.agentId,
               carryoverMode: params.lcmCarryoverMode,
@@ -1171,7 +1169,6 @@ export async function runEmbeddedAttempt(
               try {
                 await params.contextEngine.ingestBatch({
                   sessionId: sessionIdUsed,
-                  sessionKey: params.sessionKey,
                   messages: ingestBatch,
                   agentId: params.agentId,
                   carryoverMode: params.lcmCarryoverMode,
@@ -1185,7 +1182,6 @@ export async function runEmbeddedAttempt(
                 try {
                   await params.contextEngine.ingest({
                     sessionId: sessionIdUsed,
-                    sessionKey: params.sessionKey,
                     message: msg,
                     agentId: params.agentId,
                     carryoverMode: params.lcmCarryoverMode,
@@ -1228,7 +1224,6 @@ export async function runEmbeddedAttempt(
                 await params.contextEngine.compact({
                   sessionId: params.sessionId,
                   sessionFile: params.sessionFile,
-                  sessionKey: params.sessionKey,
                   agentId: params.agentId,
                   carryoverMode: params.lcmCarryoverMode,
                   tokenBudget: params.contextTokenBudget,

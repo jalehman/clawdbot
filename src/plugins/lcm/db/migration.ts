@@ -6,7 +6,6 @@ export function runLcmMigrations(db: DatabaseSync): void {
       conversation_id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id TEXT NOT NULL,
       agent_id TEXT NOT NULL DEFAULT 'unknown',
-      session_key TEXT,
       title TEXT,
       bootstrapped_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -132,10 +131,6 @@ export function runLcmMigrations(db: DatabaseSync): void {
   if (!hasAgentId) {
     db.exec(`ALTER TABLE conversations ADD COLUMN agent_id TEXT`);
   }
-  const hasSessionKey = conversationColumns.some((col) => col.name === "session_key");
-  if (!hasSessionKey) {
-    db.exec(`ALTER TABLE conversations ADD COLUMN session_key TEXT`);
-  }
 
   db.exec(`
     UPDATE conversations
@@ -163,9 +158,6 @@ export function runLcmMigrations(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS conversations_agent_created_idx
     ON conversations (agent_id, created_at DESC);
-
-    CREATE INDEX IF NOT EXISTS conversations_session_key_created_idx
-    ON conversations (session_key, created_at DESC);
   `);
 
   // FTS5 virtual tables for full-text search (cannot use IF NOT EXISTS, so check manually)
