@@ -1,17 +1,6 @@
 import "./run.overflow-compaction.mocks.shared.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockedContextCompact } = vi.hoisted(() => ({
-  mockedContextCompact: vi.fn(),
-}));
-
-vi.mock("../../context-engine/index.js", () => ({
-  ensureContextEnginesInitialized: vi.fn(),
-  resolveContextEngine: vi.fn(async () => ({
-    compact: mockedContextCompact,
-  })),
-}));
-
 vi.mock("../auth-profiles.js", () => ({
   isProfileInCooldown: vi.fn(() => false),
   markAuthProfileFailure: vi.fn(async () => {}),
@@ -67,11 +56,13 @@ vi.mock("../pi-embedded-helpers.js", () => ({
   pickFallbackThinkingLevel: vi.fn(() => null),
 }));
 
+import { compactEmbeddedPiSessionDirect } from "./compact.js";
 import { runEmbeddedPiAgent } from "./run.js";
 import { makeAttemptResult } from "./run.overflow-compaction.fixture.js";
 import { runEmbeddedAttempt } from "./run/attempt.js";
 
 const mockedRunEmbeddedAttempt = vi.mocked(runEmbeddedAttempt);
+const mockedCompactDirect = vi.mocked(compactEmbeddedPiSessionDirect);
 
 describe("runEmbeddedPiAgent overflow compaction trigger routing", () => {
   beforeEach(() => {
@@ -85,7 +76,7 @@ describe("runEmbeddedPiAgent overflow compaction trigger routing", () => {
       .mockResolvedValueOnce(makeAttemptResult({ promptError: overflowError }))
       .mockResolvedValueOnce(makeAttemptResult({ promptError: null }));
 
-    mockedContextCompact.mockResolvedValueOnce({
+    mockedCompactDirect.mockResolvedValueOnce({
       ok: true,
       compacted: true,
       result: {
@@ -105,19 +96,11 @@ describe("runEmbeddedPiAgent overflow compaction trigger routing", () => {
       runId: "run-1",
     });
 
-    expect(mockedContextCompact).toHaveBeenCalledTimes(1);
-    expect(mockedContextCompact).toHaveBeenCalledWith(
+    expect(mockedCompactDirect).toHaveBeenCalledTimes(1);
+    expect(mockedCompactDirect).toHaveBeenCalledWith(
       expect.objectContaining({
-        sessionId: "test-session",
-        sessionFile: "/tmp/session.json",
-        tokenBudget: 200000,
-        currentTokenCount: 200000,
-        agentId: undefined,
-        carryoverMode: undefined,
-        legacyParams: expect.objectContaining({
-          trigger: "overflow",
-          authProfileId: "test-profile",
-        }),
+        trigger: "overflow",
+        authProfileId: "test-profile",
       }),
     );
   });

@@ -1,28 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
+import { compactEmbeddedPiSession } from "../../agents/pi-embedded.js";
 import { handleCompactCommand } from "./commands-compact.js";
 import { buildCommandTestParams } from "./commands.test-harness.js";
 
-const { mockedContextCompact } = vi.hoisted(() => ({
-  mockedContextCompact: vi.fn(),
-}));
-
 vi.mock("../../agents/pi-embedded.js", () => ({
   abortEmbeddedPiRun: vi.fn(),
+  compactEmbeddedPiSession: vi.fn(),
   isEmbeddedPiRunActive: vi.fn().mockReturnValue(false),
   waitForEmbeddedPiRunEnd: vi.fn().mockResolvedValue(undefined),
   resolveEmbeddedSessionLane: vi.fn().mockReturnValue("default"),
-}));
-
-vi.mock("../../context-engine/index.js", () => ({
-  ensureContextEnginesInitialized: vi.fn(),
-  resolveContextEngine: vi.fn(async () => ({
-    compact: mockedContextCompact,
-  })),
-}));
-
-vi.mock("../../process/command-queue.js", () => ({
-  enqueueCommandInLane: vi.fn((_lane: string, task: () => unknown) => task()),
 }));
 
 vi.mock("../../infra/system-events.js", () => ({
@@ -53,7 +40,7 @@ describe("/compact command", () => {
     );
 
     expect(result).toBeNull();
-    expect(mockedContextCompact).not.toHaveBeenCalled();
+    expect(vi.mocked(compactEmbeddedPiSession)).not.toHaveBeenCalled();
   });
 
   it("rejects unauthorized /compact commands", async () => {
@@ -76,7 +63,7 @@ describe("/compact command", () => {
     );
 
     expect(result).toEqual({ shouldContinue: false });
-    expect(mockedContextCompact).not.toHaveBeenCalled();
+    expect(vi.mocked(compactEmbeddedPiSession)).not.toHaveBeenCalled();
   });
 
   it("routes manual compaction with explicit trigger and context metadata", async () => {
@@ -89,7 +76,7 @@ describe("/compact command", () => {
       From: "+15550001",
       To: "+15550002",
     });
-    mockedContextCompact.mockResolvedValueOnce({
+    vi.mocked(compactEmbeddedPiSession).mockResolvedValueOnce({
       ok: true,
       compacted: false,
     });
@@ -110,21 +97,18 @@ describe("/compact command", () => {
     );
 
     expect(result?.shouldContinue).toBe(false);
-    expect(mockedContextCompact).toHaveBeenCalledOnce();
-    expect(mockedContextCompact).toHaveBeenCalledWith(
+    expect(vi.mocked(compactEmbeddedPiSession)).toHaveBeenCalledOnce();
+    expect(vi.mocked(compactEmbeddedPiSession)).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: "session-1",
+        sessionKey: "agent:main:main",
+        trigger: "manual",
         customInstructions: "focus on decisions",
-        legacyParams: expect.objectContaining({
-          sessionKey: "agent:main:main",
-          trigger: "manual",
-          messageChannel: "whatsapp",
-          messageProvider: "whatsapp",
-          groupId: "group-1",
-          groupChannel: "#general",
-          groupSpace: "workspace-1",
-          spawnedBy: "agent:main:parent",
-        }),
+        messageChannel: "whatsapp",
+        groupId: "group-1",
+        groupChannel: "#general",
+        groupSpace: "workspace-1",
+        spawnedBy: "agent:main:parent",
       }),
     );
   });
