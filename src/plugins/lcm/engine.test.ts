@@ -96,6 +96,42 @@ async function ingestAndReadStoredContent(params: {
   return messages[0].content;
 }
 
+async function seedConversationSummary(params: {
+  engine: LcmContextEngine;
+  sessionId: string;
+  agentId: string;
+  summaryId?: string;
+  summaryText?: string;
+}): Promise<{ conversationId: number; summaryId: string }> {
+  await params.engine.ingest({
+    sessionId: params.sessionId,
+    agentId: params.agentId,
+    message: makeMessage({ role: "user", content: "seed turn" }),
+  });
+
+  const conversation = await params.engine
+    .getConversationStore()
+    .getConversationBySessionId(params.sessionId);
+  expect(conversation).not.toBeNull();
+
+  const summaryId = params.summaryId ?? randomUUID();
+  await params.engine.getSummaryStore().insertSummary({
+    summaryId,
+    conversationId: conversation!.conversationId,
+    kind: "leaf",
+    content: params.summaryText ?? "carryover summary",
+    tokenCount: 6,
+  });
+  await params.engine
+    .getSummaryStore()
+    .appendContextSummary(conversation!.conversationId, summaryId);
+
+  return {
+    conversationId: conversation!.conversationId,
+    summaryId,
+  };
+}
+
 afterEach(() => {
   closeLcmConnection();
   for (const dir of tempDirs.splice(0)) {
@@ -327,6 +363,96 @@ describe("LcmContextEngine.bootstrap", () => {
     expect(result.bootstrapped).toBe(true);
     expect(bulkSpy).toHaveBeenCalledTimes(1);
     expect(singleSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("LcmContextEngine carryover", () => {
+  it("seeds prior summary context into a new conversation when carryover is allowed", async () => {
+    const engine = createEngine();
+    const agentId = "agent-carryover-allow";
+    const sourceSessionId = "carryover-source";
+    const targetSessionId = "carryover-target";
+    const { summaryId } = await seedConversationSummary({
+      engine,
+      sessionId: sourceSessionId,
+      agentId,
+      summaryText: "seeded summary",
+    });
+
+    await engine.assemble({
+      sessionId: targetSessionId,
+      agentId,
+      carryoverMode: "allow",
+      messages: [],
+      tokenBudget: 8_000,
+    });
+
+    const targetConversation = await engine
+      .getConversationStore()
+      .getConversationBySessionId(targetSessionId);
+    expect(targetConversation).not.toBeNull();
+    expect(
+      await engine.getSummaryStore().getContextSummaryIds(targetConversation!.conversationId),
+    ).toEqual([summaryId]);
+  });
+
+  it("does not seed summary context when carryover mode is deny", async () => {
+    const engine = createEngine();
+    const agentId = "agent-carryover-deny";
+    await seedConversationSummary({
+      engine,
+      sessionId: "carryover-deny-source",
+      agentId,
+    });
+
+    await engine.assemble({
+      sessionId: "carryover-deny-target",
+      agentId,
+      carryoverMode: "deny",
+      messages: [],
+      tokenBudget: 8_000,
+    });
+
+    const targetConversation = await engine
+      .getConversationStore()
+      .getConversationBySessionId("carryover-deny-target");
+    expect(targetConversation).not.toBeNull();
+    expect(
+      await engine.getSummaryStore().getContextSummaryIds(targetConversation!.conversationId),
+    ).toEqual([]);
+  });
+
+  it("applies carryover only once when reusing an existing conversation", async () => {
+    const engine = createEngine();
+    const agentId = "agent-carryover-once";
+    const { summaryId } = await seedConversationSummary({
+      engine,
+      sessionId: "carryover-once-source",
+      agentId,
+    });
+
+    await engine.ingest({
+      sessionId: "carryover-once-target",
+      agentId,
+      carryoverMode: "allow",
+      message: makeMessage({ role: "user", content: "first turn" }),
+    });
+    await engine.ingest({
+      sessionId: "carryover-once-target",
+      agentId,
+      carryoverMode: "allow",
+      message: makeMessage({ role: "assistant", content: "second turn" }),
+    });
+
+    const targetConversation = await engine
+      .getConversationStore()
+      .getConversationBySessionId("carryover-once-target");
+    expect(targetConversation).not.toBeNull();
+
+    const summaryIds = await engine
+      .getSummaryStore()
+      .getContextSummaryIds(targetConversation!.conversationId);
+    expect(summaryIds).toEqual([summaryId]);
   });
 });
 

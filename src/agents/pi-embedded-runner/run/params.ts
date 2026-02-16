@@ -22,6 +22,7 @@ export type RunEmbeddedPiAgentParams = {
   sessionId: string;
   sessionKey?: string;
   agentId?: string;
+  lcmCarryoverMode?: "allow" | "deny";
   messageChannel?: string;
   messageProvider?: string;
   agentAccountId?: string;

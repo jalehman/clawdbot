@@ -46,6 +46,7 @@ export type FollowupRun = {
     agentDir: string;
     sessionId: string;
     sessionKey?: string;
+    lcmCarryoverMode?: "allow" | "deny";
     messageProvider?: string;
     agentAccountId?: string;
     groupId?: string;

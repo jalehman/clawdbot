@@ -47,6 +47,8 @@ export type ContextEngineInfo = {
   version?: string;
 };
 
+export type ContextCarryoverMode = "allow" | "deny";
+
 /**
  * ContextEngine defines the pluggable contract for context management.
  *
@@ -61,7 +63,12 @@ export interface ContextEngine {
    * Bootstrap historical session context into the canonical store.
    * Engines that don't own persistence (legacy) can omit this.
    */
-  bootstrap?(params: { sessionId: string; sessionFile: string }): Promise<BootstrapResult>;
+  bootstrap?(params: {
+    sessionId: string;
+    sessionFile: string;
+    agentId?: string;
+    carryoverMode?: ContextCarryoverMode;
+  }): Promise<BootstrapResult>;
 
   /**
    * Ingest a message into the canonical store.
@@ -70,6 +77,8 @@ export interface ContextEngine {
   ingest(params: {
     sessionId: string;
     message: AgentMessage;
+    agentId?: string;
+    carryoverMode?: ContextCarryoverMode;
     /** True when the message belongs to a heartbeat run and should not be persisted by LCM. */
     isHeartbeat?: boolean;
   }): Promise<IngestResult>;
@@ -81,6 +90,8 @@ export interface ContextEngine {
   ingestBatch?(params: {
     sessionId: string;
     messages: AgentMessage[];
+    agentId?: string;
+    carryoverMode?: ContextCarryoverMode;
     /** True when the batch belongs to a heartbeat run and should not be persisted by LCM. */
     isHeartbeat?: boolean;
   }): Promise<IngestBatchResult>;
@@ -92,6 +103,8 @@ export interface ContextEngine {
   assemble(params: {
     sessionId: string;
     messages: AgentMessage[];
+    agentId?: string;
+    carryoverMode?: ContextCarryoverMode;
     tokenBudget?: number;
   }): Promise<AssembleResult>;
 
@@ -102,6 +115,8 @@ export interface ContextEngine {
   compact(params: {
     sessionId: string;
     sessionFile: string;
+    agentId?: string;
+    carryoverMode?: ContextCarryoverMode;
     tokenBudget?: number;
     /** Optional live token estimate from the caller's active context. */
     currentTokenCount?: number;

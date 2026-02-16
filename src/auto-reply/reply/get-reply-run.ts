@@ -400,6 +400,7 @@ export async function runPreparedReply(
       sessionId: sessionIdFinal,
       sessionKey,
       messageProvider: sessionCtx.Provider?.trim().toLowerCase() || undefined,
+      lcmCarryoverMode: sessionEntry?.lcmCarryoverMode,
       agentAccountId: sessionCtx.AccountId,
       groupId: resolveGroupSessionKey(sessionCtx)?.id ?? undefined,
       groupChannel: sessionCtx.GroupChannel?.trim() ?? sessionCtx.GroupSubject?.trim(),

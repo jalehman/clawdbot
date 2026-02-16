@@ -453,6 +453,7 @@ export async function runEmbeddedPiAgent(
             config: params.config,
             contextEngine,
             contextTokenBudget: ctxInfo.tokens,
+            lcmCarryoverMode: params.lcmCarryoverMode,
             skillsSnapshot: params.skillsSnapshot,
             prompt,
             images: params.images,
@@ -584,6 +585,8 @@ export async function runEmbeddedPiAgent(
               const compactResult = await contextEngine.compact({
                 sessionId: params.sessionId,
                 sessionFile: params.sessionFile,
+                agentId: params.agentId,
+                carryoverMode: params.lcmCarryoverMode,
                 tokenBudget: ctxInfo.tokens,
                 currentTokenCount: ctxInfo.tokens,
                 legacyParams: {
