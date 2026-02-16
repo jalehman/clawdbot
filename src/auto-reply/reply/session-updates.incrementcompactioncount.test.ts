@@ -116,4 +116,25 @@ describe("incrementCompactionCount", () => {
     // totalTokens unchanged
     expect(stored[sessionKey].totalTokens).toBe(180_000);
   });
+
+  it("persists compaction count even when only storePath/sessionKey are available", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-compact-"));
+    const storePath = path.join(tmp, "sessions.json");
+    const sessionKey = "main";
+    const entry = {
+      sessionId: "s1",
+      updatedAt: Date.now(),
+      compactionCount: 4,
+    } as SessionEntry;
+    await seedSessionStore({ storePath, sessionKey, entry });
+
+    const count = await incrementCompactionCount({
+      sessionKey,
+      storePath,
+    });
+
+    expect(count).toBe(5);
+    const stored = JSON.parse(await fs.readFile(storePath, "utf-8"));
+    expect(stored[sessionKey].compactionCount).toBe(5);
+  });
 });
