@@ -24,27 +24,24 @@ function createMockConversationStore() {
     withTransaction: vi.fn(async <T>(operation: () => Promise<T> | T): Promise<T> => {
       return await operation();
     }),
-    createConversation: vi.fn(
-      async (input: { sessionId: string; agentId: string; title?: string }) => {
-        const conv = {
-          conversationId: nextConvId++,
-          sessionId: input.sessionId,
-          agentId: input.agentId,
-          title: input.title ?? null,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        };
-        conversations.push(conv);
-        return conv;
-      },
-    ),
+    createConversation: vi.fn(async (input: { sessionId: string; title?: string }) => {
+      const conv = {
+        conversationId: nextConvId++,
+        sessionId: input.sessionId,
+        title: input.title ?? null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      conversations.push(conv);
+      return conv;
+    }),
     getConversation: vi.fn(
       async (id: number) => conversations.find((c) => c.conversationId === id) ?? null,
     ),
     getConversationBySessionId: vi.fn(
       async (sid: string) => conversations.find((c) => c.sessionId === sid) ?? null,
     ),
-    getOrCreateConversation: vi.fn(async (sid: string, agentId: string, title?: string) => {
+    getOrCreateConversation: vi.fn(async (sid: string, title?: string) => {
       const existing = conversations.find((c) => c.sessionId === sid);
       if (existing) {
         return existing;
@@ -52,7 +49,6 @@ function createMockConversationStore() {
       const conv = {
         conversationId: nextConvId++,
         sessionId: sid,
-        agentId,
         title: title ?? null,
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -522,7 +518,6 @@ async function ingestMessages(
   if (!existingConversation) {
     await convStore.createConversation({
       sessionId: `session-${conversationId}`,
-      agentId: `agent-${conversationId}`,
     });
   }
 
@@ -788,10 +783,7 @@ describe("LCM integration: compaction", () => {
   });
 
   it("compaction emits one durable compaction part for a leaf-only pass", async () => {
-    await convStore.createConversation({
-      sessionId: "leaf-only-session",
-      agentId: "leaf-only-agent",
-    });
+    await convStore.createConversation({ sessionId: "leaf-only-session" });
     await ingestMessages(convStore, sumStore, 5, {
       contentFn: (i) => `Turn ${i}: ${"l".repeat(160)}`,
       tokenCountFn: () => 40,
@@ -825,10 +817,7 @@ describe("LCM integration: compaction", () => {
   });
 
   it("compaction emits durable compaction parts for leaf and condensed passes", async () => {
-    await convStore.createConversation({
-      sessionId: "leaf-condensed-session",
-      agentId: "leaf-condensed-agent",
-    });
+    await convStore.createConversation({ sessionId: "leaf-condensed-session" });
     await ingestMessages(convStore, sumStore, 8, {
       contentFn: (i) => `Turn ${i}: ${"c".repeat(200)}`,
       tokenCountFn: () => 50,

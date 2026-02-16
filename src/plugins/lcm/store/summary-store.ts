@@ -112,10 +112,6 @@ interface MessageIdRow {
   message_id: number;
 }
 
-interface SummaryIdRow {
-  summary_id: string;
-}
-
 interface LargeFileRow {
   file_id: string;
   conversation_id: number;
@@ -334,19 +330,6 @@ export class SummaryStore {
     return rows.map(toContextItemRecord);
   }
 
-  async getContextSummaryIds(conversationId: number): Promise<string[]> {
-    const rows = this.db
-      .prepare(
-        `SELECT summary_id
-       FROM context_items
-       WHERE conversation_id = ?
-         AND item_type = 'summary'
-       ORDER BY ordinal`,
-      )
-      .all(conversationId) as unknown as SummaryIdRow[];
-    return rows.map((row) => row.summary_id);
-  }
-
   async appendContextMessage(conversationId: number, messageId: number): Promise<void> {
     const row = this.db
       .prepare(
@@ -385,30 +368,20 @@ export class SummaryStore {
     }
   }
 
-  async appendContextSummaries(conversationId: number, summaryIds: string[]): Promise<void> {
-    if (summaryIds.length === 0) {
-      return;
-    }
-
+  async appendContextSummary(conversationId: number, summaryId: string): Promise<void> {
     const row = this.db
       .prepare(
         `SELECT COALESCE(MAX(ordinal), -1) AS max_ordinal
        FROM context_items WHERE conversation_id = ?`,
       )
       .get(conversationId) as unknown as MaxOrdinalRow;
-    const baseOrdinal = row.max_ordinal + 1;
 
-    const stmt = this.db.prepare(
-      `INSERT INTO context_items (conversation_id, ordinal, item_type, summary_id)
+    this.db
+      .prepare(
+        `INSERT INTO context_items (conversation_id, ordinal, item_type, summary_id)
        VALUES (?, ?, 'summary', ?)`,
-    );
-    for (let idx = 0; idx < summaryIds.length; idx++) {
-      stmt.run(conversationId, baseOrdinal + idx, summaryIds[idx]);
-    }
-  }
-
-  async appendContextSummary(conversationId: number, summaryId: string): Promise<void> {
-    await this.appendContextSummaries(conversationId, [summaryId]);
+      )
+      .run(conversationId, row.max_ordinal + 1, summaryId);
   }
 
   async replaceContextRangeWithSummary(input: {
