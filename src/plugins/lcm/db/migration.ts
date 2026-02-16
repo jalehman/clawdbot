@@ -5,6 +5,7 @@ export function runLcmMigrations(db: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS conversations (
       conversation_id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL DEFAULT 'unknown',
       title TEXT,
       bootstrapped_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -126,6 +127,38 @@ export function runLcmMigrations(db: DatabaseSync): void {
   if (!hasBootstrappedAt) {
     db.exec(`ALTER TABLE conversations ADD COLUMN bootstrapped_at TEXT`);
   }
+  const hasAgentId = conversationColumns.some((col) => col.name === "agent_id");
+  if (!hasAgentId) {
+    db.exec(`ALTER TABLE conversations ADD COLUMN agent_id TEXT`);
+  }
+
+  db.exec(`
+    UPDATE conversations
+    SET agent_id = (
+      SELECT source.agent_id
+      FROM conversations AS source
+      WHERE source.session_id = conversations.session_id
+        AND source.agent_id IS NOT NULL
+        AND trim(source.agent_id) <> ''
+      ORDER BY source.created_at DESC
+      LIMIT 1
+    )
+    WHERE (agent_id IS NULL OR trim(agent_id) = '')
+      AND EXISTS (
+        SELECT 1
+        FROM conversations AS source
+        WHERE source.session_id = conversations.session_id
+          AND source.agent_id IS NOT NULL
+          AND trim(source.agent_id) <> ''
+      );
+
+    UPDATE conversations
+    SET agent_id = 'unknown'
+    WHERE agent_id IS NULL OR trim(agent_id) = '';
+
+    CREATE INDEX IF NOT EXISTS conversations_agent_created_idx
+    ON conversations (agent_id, created_at DESC);
+  `);
 
   // FTS5 virtual tables for full-text search (cannot use IF NOT EXISTS, so check manually)
   const hasFts = db

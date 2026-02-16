@@ -482,7 +482,10 @@ export class LcmContextEngine implements ContextEngine {
     this.ensureMigrated();
 
     return this.conversationStore.withTransaction(async () => {
-      const conversation = await this.conversationStore.getOrCreateConversation(params.sessionId);
+      const conversation = await this.conversationStore.getOrCreateConversation(
+        params.sessionId,
+        params.sessionId,
+      );
       const conversationId = conversation.conversationId;
 
       if (conversation.bootstrappedAt) {
@@ -553,7 +556,7 @@ export class LcmContextEngine implements ContextEngine {
     const stored = toStoredMessage(message);
 
     // Get or create conversation for this session
-    const conversation = await this.conversationStore.getOrCreateConversation(sessionId);
+    const conversation = await this.conversationStore.getOrCreateConversation(sessionId, sessionId);
     const conversationId = conversation.conversationId;
 
     // Determine next sequence number

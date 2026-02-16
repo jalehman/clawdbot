@@ -65,12 +65,14 @@ export type MessagePartRecord = {
 
 export type CreateConversationInput = {
   sessionId: string;
+  agentId: string;
   title?: string;
 };
 
 export type ConversationRecord = {
   conversationId: ConversationId;
   sessionId: string;
+  agentId: string;
   title: string | null;
   bootstrappedAt: Date | null;
   createdAt: Date;
@@ -100,6 +102,7 @@ export type MessageSearchResult = {
 interface ConversationRow {
   conversation_id: number;
   session_id: string;
+  agent_id: string;
   title: string | null;
   bootstrapped_at: string | null;
   created_at: string;
@@ -153,6 +156,7 @@ function toConversationRecord(row: ConversationRow): ConversationRecord {
   return {
     conversationId: row.conversation_id,
     sessionId: row.session_id,
+    agentId: row.agent_id,
     title: row.title,
     bootstrappedAt: row.bootstrapped_at ? new Date(row.bootstrapped_at) : null,
     createdAt: new Date(row.created_at),
@@ -222,12 +226,12 @@ export class ConversationStore {
 
   async createConversation(input: CreateConversationInput): Promise<ConversationRecord> {
     const result = this.db
-      .prepare(`INSERT INTO conversations (session_id, title) VALUES (?, ?)`)
-      .run(input.sessionId, input.title ?? null);
+      .prepare(`INSERT INTO conversations (session_id, agent_id, title) VALUES (?, ?, ?)`)
+      .run(input.sessionId, input.agentId, input.title ?? null);
 
     const row = this.db
       .prepare(
-        `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at
+        `SELECT conversation_id, session_id, agent_id, title, bootstrapped_at, created_at, updated_at
        FROM conversations WHERE conversation_id = ?`,
       )
       .get(Number(result.lastInsertRowid)) as unknown as ConversationRow;
@@ -238,7 +242,7 @@ export class ConversationStore {
   async getConversation(conversationId: ConversationId): Promise<ConversationRecord | null> {
     const row = this.db
       .prepare(
-        `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at
+        `SELECT conversation_id, session_id, agent_id, title, bootstrapped_at, created_at, updated_at
        FROM conversations WHERE conversation_id = ?`,
       )
       .get(conversationId) as unknown as ConversationRow | undefined;
@@ -249,7 +253,7 @@ export class ConversationStore {
   async getConversationBySessionId(sessionId: string): Promise<ConversationRecord | null> {
     const row = this.db
       .prepare(
-        `SELECT conversation_id, session_id, title, bootstrapped_at, created_at, updated_at
+        `SELECT conversation_id, session_id, agent_id, title, bootstrapped_at, created_at, updated_at
        FROM conversations
        WHERE session_id = ?
        ORDER BY created_at DESC
@@ -260,12 +264,45 @@ export class ConversationStore {
     return row ? toConversationRecord(row) : null;
   }
 
-  async getOrCreateConversation(sessionId: string, title?: string): Promise<ConversationRecord> {
+  async getOrCreateConversation(
+    sessionId: string,
+    agentId: string,
+    title?: string,
+  ): Promise<ConversationRecord> {
     const existing = await this.getConversationBySessionId(sessionId);
     if (existing) {
       return existing;
     }
-    return this.createConversation({ sessionId, title });
+    return this.createConversation({ sessionId, agentId, title });
+  }
+
+  async getMostRecentConversationByAgent(
+    agentId: string,
+    excludeConversationId?: ConversationId,
+  ): Promise<ConversationRecord | null> {
+    const row =
+      excludeConversationId == null
+        ? (this.db
+            .prepare(
+              `SELECT conversation_id, session_id, agent_id, title, bootstrapped_at, created_at, updated_at
+           FROM conversations
+           WHERE agent_id = ?
+           ORDER BY created_at DESC
+           LIMIT 1`,
+            )
+            .get(agentId) as unknown as ConversationRow | undefined)
+        : (this.db
+            .prepare(
+              `SELECT conversation_id, session_id, agent_id, title, bootstrapped_at, created_at, updated_at
+           FROM conversations
+           WHERE agent_id = ?
+             AND conversation_id != ?
+           ORDER BY created_at DESC
+           LIMIT 1`,
+            )
+            .get(agentId, excludeConversationId) as unknown as ConversationRow | undefined);
+
+    return row ? toConversationRecord(row) : null;
   }
 
   async markConversationBootstrapped(conversationId: ConversationId): Promise<void> {
