@@ -1,12 +1,77 @@
 import "./run.overflow-compaction.mocks.shared.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { compactEmbeddedPiSessionDirect } from "./compact.js";
+
+const { mockedContextCompact } = vi.hoisted(() => ({
+  mockedContextCompact: vi.fn(),
+}));
+
+vi.mock("../../context-engine/index.js", () => ({
+  ensureContextEnginesInitialized: vi.fn(),
+  resolveContextEngine: vi.fn(async () => ({
+    compact: mockedContextCompact,
+  })),
+}));
+
+vi.mock("../auth-profiles.js", () => ({
+  isProfileInCooldown: vi.fn(() => false),
+  markAuthProfileFailure: vi.fn(async () => {}),
+  markAuthProfileGood: vi.fn(async () => {}),
+  markAuthProfileUsed: vi.fn(async () => {}),
+}));
+
+vi.mock("../usage.js", () => ({
+  normalizeUsage: vi.fn((usage?: unknown) =>
+    usage && typeof usage === "object" ? usage : undefined,
+  ),
+  derivePromptTokens: vi.fn(
+    (usage?: { input?: number; cacheRead?: number; cacheWrite?: number }) => {
+      if (!usage) {
+        return undefined;
+      }
+      const input = usage.input ?? 0;
+      const cacheRead = usage.cacheRead ?? 0;
+      const cacheWrite = usage.cacheWrite ?? 0;
+      const sum = input + cacheRead + cacheWrite;
+      return sum > 0 ? sum : undefined;
+    },
+  ),
+}));
+
+vi.mock("../workspace-run.js", () => ({
+  resolveRunWorkspaceDir: vi.fn((params: { workspaceDir: string }) => ({
+    workspaceDir: params.workspaceDir,
+    usedFallback: false,
+    fallbackReason: undefined,
+    agentId: "main",
+  })),
+  redactRunIdentifier: vi.fn((value?: string) => value ?? ""),
+}));
+
+vi.mock("../pi-embedded-helpers.js", () => ({
+  formatBillingErrorMessage: vi.fn(() => ""),
+  classifyFailoverReason: vi.fn(() => null),
+  formatAssistantErrorText: vi.fn(() => ""),
+  isAuthAssistantError: vi.fn(() => false),
+  isBillingAssistantError: vi.fn(() => false),
+  isCompactionFailureError: vi.fn(() => false),
+  isLikelyContextOverflowError: vi.fn((msg?: string) => {
+    const lower = (msg ?? "").toLowerCase();
+    return lower.includes("request_too_large") || lower.includes("context window exceeded");
+  }),
+  isFailoverAssistantError: vi.fn(() => false),
+  isFailoverErrorMessage: vi.fn(() => false),
+  parseImageSizeError: vi.fn(() => null),
+  parseImageDimensionError: vi.fn(() => null),
+  isRateLimitAssistantError: vi.fn(() => false),
+  isTimeoutErrorMessage: vi.fn(() => false),
+  pickFallbackThinkingLevel: vi.fn(() => null),
+}));
+
 import { runEmbeddedPiAgent } from "./run.js";
 import { makeAttemptResult } from "./run.overflow-compaction.fixture.js";
 import { runEmbeddedAttempt } from "./run/attempt.js";
 
 const mockedRunEmbeddedAttempt = vi.mocked(runEmbeddedAttempt);
-const mockedCompactDirect = vi.mocked(compactEmbeddedPiSessionDirect);
 
 describe("runEmbeddedPiAgent overflow compaction trigger routing", () => {
   beforeEach(() => {
@@ -20,7 +85,7 @@ describe("runEmbeddedPiAgent overflow compaction trigger routing", () => {
       .mockResolvedValueOnce(makeAttemptResult({ promptError: overflowError }))
       .mockResolvedValueOnce(makeAttemptResult({ promptError: null }));
 
-    mockedCompactDirect.mockResolvedValueOnce({
+    mockedContextCompact.mockResolvedValueOnce({
       ok: true,
       compacted: true,
       result: {
@@ -40,11 +105,19 @@ describe("runEmbeddedPiAgent overflow compaction trigger routing", () => {
       runId: "run-1",
     });
 
-    expect(mockedCompactDirect).toHaveBeenCalledTimes(1);
-    expect(mockedCompactDirect).toHaveBeenCalledWith(
+    expect(mockedContextCompact).toHaveBeenCalledTimes(1);
+    expect(mockedContextCompact).toHaveBeenCalledWith(
       expect.objectContaining({
-        trigger: "overflow",
-        authProfileId: "test-profile",
+        sessionId: "test-session",
+        sessionFile: "/tmp/session.json",
+        tokenBudget: 200000,
+        currentTokenCount: 200000,
+        agentId: undefined,
+        carryoverMode: undefined,
+        legacyParams: expect.objectContaining({
+          trigger: "overflow",
+          authProfileId: "test-profile",
+        }),
       }),
     );
   });
