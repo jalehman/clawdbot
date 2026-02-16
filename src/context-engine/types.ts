@@ -66,6 +66,7 @@ export interface ContextEngine {
   bootstrap?(params: {
     sessionId: string;
     sessionFile: string;
+    sessionKey?: string;
     agentId?: string;
     carryoverMode?: ContextCarryoverMode;
   }): Promise<BootstrapResult>;
@@ -76,6 +77,7 @@ export interface ContextEngine {
    */
   ingest(params: {
     sessionId: string;
+    sessionKey?: string;
     message: AgentMessage;
     agentId?: string;
     carryoverMode?: ContextCarryoverMode;
@@ -89,6 +91,7 @@ export interface ContextEngine {
    */
   ingestBatch?(params: {
     sessionId: string;
+    sessionKey?: string;
     messages: AgentMessage[];
     agentId?: string;
     carryoverMode?: ContextCarryoverMode;
@@ -102,6 +105,7 @@ export interface ContextEngine {
    */
   assemble(params: {
     sessionId: string;
+    sessionKey?: string;
     messages: AgentMessage[];
     agentId?: string;
     carryoverMode?: ContextCarryoverMode;
@@ -115,6 +119,7 @@ export interface ContextEngine {
   compact(params: {
     sessionId: string;
     sessionFile: string;
+    sessionKey?: string;
     agentId?: string;
     carryoverMode?: ContextCarryoverMode;
     tokenBudget?: number;

@@ -100,11 +100,13 @@ async function seedConversationSummary(params: {
   engine: LcmContextEngine;
   sessionId: string;
   agentId: string;
+  sessionKey?: string;
   summaryId?: string;
   summaryText?: string;
 }): Promise<{ conversationId: number; summaryId: string }> {
   await params.engine.ingest({
     sessionId: params.sessionId,
+    sessionKey: params.sessionKey,
     agentId: params.agentId,
     message: makeMessage({ role: "user", content: "seed turn" }),
   });
@@ -453,6 +455,46 @@ describe("LcmContextEngine carryover", () => {
       .getSummaryStore()
       .getContextSummaryIds(targetConversation!.conversationId);
     expect(summaryIds).toEqual([summaryId]);
+  });
+
+  it("prefers same session key carryover over newer conversations from other session keys", async () => {
+    const engine = createEngine();
+    const agentId = "main";
+    const mainSessionKey = "agent:main:main";
+    const cronSessionKey = "agent:main:cron_20260216";
+    const { summaryId } = await seedConversationSummary({
+      engine,
+      sessionId: "carryover-main-source",
+      sessionKey: mainSessionKey,
+      agentId,
+      summaryText: "interactive summary",
+    });
+
+    await engine.ingest({
+      sessionId: "carryover-cron-source",
+      sessionKey: cronSessionKey,
+      agentId,
+      message: makeMessage({ role: "user", content: "cron turn with no summaries" }),
+    });
+
+    await engine.assemble({
+      sessionId: "carryover-main-target",
+      sessionKey: mainSessionKey,
+      agentId,
+      carryoverMode: "allow",
+      messages: [],
+      tokenBudget: 8_000,
+    });
+
+    const targetConversation = await engine
+      .getConversationStore()
+      .getConversationBySessionId("carryover-main-target");
+    expect(targetConversation).not.toBeNull();
+    expect(targetConversation?.sessionKey).toBe(mainSessionKey);
+
+    expect(
+      await engine.getSummaryStore().getContextSummaryIds(targetConversation!.conversationId),
+    ).toEqual([summaryId]);
   });
 });
 

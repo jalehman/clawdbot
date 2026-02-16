@@ -25,6 +25,7 @@ export class LegacyContextEngine implements ContextEngine {
 
   async ingest(_params: {
     sessionId: string;
+    sessionKey?: string;
     message: AgentMessage;
     isHeartbeat?: boolean;
   }): Promise<IngestResult> {
@@ -34,6 +35,7 @@ export class LegacyContextEngine implements ContextEngine {
 
   async assemble(params: {
     sessionId: string;
+    sessionKey?: string;
     messages: AgentMessage[];
     tokenBudget?: number;
   }): Promise<AssembleResult> {
@@ -49,6 +51,7 @@ export class LegacyContextEngine implements ContextEngine {
   async compact(params: {
     sessionId: string;
     sessionFile: string;
+    sessionKey?: string;
     tokenBudget?: number;
     currentTokenCount?: number;
     compactionTarget?: "budget" | "threshold";

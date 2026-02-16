@@ -585,6 +585,7 @@ export async function runEmbeddedPiAgent(
               const compactResult = await contextEngine.compact({
                 sessionId: params.sessionId,
                 sessionFile: params.sessionFile,
+                sessionKey: params.sessionKey,
                 agentId: params.agentId,
                 carryoverMode: params.lcmCarryoverMode,
                 tokenBudget: ctxInfo.tokens,

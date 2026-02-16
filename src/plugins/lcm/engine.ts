@@ -483,16 +483,24 @@ export class LcmContextEngine implements ContextEngine {
     return normalized || sessionId;
   }
 
+  private resolveConversationSessionKey(sessionKey?: string): string | undefined {
+    const normalized = typeof sessionKey === "string" ? sessionKey.trim() : "";
+    return normalized || undefined;
+  }
+
   /**
    * Ensure a conversation exists for this session and seed summary carryover
-   * from the most recent conversation for the same agent when creating new.
+   * from the most recent conversation for the same session key when creating new.
+   * Falls back to agent-level carryover for rows created before session-key support.
    */
   private async ensureConversationWithCarryover(params: {
     sessionId: string;
+    sessionKey?: string;
     agentId?: string;
     carryoverMode?: ContextCarryoverMode;
   }): Promise<ConversationRecord> {
     const resolvedAgentId = this.resolveConversationAgentId(params.sessionId, params.agentId);
+    const resolvedSessionKey = this.resolveConversationSessionKey(params.sessionKey);
     const existing = await this.conversationStore.getConversationBySessionId(params.sessionId);
     if (existing) {
       return existing;
@@ -501,16 +509,30 @@ export class LcmContextEngine implements ContextEngine {
     const conversation = await this.conversationStore.createConversation({
       sessionId: params.sessionId,
       agentId: resolvedAgentId,
+      sessionKey: resolvedSessionKey,
     });
 
     if (params.carryoverMode === "deny") {
       return conversation;
     }
 
-    const previousConversation = await this.conversationStore.getMostRecentConversationByAgent(
-      resolvedAgentId,
-      conversation.conversationId,
-    );
+    const previousConversation =
+      (resolvedSessionKey
+        ? await this.conversationStore.getMostRecentConversationBySessionKey(
+            resolvedSessionKey,
+            conversation.conversationId,
+          )
+        : null) ??
+      (resolvedSessionKey
+        ? await this.conversationStore.getMostRecentConversationByAgent(
+            resolvedAgentId,
+            conversation.conversationId,
+            { requireNullSessionKey: true },
+          )
+        : await this.conversationStore.getMostRecentConversationByAgent(
+            resolvedAgentId,
+            conversation.conversationId,
+          ));
     if (!previousConversation) {
       return conversation;
     }
@@ -531,6 +553,7 @@ export class LcmContextEngine implements ContextEngine {
   async bootstrap(params: {
     sessionId: string;
     sessionFile: string;
+    sessionKey?: string;
     agentId?: string;
     carryoverMode?: ContextCarryoverMode;
   }): Promise<BootstrapResult> {
@@ -539,6 +562,7 @@ export class LcmContextEngine implements ContextEngine {
     return this.conversationStore.withTransaction(async () => {
       const conversation = await this.ensureConversationWithCarryover({
         sessionId: params.sessionId,
+        sessionKey: params.sessionKey,
         agentId: params.agentId,
         carryoverMode: params.carryoverMode,
       });
@@ -602,6 +626,7 @@ export class LcmContextEngine implements ContextEngine {
 
   private async ingestSingle(params: {
     sessionId: string;
+    sessionKey?: string;
     message: AgentMessage;
     agentId?: string;
     carryoverMode?: ContextCarryoverMode;
@@ -617,6 +642,7 @@ export class LcmContextEngine implements ContextEngine {
       // Get or create conversation for this session and seed carryover summaries on create.
       const conversation = await this.ensureConversationWithCarryover({
         sessionId,
+        sessionKey: params.sessionKey,
         agentId: params.agentId,
         carryoverMode: params.carryoverMode,
       });
@@ -652,6 +678,7 @@ export class LcmContextEngine implements ContextEngine {
 
   async ingest(params: {
     sessionId: string;
+    sessionKey?: string;
     message: AgentMessage;
     agentId?: string;
     carryoverMode?: ContextCarryoverMode;
@@ -663,6 +690,7 @@ export class LcmContextEngine implements ContextEngine {
 
   async ingestBatch(params: {
     sessionId: string;
+    sessionKey?: string;
     messages: AgentMessage[];
     agentId?: string;
     carryoverMode?: ContextCarryoverMode;
@@ -677,6 +705,7 @@ export class LcmContextEngine implements ContextEngine {
       for (const message of params.messages) {
         const result = await this.ingestSingle({
           sessionId: params.sessionId,
+          sessionKey: params.sessionKey,
           message,
           agentId: params.agentId,
           carryoverMode: params.carryoverMode,
@@ -692,6 +721,7 @@ export class LcmContextEngine implements ContextEngine {
 
   async assemble(params: {
     sessionId: string;
+    sessionKey?: string;
     messages: AgentMessage[];
     agentId?: string;
     carryoverMode?: ContextCarryoverMode;
@@ -703,6 +733,7 @@ export class LcmContextEngine implements ContextEngine {
       const conversation = await this.conversationStore.withTransaction(() =>
         this.ensureConversationWithCarryover({
           sessionId: params.sessionId,
+          sessionKey: params.sessionKey,
           agentId: params.agentId,
           carryoverMode: params.carryoverMode,
         }),
@@ -764,6 +795,7 @@ export class LcmContextEngine implements ContextEngine {
   async compact(params: {
     sessionId: string;
     sessionFile: string;
+    sessionKey?: string;
     agentId?: string;
     carryoverMode?: ContextCarryoverMode;
     tokenBudget?: number;

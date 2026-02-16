@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 describe("lcm migration", () => {
-  it("adds agent_id and backfills legacy conversation rows", () => {
+  it("adds agent_id/session_key and backfills legacy conversation rows", () => {
     const dbPath = createDbPath("openclaw-lcm-migration-legacy-");
     const db = getLcmConnection(dbPath);
 
@@ -64,16 +64,20 @@ describe("lcm migration", () => {
 
     const columns = db.prepare(`PRAGMA table_info(conversations)`).all() as Array<{ name: string }>;
     expect(columns.some((column) => column.name === "agent_id")).toBe(true);
+    expect(columns.some((column) => column.name === "session_key")).toBe(true);
 
     const rows = db
-      .prepare(`SELECT session_id, agent_id FROM conversations ORDER BY conversation_id`)
+      .prepare(
+        `SELECT session_id, agent_id, session_key FROM conversations ORDER BY conversation_id`,
+      )
       .all() as Array<{
       session_id: string;
       agent_id: string;
+      session_key: string | null;
     }>;
     expect(rows).toEqual([
-      { session_id: "session-a", agent_id: "unknown" },
-      { session_id: "session-b", agent_id: "unknown" },
+      { session_id: "session-a", agent_id: "unknown", session_key: null },
+      { session_id: "session-b", agent_id: "unknown", session_key: null },
     ]);
 
     const index = db
@@ -82,6 +86,13 @@ describe("lcm migration", () => {
       )
       .get() as { name: string } | undefined;
     expect(index?.name).toBe("conversations_agent_created_idx");
+
+    const sessionKeyIndex = db
+      .prepare(
+        `SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'conversations_session_key_created_idx'`,
+      )
+      .get() as { name: string } | undefined;
+    expect(sessionKeyIndex?.name).toBe("conversations_session_key_created_idx");
   });
 
   it("uses session-to-agent mapping when rerunning on partially populated data", () => {
@@ -158,6 +169,57 @@ describe("lcm conversation store", () => {
     await expect(
       conversationStore.getMostRecentConversationByAgent("agent-missing"),
     ).resolves.toBeNull();
+  });
+
+  it("stores session keys and finds the most recent conversation by session key", async () => {
+    const { db, conversationStore } = createStores();
+    const mainSessionKey = "agent:main:main";
+    const cronSessionKey = "agent:main:cron_1";
+
+    const mainOlder = await conversationStore.createConversation({
+      sessionId: "main-older",
+      agentId: "main",
+      sessionKey: mainSessionKey,
+    });
+    const cronNewer = await conversationStore.createConversation({
+      sessionId: "cron-newer",
+      agentId: "main",
+      sessionKey: cronSessionKey,
+    });
+    const mainNewer = await conversationStore.createConversation({
+      sessionId: "main-newer",
+      agentId: "main",
+      sessionKey: mainSessionKey,
+    });
+    await conversationStore.createConversation({
+      sessionId: "legacy-main",
+      agentId: "main",
+    });
+
+    db.prepare(
+      `UPDATE conversations SET created_at = ?, updated_at = ? WHERE conversation_id = ?`,
+    ).run("2026-01-01 00:00:00", "2026-01-01 00:00:00", mainOlder.conversationId);
+    db.prepare(
+      `UPDATE conversations SET created_at = ?, updated_at = ? WHERE conversation_id = ?`,
+    ).run("2026-01-01 00:10:00", "2026-01-01 00:10:00", cronNewer.conversationId);
+    db.prepare(
+      `UPDATE conversations SET created_at = ?, updated_at = ? WHERE conversation_id = ?`,
+    ).run("2026-01-01 00:20:00", "2026-01-01 00:20:00", mainNewer.conversationId);
+
+    const recentMain =
+      await conversationStore.getMostRecentConversationBySessionKey(mainSessionKey);
+    expect(recentMain?.conversationId).toBe(mainNewer.conversationId);
+    expect(recentMain?.sessionKey).toBe(mainSessionKey);
+
+    const previousMain = await conversationStore.getMostRecentConversationBySessionKey(
+      mainSessionKey,
+      mainNewer.conversationId,
+    );
+    expect(previousMain?.conversationId).toBe(mainOlder.conversationId);
+
+    const missingSessionKey =
+      await conversationStore.getMostRecentConversationBySessionKey("agent:missing");
+    expect(missingSessionKey).toBeNull();
   });
 });
 
