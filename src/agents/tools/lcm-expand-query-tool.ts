@@ -404,6 +404,7 @@ export function createLcmExpandQueryTool(options?: {
           maxTokens,
         });
 
+        const childIdem = crypto.randomUUID();
         const response = await callGateway<{ runId?: string }>({
           method: "agent",
           params: {
@@ -411,6 +412,7 @@ export function createLcmExpandQueryTool(options?: {
             sessionKey: childSessionKey,
             deliver: false,
             lane: AGENT_LANE_SUBAGENT,
+            idempotencyKey: childIdem,
             extraSystemPrompt: buildSubagentSystemPrompt({
               requesterSessionKey,
               childSessionKey,
