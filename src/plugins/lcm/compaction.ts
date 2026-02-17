@@ -83,7 +83,6 @@ function generateSummaryId(content: string): string {
 /** Maximum characters for the deterministic fallback truncation (512 tokens * 4 chars). */
 const FALLBACK_MAX_CHARS = 512 * 4;
 const DEFAULT_LEAF_CHUNK_TOKENS = 20_000;
-const CONDENSED_CHUNK_MAX_ITEMS = 17;
 const CONDENSED_MIN_INPUT_RATIO = 0.1;
 
 // ── CompactionEngine ─────────────────────────────────────────────────────────
@@ -590,8 +589,9 @@ export class CompactionEngine {
   /**
    * Select the oldest contiguous summary chunk for condensed compaction.
    *
-   * The chunk is bounded by both item count (~17) and summary-token budget
-   * (`leafChunkTokens`) to keep each pass ratio-stable.
+   * The chunk is bounded by summary-token budget (`leafChunkTokens`), matching
+   * the leaf pass' token-budgeted chunking. This naturally produces
+   * ~ceil(leafChunkTokens / leafTargetTokens) summaries per chunk.
    */
   private async selectOldestCondensedChunk(
     conversationId: number,
@@ -629,16 +629,13 @@ export class CompactionEngine {
       }
       const tokenCount = this.resolveSummaryTokenCount(summary);
 
-      if (chunk.length >= CONDENSED_CHUNK_MAX_ITEMS) {
-        break;
-      }
       if (chunk.length > 0 && summaryTokens + tokenCount > chunkTokenBudget) {
         break;
       }
 
       chunk.push(item);
       summaryTokens += tokenCount;
-      if (chunk.length >= CONDENSED_CHUNK_MAX_ITEMS || summaryTokens >= chunkTokenBudget) {
+      if (summaryTokens >= chunkTokenBudget) {
         break;
       }
     }
