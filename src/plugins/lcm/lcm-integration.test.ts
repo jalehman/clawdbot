@@ -782,6 +782,35 @@ describe("LCM integration: compaction", () => {
     expect(contextItems.length).toBeLessThan(10);
   });
 
+  it("compaction propagates referenced file ids into summary metadata", async () => {
+    await ingestMessages(convStore, sumStore, 8, {
+      contentFn: (i) => {
+        if (i === 1) {
+          return "Review [LCM File: file_aaaabbbbccccdddd | spec.md | text/markdown | 1,024 bytes]";
+        }
+        if (i === 2) {
+          return "Also inspect file_1111222233334444 and file_aaaabbbbccccdddd for context.";
+        }
+        return `Turn ${i}: regular planning text.`;
+      },
+      tokenCountFn: (_i, content) => estimateTokens(content),
+    });
+
+    const summarize = vi.fn(async () => "Condensed file-aware summary.");
+    const result = await compactionEngine.compact({
+      conversationId: CONV_ID,
+      tokenBudget: 10_000,
+      summarize,
+      force: true,
+    });
+
+    expect(result.actionTaken).toBe(true);
+
+    const leafSummary = sumStore._summaries.find((summary) => summary.kind === "leaf");
+    expect(leafSummary).toBeDefined();
+    expect(leafSummary!.fileIds).toEqual(["file_aaaabbbbccccdddd", "file_1111222233334444"]);
+  });
+
   it("compaction emits one durable compaction part for a leaf-only pass", async () => {
     await convStore.createConversation({ sessionId: "leaf-only-session" });
     await ingestMessages(convStore, sumStore, 5, {

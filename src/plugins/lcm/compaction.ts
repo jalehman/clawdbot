@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ConversationStore, CreateMessagePartInput } from "./store/conversation-store.js";
 import type { SummaryStore, SummaryRecord, ContextItemRecord } from "./store/summary-store.js";
+import { extractFileIdsFromContent } from "./large-files.js";
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -84,6 +85,18 @@ function generateSummaryId(content: string): string {
 const FALLBACK_MAX_CHARS = 512 * 4;
 const DEFAULT_LEAF_CHUNK_TOKENS = 20_000;
 const CONDENSED_MIN_INPUT_RATIO = 0.1;
+
+function dedupeOrderedIds(ids: Iterable<string>): string[] {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const id of ids) {
+    if (!seen.has(id)) {
+      seen.add(id);
+      ordered.push(id);
+    }
+  }
+  return ordered;
+}
 
 // ── CompactionEngine ─────────────────────────────────────────────────────────
 
@@ -708,6 +721,9 @@ export class CompactionEngine {
     }
 
     const concatenated = messageContents.map((m) => m.content).join("\n\n");
+    const fileIds = dedupeOrderedIds(
+      messageContents.flatMap((message) => extractFileIdsFromContent(message.content)),
+    );
     const summary = await this.summarizeWithEscalation({
       sourceText: concatenated,
       summarize,
@@ -727,6 +743,7 @@ export class CompactionEngine {
       kind: "leaf",
       content: summary.content,
       tokenCount,
+      fileIds,
     });
 
     // Link to source messages
@@ -771,6 +788,12 @@ export class CompactionEngine {
     }
 
     const concatenated = summaryRecords.map((s) => s.content).join("\n\n");
+    const fileIds = dedupeOrderedIds(
+      summaryRecords.flatMap((summary) => [
+        ...summary.fileIds,
+        ...extractFileIdsFromContent(summary.content),
+      ]),
+    );
     const condensed = await this.summarizeWithEscalation({
       sourceText: concatenated,
       summarize,
@@ -789,6 +812,7 @@ export class CompactionEngine {
       kind: "condensed",
       content: condensed.content,
       tokenCount,
+      fileIds,
     });
 
     // Link to parent summaries

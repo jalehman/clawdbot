@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -18,9 +18,11 @@ function createTestConfig(databasePath: string): LcmConfig {
     databasePath,
     contextThreshold: 0.75,
     freshTailCount: 8,
+    leafChunkTokens: 20_000,
     leafTargetTokens: 600,
     condensedTargetTokens: 900,
     maxExpandTokens: 4000,
+    largeFileTokenThreshold: 25_000,
     autocompactDisabled: false,
   };
 }
@@ -48,6 +50,23 @@ function createEngineWithConfig(overrides: Partial<LcmConfig>): LcmContextEngine
     ...createTestConfig(join(tempDir, "lcm.db")),
     ...overrides,
   });
+}
+
+async function withTempHome<T>(run: (homeDir: string) => Promise<T>): Promise<T> {
+  const originalHome = process.env.HOME;
+  const tempHome = mkdtempSync(join(tmpdir(), "openclaw-lcm-home-"));
+  tempDirs.push(tempHome);
+  process.env.HOME = tempHome;
+
+  try {
+    return await run(tempHome);
+  } finally {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+  }
 }
 
 function makeMessage(params: { role?: string; content: unknown }): AgentMessage {
@@ -194,6 +213,80 @@ describe("LcmContextEngine.ingest content extraction", () => {
     expect(storedMessages).toHaveLength(1);
     expect(storedMessages[0].content).toBe("HEARTBEAT_OK");
     expect(storedMessages[0].content).not.toContain('{"type":"text"');
+  });
+
+  it("intercepts oversized <file> blocks and persists large file metadata", async () => {
+    await withTempHome(async () => {
+      const engine = createEngineWithConfig({ largeFileTokenThreshold: 20 });
+      const sessionId = randomUUID();
+      const fileText = `${"line about architecture\n".repeat(160)}closing notes`;
+      const messageContent = `<file name="lcm-paper.md" mime="text/markdown">${fileText}</file>`;
+
+      await engine.ingest({
+        sessionId,
+        message: makeMessage({ role: "user", content: messageContent }),
+      });
+
+      const conversation = await engine
+        .getConversationStore()
+        .getConversationBySessionId(sessionId);
+      expect(conversation).not.toBeNull();
+
+      const messages = await engine
+        .getConversationStore()
+        .getMessages(conversation!.conversationId);
+      expect(messages).toHaveLength(1);
+      expect(messages[0].content).toContain("[LCM File: file_");
+      expect(messages[0].content).toContain("Exploration Summary:");
+      expect(messages[0].content).not.toContain("<file name=");
+
+      const fileIdMatch = messages[0].content.match(/file_[a-f0-9]{16}/);
+      expect(fileIdMatch).not.toBeNull();
+      const fileId = fileIdMatch![0];
+
+      const storedFile = await engine.getSummaryStore().getLargeFile(fileId);
+      expect(storedFile).not.toBeNull();
+      expect(storedFile!.fileName).toBe("lcm-paper.md");
+      expect(storedFile!.mimeType).toBe("text/markdown");
+      expect(storedFile!.storageUri).toContain(
+        `.openclaw/lcm-files/${conversation!.conversationId}/`,
+      );
+      expect(readFileSync(storedFile!.storageUri, "utf8")).toBe(fileText);
+
+      const parts = await engine.getConversationStore().getMessageParts(messages[0].messageId);
+      expect(parts).toHaveLength(1);
+      expect(parts[0].textContent).toContain("[LCM File: file_");
+      expect(parts[0].textContent).not.toContain("<file name=");
+    });
+  });
+
+  it("keeps <file> blocks inline when below the large-file threshold", async () => {
+    await withTempHome(async () => {
+      const engine = createEngineWithConfig({ largeFileTokenThreshold: 100_000 });
+      const sessionId = randomUUID();
+      const messageContent = '<file name="small.json" mime="application/json">{"ok":true}</file>';
+
+      await engine.ingest({
+        sessionId,
+        message: makeMessage({ role: "user", content: messageContent }),
+      });
+
+      const conversation = await engine
+        .getConversationStore()
+        .getConversationBySessionId(sessionId);
+      expect(conversation).not.toBeNull();
+
+      const messages = await engine
+        .getConversationStore()
+        .getMessages(conversation!.conversationId);
+      expect(messages).toHaveLength(1);
+      expect(messages[0].content).toBe(messageContent);
+
+      const largeFiles = await engine
+        .getSummaryStore()
+        .getLargeFilesByConversation(conversation!.conversationId);
+      expect(largeFiles).toHaveLength(0);
+    });
   });
 });
 

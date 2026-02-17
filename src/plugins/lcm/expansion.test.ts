@@ -8,9 +8,11 @@ const BASE_CONFIG: LcmConfig = {
   databasePath: ":memory:",
   contextThreshold: 0.75,
   freshTailCount: 8,
+  leafChunkTokens: 20_000,
   leafTargetTokens: 600,
   condensedTargetTokens: 900,
   maxExpandTokens: 250,
+  largeFileTokenThreshold: 25_000,
   autocompactDisabled: false,
 };
 

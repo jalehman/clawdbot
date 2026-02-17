@@ -1,5 +1,9 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
+import { randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type {
   ContextEngine,
   ContextEngineInfo,
@@ -14,6 +18,12 @@ import { CompactionEngine, type CompactionConfig } from "./compaction.js";
 import { resolveLcmConfig, type LcmConfig } from "./db/config.js";
 import { getLcmConnection, closeLcmConnection } from "./db/connection.js";
 import { runLcmMigrations } from "./db/migration.js";
+import {
+  extensionFromNameOrMime,
+  formatFileReference,
+  generateExplorationSummary,
+  parseFileBlocks,
+} from "./large-files.js";
 import { RetrievalEngine } from "./retrieval.js";
 import {
   ConversationStore,
@@ -406,6 +416,8 @@ export class LcmContextEngine implements ContextEngine {
   private retrieval: RetrievalEngine;
   private migrated = false;
   private sessionOperationQueues = new Map<string, Promise<void>>();
+  private largeFileTextSummarizerResolved = false;
+  private largeFileTextSummarizer?: (prompt: string) => Promise<string | null>;
 
   constructor(config?: LcmConfig) {
     this.config = config ?? resolveLcmConfig();
@@ -523,6 +535,142 @@ export class LcmContextEngine implements ContextEngine {
     return createEmergencyFallbackSummarize();
   }
 
+  /**
+   * Resolve an optional model-backed summarizer for large text file exploration.
+   *
+   * This is opt-in via env so ingest remains deterministic and lightweight when
+   * no summarization model is configured.
+   */
+  private async resolveLargeFileTextSummarizer(): Promise<
+    ((prompt: string) => Promise<string | null>) | undefined
+  > {
+    if (this.largeFileTextSummarizerResolved) {
+      return this.largeFileTextSummarizer;
+    }
+    this.largeFileTextSummarizerResolved = true;
+
+    const provider = process.env.LCM_LARGE_FILE_SUMMARY_PROVIDER?.trim() ?? "";
+    const model = process.env.LCM_LARGE_FILE_SUMMARY_MODEL?.trim() ?? "";
+    if (!provider || !model) {
+      return undefined;
+    }
+
+    try {
+      const summarize = await createLcmSummarizeFromLegacyParams({
+        legacyParams: { provider, model },
+      });
+      if (!summarize) {
+        return undefined;
+      }
+
+      this.largeFileTextSummarizer = async (prompt: string): Promise<string | null> => {
+        const summary = await summarize(prompt, false);
+        if (typeof summary !== "string") {
+          return null;
+        }
+        const trimmed = summary.trim();
+        return trimmed.length > 0 ? trimmed : null;
+      };
+      return this.largeFileTextSummarizer;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Persist intercepted large-file text payloads to ~/.openclaw/lcm-files. */
+  private async storeLargeFileContent(params: {
+    conversationId: number;
+    fileId: string;
+    extension: string;
+    content: string;
+  }): Promise<string> {
+    const dir = join(homedir(), ".openclaw", "lcm-files", String(params.conversationId));
+    await mkdir(dir, { recursive: true });
+
+    const normalizedExtension = params.extension.replace(/[^a-z0-9]/gi, "").toLowerCase() || "txt";
+    const filePath = join(dir, `${params.fileId}.${normalizedExtension}`);
+    await writeFile(filePath, params.content, "utf8");
+    return filePath;
+  }
+
+  /**
+   * Intercept oversized <file> blocks before persistence and replace them with
+   * compact file references backed by large_files records.
+   */
+  private async interceptLargeFiles(params: {
+    conversationId: number;
+    content: string;
+  }): Promise<{ rewrittenContent: string; fileIds: string[] } | null> {
+    const blocks = parseFileBlocks(params.content);
+    if (blocks.length === 0) {
+      return null;
+    }
+
+    const threshold = Math.max(1, this.config.largeFileTokenThreshold);
+    const summarizeText = await this.resolveLargeFileTextSummarizer();
+    const fileIds: string[] = [];
+    const rewrittenSegments: string[] = [];
+    let cursor = 0;
+    let interceptedAny = false;
+
+    for (const block of blocks) {
+      const blockTokens = estimateTokens(block.text);
+      if (blockTokens < threshold) {
+        continue;
+      }
+
+      interceptedAny = true;
+      const fileId = `file_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+      const extension = extensionFromNameOrMime(block.fileName, block.mimeType);
+      const storageUri = await this.storeLargeFileContent({
+        conversationId: params.conversationId,
+        fileId,
+        extension,
+        content: block.text,
+      });
+      const byteSize = Buffer.byteLength(block.text, "utf8");
+      const explorationSummary = await generateExplorationSummary({
+        content: block.text,
+        fileName: block.fileName,
+        mimeType: block.mimeType,
+        summarizeText,
+      });
+
+      await this.summaryStore.insertLargeFile({
+        fileId,
+        conversationId: params.conversationId,
+        fileName: block.fileName,
+        mimeType: block.mimeType,
+        byteSize,
+        storageUri,
+        explorationSummary,
+      });
+
+      rewrittenSegments.push(params.content.slice(cursor, block.start));
+      rewrittenSegments.push(
+        formatFileReference({
+          fileId,
+          fileName: block.fileName,
+          mimeType: block.mimeType,
+          byteSize,
+          summary: explorationSummary,
+        }),
+      );
+      cursor = block.end;
+      fileIds.push(fileId);
+    }
+
+    if (!interceptedAny) {
+      return null;
+    }
+
+    rewrittenSegments.push(params.content.slice(cursor));
+    return {
+      rewrittenContent: rewrittenSegments.join(""),
+      fileIds,
+    };
+  }
+
   // ── ContextEngine interface ─────────────────────────────────────────────
 
   async bootstrap(params: { sessionId: string; sessionFile: string }): Promise<BootstrapResult> {
@@ -603,6 +751,24 @@ export class LcmContextEngine implements ContextEngine {
     const conversation = await this.conversationStore.getOrCreateConversation(sessionId);
     const conversationId = conversation.conversationId;
 
+    let messageForParts = message;
+    if (stored.role === "user") {
+      const intercepted = await this.interceptLargeFiles({
+        conversationId,
+        content: stored.content,
+      });
+      if (intercepted) {
+        stored.content = intercepted.rewrittenContent;
+        stored.tokenCount = estimateTokens(stored.content);
+        if ("content" in message) {
+          messageForParts = {
+            ...message,
+            content: stored.content,
+          } as AgentMessage;
+        }
+      }
+    }
+
     // Determine next sequence number
     const maxSeq = await this.conversationStore.getMaxSeq(conversationId);
     const seq = maxSeq + 1;
@@ -619,7 +785,7 @@ export class LcmContextEngine implements ContextEngine {
       msgRecord.messageId,
       buildMessageParts({
         sessionId,
-        message,
+        message: messageForParts,
         fallbackContent: stored.content,
       }),
     );

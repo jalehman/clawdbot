@@ -10,6 +10,7 @@ export type LcmConfig = {
   leafTargetTokens: number;
   condensedTargetTokens: number;
   maxExpandTokens: number;
+  largeFileTokenThreshold: number;
   autocompactDisabled: boolean;
 };
 
@@ -23,6 +24,7 @@ export function resolveLcmConfig(env: NodeJS.ProcessEnv = process.env): LcmConfi
     leafTargetTokens: parseInt(env.LCM_LEAF_TARGET_TOKENS ?? "1200", 10),
     condensedTargetTokens: parseInt(env.LCM_CONDENSED_TARGET_TOKENS ?? "2000", 10),
     maxExpandTokens: parseInt(env.LCM_MAX_EXPAND_TOKENS ?? "4000", 10),
+    largeFileTokenThreshold: parseInt(env.LCM_LARGE_FILE_TOKEN_THRESHOLD ?? "25000", 10),
     autocompactDisabled: env.LCM_AUTOCOMPACT_DISABLED === "true",
   };
 }
