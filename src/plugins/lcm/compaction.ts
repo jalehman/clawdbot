@@ -30,6 +30,8 @@ export interface CompactionConfig {
   contextThreshold: number;
   /** Number of fresh tail turns to protect (default 8) */
   freshTailCount: number;
+  /** Max source tokens to compact per leaf/condensed chunk (default 20000) */
+  leafChunkTokens?: number;
   /** Target tokens for leaf summaries (default 600) */
   leafTargetTokens: number;
   /** Target tokens for condensed summaries (default 900) */
@@ -40,6 +42,25 @@ export interface CompactionConfig {
 
 type CompactionLevel = "normal" | "aggressive" | "fallback";
 type CompactionPass = "leaf" | "condensed";
+type CompactionSummarizeOptions = {
+  previousSummary?: string;
+  isCondensed?: boolean;
+};
+type CompactionSummarizeFn = (
+  text: string,
+  aggressive?: boolean,
+  options?: CompactionSummarizeOptions,
+) => Promise<string>;
+type PassResult = { summaryId: string; level: CompactionLevel };
+type LeafChunkSelection = {
+  items: ContextItemRecord[];
+  rawTokensOutsideTail: number;
+  threshold: number;
+};
+type CondensedChunkSelection = {
+  items: ContextItemRecord[];
+  summaryTokens: number;
+};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -61,6 +82,9 @@ function generateSummaryId(content: string): string {
 
 /** Maximum characters for the deterministic fallback truncation (512 tokens * 4 chars). */
 const FALLBACK_MAX_CHARS = 512 * 4;
+const DEFAULT_LEAF_CHUNK_TOKENS = 20_000;
+const CONDENSED_CHUNK_MAX_ITEMS = 17;
+const CONDENSED_MIN_INPUT_RATIO = 0.1;
 
 // ── CompactionEngine ─────────────────────────────────────────────────────────
 
@@ -106,23 +130,59 @@ export class CompactionEngine {
     };
   }
 
+  /**
+   * Evaluate whether the raw-message leaf trigger is active.
+   *
+   * Counts message tokens outside the protected fresh tail and compares against
+   * `leafChunkTokens`. This lets callers trigger a soft incremental leaf pass
+   * before the full context threshold is breached.
+   */
+  async evaluateLeafTrigger(conversationId: number): Promise<{
+    shouldCompact: boolean;
+    rawTokensOutsideTail: number;
+    threshold: number;
+  }> {
+    const rawTokensOutsideTail = await this.countRawTokensOutsideFreshTail(conversationId);
+    const threshold = this.resolveLeafChunkTokens();
+    return {
+      shouldCompact: rawTokensOutsideTail >= threshold,
+      rawTokensOutsideTail,
+      threshold,
+    };
+  }
+
   // ── compact ──────────────────────────────────────────────────────────────
 
-  /** Run a single compaction round for a conversation. */
+  /** Run a full compaction sweep for a conversation. */
   async compact(input: {
     conversationId: number;
     tokenBudget: number;
     /** LLM call function for summarization */
-    summarize: (text: string, aggressive?: boolean) => Promise<string>;
+    summarize: CompactionSummarizeFn;
     force?: boolean;
+  }): Promise<CompactionResult> {
+    return this.compactFullSweep(input);
+  }
+
+  /**
+   * Run a single leaf pass against the oldest compactable raw chunk.
+   *
+   * This is the soft-trigger path used for incremental maintenance.
+   */
+  async compactLeaf(input: {
+    conversationId: number;
+    tokenBudget: number;
+    summarize: CompactionSummarizeFn;
+    force?: boolean;
+    previousSummaryContent?: string;
   }): Promise<CompactionResult> {
     const { conversationId, tokenBudget, summarize, force } = input;
 
     const tokensBefore = await this.summaryStore.getContextTokenCount(conversationId);
     const threshold = Math.floor(this.config.contextThreshold * tokenBudget);
+    const leafTrigger = await this.evaluateLeafTrigger(conversationId);
 
-    // Check if compaction is needed
-    if (!force && tokensBefore <= threshold) {
+    if (!force && tokensBefore <= threshold && !leafTrigger.shouldCompact) {
       return {
         actionTaken: false,
         tokensBefore,
@@ -131,9 +191,72 @@ export class CompactionEngine {
       };
     }
 
-    // Get all context items ordered by ordinal
-    const contextItems = await this.summaryStore.getContextItems(conversationId);
+    const leafChunk = await this.selectOldestLeafChunk(conversationId);
+    if (leafChunk.items.length === 0) {
+      return {
+        actionTaken: false,
+        tokensBefore,
+        tokensAfter: tokensBefore,
+        condensed: false,
+      };
+    }
 
+    const leafResult = await this.leafPass(
+      conversationId,
+      leafChunk.items,
+      summarize,
+      input.previousSummaryContent,
+    );
+    const tokensAfter = await this.summaryStore.getContextTokenCount(conversationId);
+
+    await this.persistCompactionEvents({
+      conversationId,
+      tokensBefore,
+      tokensAfterLeaf: tokensAfter,
+      tokensAfterFinal: tokensAfter,
+      leafResult: { summaryId: leafResult.summaryId, level: leafResult.level },
+      condenseResult: null,
+    });
+
+    return {
+      actionTaken: true,
+      tokensBefore,
+      tokensAfter,
+      createdSummaryId: leafResult.summaryId,
+      condensed: false,
+      level: leafResult.level,
+    };
+  }
+
+  /**
+   * Run a hard-trigger sweep:
+   *
+   * Phase 1: repeatedly compact raw-message chunks outside the fresh tail.
+   * Phase 2: repeatedly condense oldest summary chunks while chunk utilization
+   *          remains high enough to be worthwhile.
+   */
+  async compactFullSweep(input: {
+    conversationId: number;
+    tokenBudget: number;
+    summarize: CompactionSummarizeFn;
+    force?: boolean;
+  }): Promise<CompactionResult> {
+    const { conversationId, tokenBudget, summarize, force } = input;
+
+    const tokensBefore = await this.summaryStore.getContextTokenCount(conversationId);
+    const threshold = Math.floor(this.config.contextThreshold * tokenBudget);
+    const leafTrigger = await this.evaluateLeafTrigger(conversationId);
+
+    if (!force && tokensBefore <= threshold && !leafTrigger.shouldCompact) {
+      return {
+        actionTaken: false,
+        tokensBefore,
+        tokensAfter: tokensBefore,
+        condensed: false,
+      };
+    }
+
+    const contextItems = await this.summaryStore.getContextItems(conversationId);
     if (contextItems.length === 0) {
       return {
         actionTaken: false,
@@ -143,96 +266,94 @@ export class CompactionEngine {
       };
     }
 
-    // Separate into messages and summaries
-    const messageItems = contextItems.filter((ci) => ci.itemType === "message");
-    const summaryItems = contextItems.filter((ci) => ci.itemType === "summary");
+    let actionTaken = false;
+    let condensed = false;
+    let createdSummaryId: string | undefined;
+    let level: CompactionLevel | undefined;
+    let previousSummaryContent: string | undefined;
+    let previousTokens = tokensBefore;
 
-    // ── Leaf Pass ─────────────────────────────────────────────────────────
-    // Summarize oldest non-fresh messages
+    // Phase 1: leaf passes over oldest raw chunks outside the protected tail.
+    while (true) {
+      const leafChunk = await this.selectOldestLeafChunk(conversationId);
+      if (leafChunk.items.length === 0) {
+        break;
+      }
 
-    // Protect the fresh tail: the last freshTailCount context items overall
-    const freshCutoff = Math.max(0, contextItems.length - this.config.freshTailCount);
-    // Messages eligible for compaction: those before the fresh tail boundary
-    const freshOrdinal = contextItems[freshCutoff]?.ordinal ?? Infinity;
-    const compactableMessages = messageItems.filter((ci) => ci.ordinal < freshOrdinal);
-
-    let leafResult: {
-      summaryId: string;
-      level: CompactionLevel;
-    } | null = null;
-
-    if (compactableMessages.length > 0) {
-      leafResult = await this.leafPass(conversationId, compactableMessages, summarize);
-    }
-
-    // Check if we are now under threshold after the leaf pass
-    const tokensAfterLeaf = await this.summaryStore.getContextTokenCount(conversationId);
-    if (tokensAfterLeaf <= threshold) {
+      const passTokensBefore = await this.summaryStore.getContextTokenCount(conversationId);
+      const leafResult = await this.leafPass(
+        conversationId,
+        leafChunk.items,
+        summarize,
+        previousSummaryContent,
+      );
+      const passTokensAfter = await this.summaryStore.getContextTokenCount(conversationId);
       await this.persistCompactionEvents({
         conversationId,
-        tokensBefore,
-        tokensAfterLeaf,
-        tokensAfterFinal: tokensAfterLeaf,
-        leafResult,
+        tokensBefore: passTokensBefore,
+        tokensAfterLeaf: passTokensAfter,
+        tokensAfterFinal: passTokensAfter,
+        leafResult: { summaryId: leafResult.summaryId, level: leafResult.level },
         condenseResult: null,
       });
 
-      return {
-        actionTaken: true,
-        tokensBefore,
-        tokensAfter: tokensAfterLeaf,
-        createdSummaryId: leafResult?.summaryId,
-        condensed: false,
-        level: leafResult?.level,
-      };
+      actionTaken = true;
+      createdSummaryId = leafResult.summaryId;
+      level = leafResult.level;
+      previousSummaryContent = leafResult.content;
+
+      if (passTokensAfter >= passTokensBefore || passTokensAfter >= previousTokens) {
+        break;
+      }
+      previousTokens = passTokensAfter;
     }
 
-    // ── Condensed Pass ────────────────────────────────────────────────────
-    // Condense all summaries currently in context
+    // Phase 2: condensed passes over ratio-sized summary chunks.
+    while (true) {
+      const condensedChunk = await this.selectOldestCondensedChunk(conversationId);
+      if (condensedChunk.items.length < 2) {
+        break;
+      }
+      if (condensedChunk.summaryTokens < this.resolveCondensedMinChunkTokens()) {
+        break;
+      }
 
-    const updatedContextItems = await this.summaryStore.getContextItems(conversationId);
-    const currentSummaryItems = updatedContextItems.filter((ci) => ci.itemType === "summary");
-
-    if (currentSummaryItems.length === 0) {
-      // Nothing to condense; return what we have
+      const passTokensBefore = await this.summaryStore.getContextTokenCount(conversationId);
+      const condenseResult = await this.condensedPass(
+        conversationId,
+        condensedChunk.items,
+        summarize,
+      );
+      const passTokensAfter = await this.summaryStore.getContextTokenCount(conversationId);
       await this.persistCompactionEvents({
         conversationId,
-        tokensBefore,
-        tokensAfterLeaf,
-        tokensAfterFinal: tokensAfterLeaf,
-        leafResult,
-        condenseResult: null,
+        tokensBefore: passTokensBefore,
+        tokensAfterLeaf: passTokensBefore,
+        tokensAfterFinal: passTokensAfter,
+        leafResult: null,
+        condenseResult,
       });
 
-      return {
-        actionTaken: leafResult !== null,
-        tokensBefore,
-        tokensAfter: tokensAfterLeaf,
-        createdSummaryId: leafResult?.summaryId,
-        condensed: false,
-        level: leafResult?.level,
-      };
+      actionTaken = true;
+      condensed = true;
+      createdSummaryId = condenseResult.summaryId;
+      level = condenseResult.level;
+
+      if (passTokensAfter >= passTokensBefore || passTokensAfter >= previousTokens) {
+        break;
+      }
+      previousTokens = passTokensAfter;
     }
 
-    const condenseResult = await this.condensedPass(conversationId, currentSummaryItems, summarize);
-
-    const tokensAfterCondense = await this.summaryStore.getContextTokenCount(conversationId);
-    await this.persistCompactionEvents({
-      conversationId,
-      tokensBefore,
-      tokensAfterLeaf,
-      tokensAfterFinal: tokensAfterCondense,
-      leafResult,
-      condenseResult,
-    });
+    const tokensAfter = await this.summaryStore.getContextTokenCount(conversationId);
 
     return {
-      actionTaken: true,
+      actionTaken,
       tokensBefore,
-      tokensAfter: tokensAfterCondense,
-      createdSummaryId: condenseResult.summaryId,
-      condensed: true,
-      level: condenseResult.level,
+      tokensAfter,
+      createdSummaryId,
+      condensed,
+      level,
     };
   }
 
@@ -244,7 +365,7 @@ export class CompactionEngine {
     tokenBudget: number;
     targetTokens?: number;
     currentTokens?: number;
-    summarize: (text: string, aggressive?: boolean) => Promise<string>;
+    summarize: CompactionSummarizeFn;
   }): Promise<{ success: boolean; rounds: number; finalTokens: number }> {
     const { conversationId, tokenBudget, summarize } = input;
     const targetTokens =
@@ -307,17 +428,273 @@ export class CompactionEngine {
     };
   }
 
+  // ── Private helpers ──────────────────────────────────────────────────────
+
+  /** Normalize configured leaf chunk size to a safe positive integer. */
+  private resolveLeafChunkTokens(): number {
+    if (
+      typeof this.config.leafChunkTokens === "number" &&
+      Number.isFinite(this.config.leafChunkTokens) &&
+      this.config.leafChunkTokens > 0
+    ) {
+      return Math.floor(this.config.leafChunkTokens);
+    }
+    return DEFAULT_LEAF_CHUNK_TOKENS;
+  }
+
+  /** Normalize configured fresh tail count to a safe non-negative integer. */
+  private resolveFreshTailCount(): number {
+    if (
+      typeof this.config.freshTailCount === "number" &&
+      Number.isFinite(this.config.freshTailCount) &&
+      this.config.freshTailCount > 0
+    ) {
+      return Math.floor(this.config.freshTailCount);
+    }
+    return 0;
+  }
+
+  /**
+   * Compute the ordinal boundary for protected fresh messages.
+   *
+   * Messages with ordinal >= returned value are preserved as fresh tail.
+   */
+  private resolveFreshTailOrdinal(contextItems: ContextItemRecord[]): number {
+    const freshTailCount = this.resolveFreshTailCount();
+    if (freshTailCount <= 0) {
+      return Infinity;
+    }
+
+    const rawMessageItems = contextItems.filter(
+      (item) => item.itemType === "message" && item.messageId != null,
+    );
+    if (rawMessageItems.length === 0) {
+      return Infinity;
+    }
+
+    const tailStartIdx = Math.max(0, rawMessageItems.length - freshTailCount);
+    return rawMessageItems[tailStartIdx]?.ordinal ?? Infinity;
+  }
+
+  /** Resolve message token count with a content-length fallback. */
+  private async getMessageTokenCount(messageId: number): Promise<number> {
+    const message = await this.conversationStore.getMessageById(messageId);
+    if (!message) {
+      return 0;
+    }
+    if (
+      typeof message.tokenCount === "number" &&
+      Number.isFinite(message.tokenCount) &&
+      message.tokenCount > 0
+    ) {
+      return message.tokenCount;
+    }
+    return estimateTokens(message.content);
+  }
+
+  /** Sum raw message tokens outside the protected fresh tail. */
+  private async countRawTokensOutsideFreshTail(conversationId: number): Promise<number> {
+    const contextItems = await this.summaryStore.getContextItems(conversationId);
+    const freshTailOrdinal = this.resolveFreshTailOrdinal(contextItems);
+    let rawTokens = 0;
+
+    for (const item of contextItems) {
+      if (item.ordinal >= freshTailOrdinal) {
+        break;
+      }
+      if (item.itemType !== "message" || item.messageId == null) {
+        continue;
+      }
+      rawTokens += await this.getMessageTokenCount(item.messageId);
+    }
+
+    return rawTokens;
+  }
+
+  /**
+   * Select the oldest contiguous raw-message chunk outside fresh tail.
+   *
+   * The selected chunk size is capped by `leafChunkTokens`, but we always pick
+   * at least one message when any compactable message exists.
+   */
+  private async selectOldestLeafChunk(conversationId: number): Promise<LeafChunkSelection> {
+    const contextItems = await this.summaryStore.getContextItems(conversationId);
+    const freshTailOrdinal = this.resolveFreshTailOrdinal(contextItems);
+    const threshold = this.resolveLeafChunkTokens();
+
+    let rawTokensOutsideTail = 0;
+    for (const item of contextItems) {
+      if (item.ordinal >= freshTailOrdinal) {
+        break;
+      }
+      if (item.itemType !== "message" || item.messageId == null) {
+        continue;
+      }
+      rawTokensOutsideTail += await this.getMessageTokenCount(item.messageId);
+    }
+
+    const chunk: ContextItemRecord[] = [];
+    let chunkTokens = 0;
+    let started = false;
+    for (const item of contextItems) {
+      if (item.ordinal >= freshTailOrdinal) {
+        break;
+      }
+
+      if (!started) {
+        if (item.itemType !== "message" || item.messageId == null) {
+          continue;
+        }
+        started = true;
+      } else if (item.itemType !== "message" || item.messageId == null) {
+        break;
+      }
+
+      if (item.messageId == null) {
+        continue;
+      }
+      const messageTokens = await this.getMessageTokenCount(item.messageId);
+      if (chunk.length > 0 && chunkTokens + messageTokens > threshold) {
+        break;
+      }
+
+      chunk.push(item);
+      chunkTokens += messageTokens;
+      if (chunkTokens >= threshold) {
+        break;
+      }
+    }
+
+    return { items: chunk, rawTokensOutsideTail, threshold };
+  }
+
+  /** Resolve summary token count with content-length fallback. */
+  private resolveSummaryTokenCount(summary: SummaryRecord): number {
+    if (
+      typeof summary.tokenCount === "number" &&
+      Number.isFinite(summary.tokenCount) &&
+      summary.tokenCount > 0
+    ) {
+      return summary.tokenCount;
+    }
+    return estimateTokens(summary.content);
+  }
+
+  /** Minimum condensed input size before we run another condensed pass. */
+  private resolveCondensedMinChunkTokens(): number {
+    const chunkTarget = this.resolveLeafChunkTokens();
+    const ratioFloor = Math.floor(chunkTarget * CONDENSED_MIN_INPUT_RATIO);
+    return Math.max(this.config.condensedTargetTokens, ratioFloor);
+  }
+
+  /**
+   * Select the oldest contiguous summary chunk for condensed compaction.
+   *
+   * The chunk is bounded by both item count (~17) and summary-token budget
+   * (`leafChunkTokens`) to keep each pass ratio-stable.
+   */
+  private async selectOldestCondensedChunk(
+    conversationId: number,
+  ): Promise<CondensedChunkSelection> {
+    const contextItems = await this.summaryStore.getContextItems(conversationId);
+    const freshTailOrdinal = this.resolveFreshTailOrdinal(contextItems);
+    const chunkTokenBudget = this.resolveLeafChunkTokens();
+
+    const chunk: ContextItemRecord[] = [];
+    let summaryTokens = 0;
+    let started = false;
+    for (const item of contextItems) {
+      if (item.ordinal >= freshTailOrdinal) {
+        break;
+      }
+
+      if (!started) {
+        if (item.itemType !== "summary" || item.summaryId == null) {
+          continue;
+        }
+        started = true;
+      } else if (item.itemType !== "summary" || item.summaryId == null) {
+        break;
+      }
+
+      if (item.summaryId == null) {
+        continue;
+      }
+      const summary = await this.summaryStore.getSummary(item.summaryId);
+      if (!summary) {
+        if (chunk.length > 0) {
+          break;
+        }
+        continue;
+      }
+      const tokenCount = this.resolveSummaryTokenCount(summary);
+
+      if (chunk.length >= CONDENSED_CHUNK_MAX_ITEMS) {
+        break;
+      }
+      if (chunk.length > 0 && summaryTokens + tokenCount > chunkTokenBudget) {
+        break;
+      }
+
+      chunk.push(item);
+      summaryTokens += tokenCount;
+      if (chunk.length >= CONDENSED_CHUNK_MAX_ITEMS || summaryTokens >= chunkTokenBudget) {
+        break;
+      }
+    }
+
+    return { items: chunk, summaryTokens };
+  }
+
+  /**
+   * Run three-level summarization escalation:
+   * normal -> aggressive -> deterministic fallback.
+   */
+  private async summarizeWithEscalation(params: {
+    sourceText: string;
+    summarize: CompactionSummarizeFn;
+    options?: CompactionSummarizeOptions;
+  }): Promise<{ content: string; level: CompactionLevel }> {
+    const sourceText = params.sourceText.trim();
+    if (!sourceText) {
+      return {
+        content: "[Truncated from 0 tokens]",
+        level: "fallback",
+      };
+    }
+    const inputTokens = Math.max(1, estimateTokens(sourceText));
+
+    let summaryText = await params.summarize(sourceText, false, params.options);
+    let level: CompactionLevel = "normal";
+
+    if (estimateTokens(summaryText) >= inputTokens) {
+      summaryText = await params.summarize(sourceText, true, params.options);
+      level = "aggressive";
+
+      if (estimateTokens(summaryText) >= inputTokens) {
+        const truncated =
+          sourceText.length > FALLBACK_MAX_CHARS
+            ? sourceText.slice(0, FALLBACK_MAX_CHARS)
+            : sourceText;
+        summaryText = `${truncated}\n[Truncated from ${inputTokens} tokens]`;
+        level = "fallback";
+      }
+    }
+
+    return { content: summaryText, level };
+  }
+
   // ── Private: Leaf Pass ───────────────────────────────────────────────────
 
   /**
-   * Summarize a set of messages into a single leaf summary using three-level
-   * escalation: normal -> aggressive -> deterministic fallback.
+   * Summarize a chunk of messages into one leaf summary.
    */
   private async leafPass(
     conversationId: number,
     messageItems: ContextItemRecord[],
-    summarize: (text: string, aggressive?: boolean) => Promise<string>,
-  ): Promise<{ summaryId: string; level: CompactionLevel }> {
+    summarize: CompactionSummarizeFn,
+    previousSummaryContent?: string,
+  ): Promise<{ summaryId: string; level: CompactionLevel; content: string }> {
     // Fetch full message content for each context item
     const messageContents: { messageId: number; content: string }[] = [];
     for (const item of messageItems) {
@@ -334,38 +711,24 @@ export class CompactionEngine {
     }
 
     const concatenated = messageContents.map((m) => m.content).join("\n\n");
-    const inputTokens = estimateTokens(concatenated);
-
-    // Level 1: Normal summarization
-    let summaryText = await summarize(concatenated, false);
-    let level: CompactionLevel = "normal";
-
-    // Convergence check: summary must be strictly smaller than input
-    if (estimateTokens(summaryText) >= inputTokens) {
-      // Level 2: Aggressive summarization
-      summaryText = await summarize(concatenated, true);
-      level = "aggressive";
-
-      if (estimateTokens(summaryText) >= inputTokens) {
-        // Level 3: Deterministic fallback -- truncate to 512 tokens worth of chars
-        const truncated =
-          concatenated.length > FALLBACK_MAX_CHARS
-            ? concatenated.slice(0, FALLBACK_MAX_CHARS)
-            : concatenated;
-        summaryText = `${truncated}\n[Truncated from ${inputTokens} tokens]`;
-        level = "fallback";
-      }
-    }
+    const summary = await this.summarizeWithEscalation({
+      sourceText: concatenated,
+      summarize,
+      options: {
+        previousSummary: previousSummaryContent,
+        isCondensed: false,
+      },
+    });
 
     // Persist the leaf summary
-    const summaryId = generateSummaryId(summaryText);
-    const tokenCount = estimateTokens(summaryText);
+    const summaryId = generateSummaryId(summary.content);
+    const tokenCount = estimateTokens(summary.content);
 
     await this.summaryStore.insertSummary({
       summaryId,
       conversationId,
       kind: "leaf",
-      content: summaryText,
+      content: summary.content,
       tokenCount,
     });
 
@@ -385,20 +748,19 @@ export class CompactionEngine {
       summaryId,
     });
 
-    return { summaryId, level };
+    return { summaryId, level: summary.level, content: summary.content };
   }
 
   // ── Private: Condensed Pass ──────────────────────────────────────────────
 
   /**
-   * Condense all summaries currently in context into a single condensed
-   * summary using three-level escalation.
+   * Condense one ratio-sized summary chunk into a single condensed summary.
    */
   private async condensedPass(
     conversationId: number,
     summaryItems: ContextItemRecord[],
-    summarize: (text: string, aggressive?: boolean) => Promise<string>,
-  ): Promise<{ summaryId: string; level: CompactionLevel }> {
+    summarize: CompactionSummarizeFn,
+  ): Promise<PassResult> {
     // Fetch full summary records
     const summaryRecords: SummaryRecord[] = [];
     for (const item of summaryItems) {
@@ -412,38 +774,23 @@ export class CompactionEngine {
     }
 
     const concatenated = summaryRecords.map((s) => s.content).join("\n\n");
-    const inputTokens = estimateTokens(concatenated);
-
-    // Level 1: Normal condensation
-    let condensedText = await summarize(concatenated, false);
-    let level: CompactionLevel = "normal";
-
-    // Convergence check
-    if (estimateTokens(condensedText) >= inputTokens) {
-      // Level 2: Aggressive condensation
-      condensedText = await summarize(concatenated, true);
-      level = "aggressive";
-
-      if (estimateTokens(condensedText) >= inputTokens) {
-        // Level 3: Deterministic fallback
-        const truncated =
-          concatenated.length > FALLBACK_MAX_CHARS
-            ? concatenated.slice(0, FALLBACK_MAX_CHARS)
-            : concatenated;
-        condensedText = `${truncated}\n[Truncated from ${inputTokens} tokens]`;
-        level = "fallback";
-      }
-    }
+    const condensed = await this.summarizeWithEscalation({
+      sourceText: concatenated,
+      summarize,
+      options: {
+        isCondensed: true,
+      },
+    });
 
     // Persist the condensed summary
-    const summaryId = generateSummaryId(condensedText);
-    const tokenCount = estimateTokens(condensedText);
+    const summaryId = generateSummaryId(condensed.content);
+    const tokenCount = estimateTokens(condensed.content);
 
     await this.summaryStore.insertSummary({
       summaryId,
       conversationId,
       kind: "condensed",
-      content: condensedText,
+      content: condensed.content,
       tokenCount,
     });
 
@@ -463,7 +810,7 @@ export class CompactionEngine {
       summaryId,
     });
 
-    return { summaryId, level };
+    return { summaryId, level: condensed.level };
   }
 
   /**
