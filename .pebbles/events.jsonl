@@ -324,3 +324,4 @@
 {"type":"dep_add","timestamp":"2026-02-17T23:45:04.394902Z","issue_id":"openclaw-b47","payload":{"dep_type":"blocks","depends_on":"openclaw-0d8"}}
 {"type":"dep_add","timestamp":"2026-02-17T23:45:04.533377Z","issue_id":"openclaw-b47","payload":{"dep_type":"blocks","depends_on":"openclaw-355"}}
 {"type":"update","timestamp":"2026-02-17T23:45:11.76951Z","issue_id":"openclaw-b47","payload":{"description":"Current Phase 2 condensation mixes leaves and condensed nodes freely, producing degenerate linked-list trees. Fix: only condense nodes at the same depth. Produces balanced trees with uniform information loss and predictable O(log N) expand cost. Spec: specs/lcm-depth-aware-condensation.md. Pagedrop: https://pagedrop.ai/g/jalehman/296e34f1740f81026845d9c2db77271f","type":"epic"}}
+{"type":"status_update","timestamp":"2026-02-17T23:48:41.427861Z","issue_id":"openclaw-b47","payload":{"status":"in_progress"}}
