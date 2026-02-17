@@ -385,7 +385,15 @@ async function extractFileBlocks(params: {
     const guessedDelimited = textLike ? guessDelimitedMime(textSample) : undefined;
     const textHint =
       forcedTextMimeResolved ?? guessedDelimited ?? (textLike ? "text/plain" : undefined);
-    const mimeType = sanitizeMimeType(textHint ?? normalizeMimeType(rawMime));
+    // Don't let the text heuristic override MIME types that have dedicated
+    // extraction logic (e.g. application/pdf).  PDFs start with ASCII bytes
+    // (%PDF-1.7) which fools looksLikeUtf8Text(), causing textHint to
+    // clobber the real MIME type and skip PDF-specific text extraction.
+    const DEDICATED_EXTRACTION_MIMES = new Set(["application/pdf"]);
+    const preserveRawMime = normalizedRawMime && DEDICATED_EXTRACTION_MIMES.has(normalizedRawMime);
+    const mimeType = sanitizeMimeType(
+      preserveRawMime ? normalizedRawMime : (textHint ?? normalizeMimeType(rawMime)),
+    );
     // Log when MIME type is overridden from non-text to text for auditability
     if (textHint && rawMime && !rawMime.startsWith("text/")) {
       logVerbose(
