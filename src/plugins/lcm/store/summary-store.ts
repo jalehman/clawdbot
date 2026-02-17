@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { sanitizeFts5Query } from "./fts5-sanitize.js";
 
 export type SummaryKind = "leaf" | "condensed";
 export type ContextItemType = "message" | "summary";
@@ -492,7 +493,7 @@ export class SummaryStore {
     before?: Date,
   ): SummarySearchResult[] {
     const where: string[] = ["summaries_fts MATCH ?"];
-    const args: Array<string | number> = [query];
+    const args: Array<string | number> = [sanitizeFts5Query(query)];
     if (conversationId != null) {
       where.push("s.conversation_id = ?");
       args.push(conversationId);

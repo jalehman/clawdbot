@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
+import { sanitizeFts5Query } from "./fts5-sanitize.js";
 
 export type ConversationId = number;
 export type MessageId = number;
@@ -515,7 +516,7 @@ export class ConversationStore {
     before?: Date,
   ): MessageSearchResult[] {
     const where: string[] = ["messages_fts MATCH ?"];
-    const args: Array<string | number> = [query];
+    const args: Array<string | number> = [sanitizeFts5Query(query)];
     if (conversationId != null) {
       where.push("m.conversation_id = ?");
       args.push(conversationId);
