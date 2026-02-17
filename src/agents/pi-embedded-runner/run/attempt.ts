@@ -1258,7 +1258,7 @@ export async function runEmbeddedAttempt(
 
               try {
                 await params.contextEngine.compact({
-                  sessionId: params.sessionId,
+                  sessionId: sessionIdUsed,
                   sessionFile: params.sessionFile,
                   tokenBudget: params.contextTokenBudget,
                   currentTokenCount: liveContextTokens,
