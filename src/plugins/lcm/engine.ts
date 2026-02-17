@@ -420,6 +420,7 @@ export class LcmContextEngine implements ContextEngine {
     const compactionConfig: CompactionConfig = {
       contextThreshold: this.config.contextThreshold,
       freshTailCount: this.config.freshTailCount,
+      leafChunkTokens: this.config.leafChunkTokens,
       leafTargetTokens: this.config.leafTargetTokens,
       condensedTargetTokens: this.config.condensedTargetTokens,
       maxRounds: 10,
@@ -474,6 +475,52 @@ export class LcmContextEngine implements ContextEngine {
       return undefined;
     }
     return Math.floor(value);
+  }
+
+  /** Resolve token budget from direct params or legacy fallback input. */
+  private resolveTokenBudget(params: {
+    tokenBudget?: number;
+    legacyParams?: Record<string, unknown>;
+  }): number | undefined {
+    const lp = params.legacyParams ?? {};
+    if (
+      typeof params.tokenBudget === "number" &&
+      Number.isFinite(params.tokenBudget) &&
+      params.tokenBudget > 0
+    ) {
+      return Math.floor(params.tokenBudget);
+    }
+    if (
+      typeof lp.tokenBudget === "number" &&
+      Number.isFinite(lp.tokenBudget) &&
+      lp.tokenBudget > 0
+    ) {
+      return Math.floor(lp.tokenBudget);
+    }
+    return undefined;
+  }
+
+  /** Build a summarize callback with runtime provider fallback handling. */
+  private async resolveSummarize(params: {
+    legacyParams?: Record<string, unknown>;
+    customInstructions?: string;
+  }): Promise<(text: string, aggressive?: boolean) => Promise<string>> {
+    const lp = params.legacyParams ?? {};
+    if (typeof lp.summarize === "function") {
+      return lp.summarize as (text: string, aggressive?: boolean) => Promise<string>;
+    }
+    try {
+      const runtimeSummarizer = await createLcmSummarizeFromLegacyParams({
+        legacyParams: lp,
+        customInstructions: params.customInstructions,
+      });
+      if (runtimeSummarizer) {
+        return runtimeSummarizer;
+      }
+    } catch {
+      // Preserve compaction behavior even when model-backed setup fails.
+    }
+    return createEmergencyFallbackSummarize();
   }
 
   // ── ContextEngine interface ─────────────────────────────────────────────
@@ -688,6 +735,103 @@ export class LcmContextEngine implements ContextEngine {
     }
   }
 
+  /** Evaluate whether incremental leaf compaction should run for a session. */
+  async evaluateLeafTrigger(sessionId: string): Promise<{
+    shouldCompact: boolean;
+    rawTokensOutsideTail: number;
+    threshold: number;
+  }> {
+    this.ensureMigrated();
+    const conversation = await this.conversationStore.getConversationBySessionId(sessionId);
+    if (!conversation) {
+      const fallbackThreshold =
+        typeof this.config.leafChunkTokens === "number" &&
+        Number.isFinite(this.config.leafChunkTokens) &&
+        this.config.leafChunkTokens > 0
+          ? Math.floor(this.config.leafChunkTokens)
+          : 20_000;
+      return {
+        shouldCompact: false,
+        rawTokensOutsideTail: 0,
+        threshold: fallbackThreshold,
+      };
+    }
+    return this.compaction.evaluateLeafTrigger(conversation.conversationId);
+  }
+
+  /** Run one incremental leaf compaction pass in the per-session queue. */
+  async compactLeafAsync(params: {
+    sessionId: string;
+    sessionFile: string;
+    tokenBudget?: number;
+    currentTokenCount?: number;
+    customInstructions?: string;
+    legacyParams?: Record<string, unknown>;
+    force?: boolean;
+    previousSummaryContent?: string;
+  }): Promise<CompactResult> {
+    this.ensureMigrated();
+    return this.withSessionQueue(params.sessionId, async () => {
+      const conversation = await this.conversationStore.getConversationBySessionId(
+        params.sessionId,
+      );
+      if (!conversation) {
+        return {
+          ok: true,
+          compacted: false,
+          reason: "no conversation found for session",
+        };
+      }
+
+      const tokenBudget = this.resolveTokenBudget(params);
+      if (!tokenBudget) {
+        return {
+          ok: false,
+          compacted: false,
+          reason: "missing token budget in compact params",
+        };
+      }
+
+      const lp = params.legacyParams ?? {};
+      const observedTokens = this.normalizeObservedTokenCount(
+        params.currentTokenCount ??
+          (
+            lp as {
+              currentTokenCount?: unknown;
+            }
+          ).currentTokenCount,
+      );
+      const summarize = await this.resolveSummarize({
+        legacyParams: params.legacyParams,
+        customInstructions: params.customInstructions,
+      });
+
+      const leafResult = await this.compaction.compactLeaf({
+        conversationId: conversation.conversationId,
+        tokenBudget,
+        summarize,
+        force: params.force,
+        previousSummaryContent: params.previousSummaryContent,
+      });
+      const tokensBefore = observedTokens ?? leafResult.tokensBefore;
+
+      return {
+        ok: true,
+        compacted: leafResult.actionTaken,
+        reason: leafResult.actionTaken ? "compacted" : "below threshold",
+        result: {
+          tokensBefore,
+          tokensAfter: leafResult.tokensAfter,
+          details: {
+            rounds: leafResult.actionTaken ? 1 : 0,
+            targetTokens: tokenBudget,
+            mode: "leaf",
+          },
+        },
+      };
+    });
+  }
+
   async compact(params: {
     sessionId: string;
     sessionFile: string;
@@ -723,16 +867,7 @@ export class LcmContextEngine implements ContextEngine {
           }
         ).manualCompaction === true;
       const forceCompaction = force || manualCompactionRequested;
-      const tokenBudget =
-        typeof params.tokenBudget === "number" &&
-        Number.isFinite(params.tokenBudget) &&
-        params.tokenBudget > 0
-          ? Math.floor(params.tokenBudget)
-          : typeof lp.tokenBudget === "number" &&
-              Number.isFinite(lp.tokenBudget) &&
-              lp.tokenBudget > 0
-            ? Math.floor(lp.tokenBudget)
-            : undefined;
+      const tokenBudget = this.resolveTokenBudget(params);
       if (!tokenBudget) {
         return {
           ok: false,
@@ -741,28 +876,10 @@ export class LcmContextEngine implements ContextEngine {
         };
       }
 
-      // 1) Honor an explicitly injected summarize callback.
-      // 2) Try model-backed summarization from runtime provider/model params.
-      // 3) Fall back to deterministic truncation only if summarizer setup fails.
-      const summarize = await (async (): Promise<
-        (text: string, aggressive?: boolean) => Promise<string>
-      > => {
-        if (typeof lp.summarize === "function") {
-          return lp.summarize as (text: string, aggressive?: boolean) => Promise<string>;
-        }
-        try {
-          const runtimeSummarizer = await createLcmSummarizeFromLegacyParams({
-            legacyParams: lp,
-            customInstructions: params.customInstructions,
-          });
-          if (runtimeSummarizer) {
-            return runtimeSummarizer;
-          }
-        } catch {
-          // Preserve compaction behavior even when model-backed setup fails.
-        }
-        return createEmergencyFallbackSummarize();
-      })();
+      const summarize = await this.resolveSummarize({
+        legacyParams: params.legacyParams,
+        customInstructions: params.customInstructions,
+      });
 
       // Evaluate whether compaction is needed (unless forced)
       const observedTokens = this.normalizeObservedTokenCount(
@@ -789,24 +906,31 @@ export class LcmContextEngine implements ContextEngine {
         };
       }
 
-      if (manualCompactionRequested) {
-        const forcedRound = await this.compaction.compact({
+      const useHardTriggerSweep =
+        manualCompactionRequested || forceCompaction || params.compactionTarget === "threshold";
+      if (useHardTriggerSweep) {
+        const sweepResult = await this.compaction.compactFullSweep({
           conversationId,
           tokenBudget,
           summarize,
-          force: true,
+          force: forceCompaction,
         });
 
         return {
           ok: true,
-          compacted: forcedRound.actionTaken,
-          reason: forcedRound.actionTaken ? "compacted" : "nothing to compact",
+          compacted: sweepResult.actionTaken,
+          reason: sweepResult.actionTaken
+            ? "compacted"
+            : manualCompactionRequested
+              ? "nothing to compact"
+              : "already under target",
           result: {
             tokensBefore: decision.currentTokens,
-            tokensAfter: forcedRound.tokensAfter,
+            tokensAfter: sweepResult.tokensAfter,
             details: {
-              rounds: forcedRound.actionTaken ? 1 : 0,
-              targetTokens: tokenBudget,
+              rounds: sweepResult.actionTaken ? 1 : 0,
+              targetTokens:
+                params.compactionTarget === "threshold" ? decision.threshold : tokenBudget,
             },
           },
         };

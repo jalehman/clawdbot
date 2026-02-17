@@ -279,6 +279,22 @@ function estimateSessionTokenCount(messages: AgentMessage[]): number {
   }
   return total;
 }
+
+type LcmCompactionHooks = {
+  evaluateLeafTrigger: (sessionId: string) => Promise<{
+    shouldCompact: boolean;
+    rawTokensOutsideTail: number;
+    threshold: number;
+  }>;
+  compactLeafAsync: (params: {
+    sessionId: string;
+    sessionFile: string;
+    tokenBudget?: number;
+    currentTokenCount?: number;
+    legacyParams?: Record<string, unknown>;
+  }) => Promise<unknown>;
+};
+
 export async function runEmbeddedAttempt(
   params: EmbeddedRunAttemptParams,
 ): Promise<EmbeddedRunAttemptResult> {
@@ -1211,6 +1227,34 @@ export async function runEmbeddedAttempt(
                 extraSystemPrompt: params.extraSystemPrompt,
                 ownerNumbers: params.ownerNumbers,
               } satisfies Partial<CompactEmbeddedPiSessionParams>;
+              const lcmCompaction = params.contextEngine as typeof params.contextEngine &
+                Partial<LcmCompactionHooks>;
+
+              if (
+                typeof lcmCompaction.evaluateLeafTrigger === "function" &&
+                typeof lcmCompaction.compactLeafAsync === "function"
+              ) {
+                try {
+                  const leafTrigger = await lcmCompaction.evaluateLeafTrigger(sessionIdUsed);
+                  if (leafTrigger.shouldCompact) {
+                    lcmCompaction
+                      .compactLeafAsync({
+                        sessionId: sessionIdUsed,
+                        sessionFile: params.sessionFile,
+                        tokenBudget: params.contextTokenBudget,
+                        currentTokenCount: liveContextTokens,
+                        legacyParams: proactiveCompactLegacyParams,
+                      })
+                      .catch((compactErr) => {
+                        log.warn(`context engine leaf compact failed: ${String(compactErr)}`);
+                      });
+                  }
+                } catch (leafTriggerErr) {
+                  log.warn(
+                    `context engine leaf trigger evaluation failed: ${String(leafTriggerErr)}`,
+                  );
+                }
+              }
 
               try {
                 await params.contextEngine.compact({
