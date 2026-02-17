@@ -16,7 +16,7 @@ export const TOOL_GROUPS: Record<string, string[]> = {
   // NOTE: Keep canonical (lowercase) tool names here.
   "group:memory": ["memory_search", "memory_get"],
   "group:web": ["web_search", "web_fetch"],
-  "group:lcm": ["lcm_describe", "lcm_expand", "lcm_grep"],
+  "group:lcm": ["lcm_describe", "lcm_expand", "lcm_expand_query", "lcm_grep"],
   // Basic workspace/file tools
   "group:fs": ["read", "write", "edit", "apply_patch"],
   // Host/runtime execution tools
@@ -60,6 +60,7 @@ export const TOOL_GROUPS: Record<string, string[]> = {
     "image",
     "lcm_describe",
     "lcm_expand",
+    "lcm_expand_query",
     "lcm_grep",
   ],
 };
