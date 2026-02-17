@@ -132,7 +132,8 @@ function condensedPhase(conversationId):
     candidate = null
     for d in getDistinctDepthsInContext(conversationId, ascending):
       nodesAtDepth = getContextSummariesAtDepth(conversationId, d)
-      if len(nodesAtDepth) < minFanout:
+      fanout = leafMinFanout if d == 0 else condensedMinFanout
+      if len(nodesAtDepth) < fanout:
         continue
       chunk = selectOldestChunkAtDepth(conversationId, d, chunkTokenBudget)
       if chunk.summaryTokens < minChunkTokens:
@@ -155,6 +156,12 @@ Key behaviors:
 - **Shallowest-first:** Always processes the lowest eligible depth before moving up. This ensures leaves get condensed into depth-1 nodes before depth-1 nodes get condensed into depth-2, maintaining proper tree structure.
 - **Loop continues:** After condensing at depth D, the loop restarts from the shallowest depth. Newly created depth D+1 nodes won't be eligible until enough accumulate.
 - **Same termination conditions:** Minimum fanout, minimum chunk tokens, token convergence.
+
+### Continuity context: leaves only
+
+When summarizing leaves into depth-1 nodes, the existing leaf continuity context feature (openclaw-098) applies — neighboring leaf content is included in the summarization prompt so the LLM has surrounding context.
+
+For condensed nodes (depth ≥ 1), continuity context is **not included**. Each condensed node already contains self-sufficient summarized content. Including neighboring condensed nodes in the prompt would bloat it without adding meaningful signal — the LLM doesn't need the content of depth-1_A to summarize depth-1_B, because each already stands on its own.
 
 ### `selectOldestChunkAtDepth`
 
@@ -224,10 +231,11 @@ No explicit reordering needed — the ordinal-based insertion naturally preserve
 
 ### New parameters
 
-| Parameter                | Default | Description                                                          |
-| ------------------------ | ------- | -------------------------------------------------------------------- |
-| `condensedMinFanout`     | `4`     | Minimum same-depth nodes required to trigger condensation            |
-| `condensedMinFanoutHard` | `2`     | Lower minimum for hard triggers / force compaction (more aggressive) |
+| Parameter                | Default | Description                                                                                                                                    |
+| ------------------------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `leafMinFanout`          | `8`     | Minimum depth-0 nodes to trigger condensation. Higher because leaves are small (~600 tokens) — need more to produce a meaningful depth-1 node. |
+| `condensedMinFanout`     | `4`     | Minimum same-depth nodes at depth ≥ 1. Condensed nodes are ~2k tokens each, fewer needed.                                                      |
+| `condensedMinFanoutHard` | `2`     | Lower minimum for hard triggers (automatic context pressure) and `/compact`. Relaxes fanout when context is critically full.                   |
 
 ### Existing parameters (no change)
 
@@ -240,9 +248,15 @@ No explicit reordering needed — the ordinal-based insertion naturally preserve
 
 ### Fanout guidance
 
-- **Too low (2):** Binary tree — many levels, each condensation does minimal compression, deeper DAG
-- **Too high (8):** Leaves accumulate for a long time before condensation fires, higher context usage
-- **Sweet spot (3–4):** Balanced tree with reasonable depth, good compression per pass, manageable context
+**For leaves (depth 0):** Higher fanout (6–8) is better because individual leaves are thin (~600 tokens). You need more of them to produce a rich depth-1 node. 8 leaves × 600 tokens = ~4.8k input → ~2k depth-1 node.
+
+**For condensed nodes (depth ≥ 1):** Lower fanout (3–4) works well because each node is already ~2k tokens. 4 × 2k = ~8k input → ~2k depth-2 node.
+
+| Fanout | Tradeoff                                                                 |
+| ------ | ------------------------------------------------------------------------ |
+| 2      | Binary tree — many levels, minimal compression per pass, deep DAG        |
+| 3–4    | Sweet spot for condensed nodes — balanced depth, good compression        |
+| 6–8    | Sweet spot for leaves — enough input to produce meaningful depth-1 nodes |
 
 ## Interaction with Existing Triggers
 
@@ -254,9 +268,13 @@ No explicit reordering needed — the ordinal-based insertion naturally preserve
 
 Phase 2 changes to depth-aware algorithm above. Phase 1 (leaf passes) unchanged.
 
-### Force compaction
+### Hard trigger (automatic context pressure)
 
-Uses `condensedMinFanoutHard` (default 2) instead of `condensedMinFanout` (default 4), allowing more aggressive condensation when explicitly requested or when context pressure is critical.
+When context exceeds `contextThreshold`, the full sweep fires automatically. In this mode, `condensedMinFanoutHard` (default 2) is used instead of the normal fanout thresholds. This handles the edge case where you have 3 depth-1 nodes (below `condensedMinFanout=4`) but context is critically full — the relaxed threshold allows condensation that wouldn't normally fire.
+
+### `/compact` (explicit user command)
+
+Also uses `condensedMinFanoutHard` since the user explicitly requested compaction — be as aggressive as possible.
 
 ## Impact on `lcm_expand`
 
@@ -304,8 +322,8 @@ The migration is backwards-compatible. If depth is missing (shouldn't happen wit
 
 ## Open Questions
 
-1. **Should incremental condensation also be depth-aware?** Currently only leaf compaction runs incrementally. We could add an incremental depth-0 condensation trigger (fire when ≥ minFanout leaves accumulate). Deferred to v2.
+1. **Should incremental condensation also be depth-aware?** Currently only leaf compaction runs incrementally. Could add an incremental depth-0 condensation trigger (fire when ≥ `leafMinFanout` leaves accumulate). Deferred to v2 — leaf compaction alone provides large context savings, and `/compact` handles condensation for now.
 
-2. **Variable chunk budget by depth?** Higher-depth nodes are denser. Should the chunk token budget scale with depth? Probably not for v1 — the fixed budget naturally reduces fanout at higher depths (each node is larger), which is acceptable.
+2. **Variable chunk budget by depth?** Higher-depth nodes are denser. Should the chunk token budget scale with depth? Not for v1 — fixed budget naturally reduces fanout at higher depths. Current targets: ~1200 tokens for leaves (actual output often <600), ~2k for condensed nodes at any depth.
 
-3. **lcm-tui updates?** The TUI should display depth in the summary DAG view. Minor enhancement, separate issue.
+3. **lcm-tui updates?** Display depth in summary DAG view. Separate issue.
