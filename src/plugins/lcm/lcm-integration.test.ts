@@ -783,7 +783,12 @@ describe("LCM integration: compaction", () => {
   });
 
   it("compaction propagates referenced file ids into summary metadata", async () => {
-    await ingestMessages(convStore, sumStore, 8, {
+    const productionTailEngine = new CompactionEngine(convStore as any, sumStore as any, {
+      ...defaultCompactionConfig,
+      freshTailCount: 16,
+    });
+
+    await ingestMessages(convStore, sumStore, 20, {
       contentFn: (i) => {
         if (i === 1) {
           return "Review [LCM File: file_aaaabbbbccccdddd | spec.md | text/markdown | 1,024 bytes]";
@@ -797,7 +802,7 @@ describe("LCM integration: compaction", () => {
     });
 
     const summarize = vi.fn(async () => "Condensed file-aware summary.");
-    const result = await compactionEngine.compact({
+    const result = await productionTailEngine.compact({
       conversationId: CONV_ID,
       tokenBudget: 10_000,
       summarize,
