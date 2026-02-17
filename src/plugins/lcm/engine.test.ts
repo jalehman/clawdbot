@@ -726,7 +726,7 @@ describe("LcmContextEngine.compact token budget plumbing", () => {
     const privateEngine = engine as unknown as {
       compaction: {
         evaluate: (conversationId: number, tokenBudget: number) => Promise<unknown>;
-        compact: (input: unknown) => Promise<unknown>;
+        compactFullSweep: (input: unknown) => Promise<unknown>;
         compactUntilUnder: (input: unknown) => Promise<unknown>;
       };
     };
@@ -737,12 +737,14 @@ describe("LcmContextEngine.compact token budget plumbing", () => {
       currentTokens: 116_000,
       threshold: 150_000,
     });
-    const compactSpy = vi.spyOn(privateEngine.compaction, "compact").mockResolvedValue({
-      actionTaken: true,
-      tokensBefore: 116_000,
-      tokensAfter: 92_000,
-      condensed: false,
-    });
+    const compactFullSweepSpy = vi
+      .spyOn(privateEngine.compaction, "compactFullSweep")
+      .mockResolvedValue({
+        actionTaken: true,
+        tokensBefore: 116_000,
+        tokensAfter: 92_000,
+        condensed: false,
+      });
     const compactUntilUnderSpy = vi.spyOn(privateEngine.compaction, "compactUntilUnder");
 
     await engine.ingest({
@@ -763,9 +765,11 @@ describe("LcmContextEngine.compact token budget plumbing", () => {
     expect(result.compacted).toBe(true);
     expect(result.reason).toBe("compacted");
     expect(evaluateSpy).toHaveBeenCalledWith(expect.any(Number), 200_000);
-    expect(compactSpy).toHaveBeenCalledWith(
+    expect(compactFullSweepSpy).toHaveBeenCalledWith(
       expect.objectContaining({
+        conversationId: expect.any(Number),
         tokenBudget: 200_000,
+        summarize: expect.any(Function),
         force: true,
       }),
     );
@@ -777,6 +781,7 @@ describe("LcmContextEngine.compact token budget plumbing", () => {
     const privateEngine = engine as unknown as {
       compaction: {
         evaluate: (conversationId: number, tokenBudget: number) => Promise<unknown>;
+        compactFullSweep: (input: unknown) => Promise<unknown>;
         compactUntilUnder: (input: unknown) => Promise<unknown>;
       };
     };
@@ -787,11 +792,14 @@ describe("LcmContextEngine.compact token budget plumbing", () => {
       currentTokens: 380,
       threshold: 300,
     });
-    const compactSpy = vi.spyOn(privateEngine.compaction, "compactUntilUnder").mockResolvedValue({
-      success: true,
-      rounds: 1,
-      finalTokens: 280,
-    });
+    const compactFullSweepSpy = vi
+      .spyOn(privateEngine.compaction, "compactFullSweep")
+      .mockResolvedValue({
+        actionTaken: true,
+        tokensBefore: 380,
+        tokensAfter: 280,
+        condensed: false,
+      });
 
     await engine.ingest({
       sessionId: "threshold-target-session",
@@ -808,10 +816,12 @@ describe("LcmContextEngine.compact token budget plumbing", () => {
     expect(result.ok).toBe(true);
     expect(result.compacted).toBe(true);
     expect(evaluateSpy).toHaveBeenCalledWith(expect.any(Number), 400);
-    expect(compactSpy).toHaveBeenCalledWith(
+    expect(compactFullSweepSpy).toHaveBeenCalledWith(
       expect.objectContaining({
+        conversationId: expect.any(Number),
         tokenBudget: 400,
-        targetTokens: 300,
+        summarize: expect.any(Function),
+        force: false,
       }),
     );
   });
@@ -825,6 +835,7 @@ describe("LcmContextEngine.compact token budget plumbing", () => {
           tokenBudget: number,
           observed?: number,
         ) => Promise<unknown>;
+        compactFullSweep: (input: unknown) => Promise<unknown>;
         compactUntilUnder: (input: unknown) => Promise<unknown>;
       };
     };
@@ -835,11 +846,14 @@ describe("LcmContextEngine.compact token budget plumbing", () => {
       currentTokens: 500,
       threshold: 300,
     });
-    const compactSpy = vi.spyOn(privateEngine.compaction, "compactUntilUnder").mockResolvedValue({
-      success: true,
-      rounds: 1,
-      finalTokens: 280,
-    });
+    const compactFullSweepSpy = vi
+      .spyOn(privateEngine.compaction, "compactFullSweep")
+      .mockResolvedValue({
+        actionTaken: true,
+        tokensBefore: 500,
+        tokensAfter: 280,
+        condensed: false,
+      });
 
     await engine.ingest({
       sessionId: "observed-token-session",
@@ -857,11 +871,12 @@ describe("LcmContextEngine.compact token budget plumbing", () => {
     expect(result.ok).toBe(true);
     expect(result.compacted).toBe(true);
     expect(evaluateSpy).toHaveBeenCalledWith(expect.any(Number), 400, 500);
-    expect(compactSpy).toHaveBeenCalledWith(
+    expect(compactFullSweepSpy).toHaveBeenCalledWith(
       expect.objectContaining({
+        conversationId: expect.any(Number),
         tokenBudget: 400,
-        targetTokens: 300,
-        currentTokens: 500,
+        summarize: expect.any(Function),
+        force: false,
       }),
     );
   });
