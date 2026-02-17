@@ -168,7 +168,7 @@ export function createLcmExpandTool(options?: {
       if (!isSubagentSessionKey(sessionKey)) {
         return jsonResult({
           error:
-            "lcm_expand is only available in sub-agent sessions. Use lcm_describe or lcm_grep to inspect summaries, or delegate expansion to a sub-agent.",
+            "lcm_expand is only available in sub-agent sessions. Use lcm_expand_query to ask a focused question against expanded summaries, or lcm_describe/lcm_grep for lighter lookups.",
         });
       }
       const isDelegatedSession = isSubagentSessionKey(sessionKey);
