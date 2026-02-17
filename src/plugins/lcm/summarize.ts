@@ -3,8 +3,18 @@ import type { OpenClawConfig } from "../../config/config.js";
 import { resolveOpenClawAgentDir } from "../../agents/agent-paths.js";
 import { getApiKeyForModel, requireApiKey } from "../../agents/model-auth.js";
 import { resolveModel } from "../../agents/pi-embedded-runner/model.js";
+import { resolveLcmConfig } from "./db/config.js";
 
-export type LcmSummarizeFn = (text: string, aggressive?: boolean) => Promise<string>;
+export type LcmSummarizeOptions = {
+  previousSummary?: string;
+  isCondensed?: boolean;
+};
+
+export type LcmSummarizeFn = (
+  text: string,
+  aggressive?: boolean,
+  options?: LcmSummarizeOptions,
+) => Promise<string>;
 
 export type LcmSummarizerLegacyParams = {
   provider?: unknown;
@@ -17,6 +27,7 @@ export type LcmSummarizerLegacyParams = {
 type SummaryMode = "normal" | "aggressive";
 
 const SUMMARY_TIMEOUT_MS = 45_000;
+const DEFAULT_CONDENSED_TARGET_TOKENS = 2000;
 
 /** Approximate token estimate used for target-sizing prompts. */
 function estimateTokens(text: string): number {
@@ -29,10 +40,20 @@ function isTextContentBlock(block: { type: string }): block is TextContent {
 }
 
 /**
- * Resolve a practical target token count for normal vs aggressive summaries.
- * Aggressive mode intentionally aims lower so compaction can converge faster.
+ * Resolve a practical target token count for leaf and condensed summaries.
+ * Aggressive leaf mode intentionally aims lower so compaction converges faster.
  */
-function resolveTargetTokens(inputTokens: number, mode: SummaryMode): number {
+function resolveTargetTokens(params: {
+  inputTokens: number;
+  mode: SummaryMode;
+  isCondensed: boolean;
+  condensedTargetTokens: number;
+}): number {
+  if (params.isCondensed) {
+    return Math.max(512, params.condensedTargetTokens);
+  }
+
+  const { inputTokens, mode } = params;
   if (mode === "aggressive") {
     return Math.max(96, Math.min(640, Math.floor(inputTokens * 0.2)));
   }
@@ -40,18 +61,20 @@ function resolveTargetTokens(inputTokens: number, mode: SummaryMode): number {
 }
 
 /**
- * Build a mode-specific summarization prompt.
+ * Build a leaf (segment) summarization prompt.
  *
- * Normal mode prioritizes retaining details; aggressive mode keeps only the
- * highest-value facts required for future turns.
+ * Normal leaf mode preserves details; aggressive leaf mode keeps only the
+ * highest-value facts needed for follow-up turns.
  */
-function buildSummaryPrompt(params: {
+function buildLeafSummaryPrompt(params: {
   text: string;
   mode: SummaryMode;
   targetTokens: number;
+  previousSummary?: string;
   customInstructions?: string;
 }): string {
-  const { text, mode, targetTokens, customInstructions } = params;
+  const { text, mode, targetTokens, previousSummary, customInstructions } = params;
+  const previousContext = previousSummary?.trim() || "(none)";
 
   const policy =
     mode === "aggressive"
@@ -73,7 +96,8 @@ function buildSummaryPrompt(params: {
     : "Operator instructions: (none)";
 
   return [
-    "You summarize OpenClaw LCM context for future model turns.",
+    "You summarize a SEGMENT of an OpenClaw conversation for future model turns.",
+    "Treat this as incremental memory compaction input, not a full-conversation summary.",
     policy,
     instructionBlock,
     [
@@ -81,9 +105,50 @@ function buildSummaryPrompt(params: {
       "- Plain text only.",
       "- No preamble, headings, or markdown formatting.",
       "- Keep it concise while preserving required details.",
+      "- Track file operations (created, modified, deleted, renamed) with file paths and current status.",
+      '- If no file operations appear, include exactly: "Files: none".',
       `- Target length: about ${targetTokens} tokens or less.`,
     ].join("\n"),
-    `<conversation_to_summarize>\n${text}\n</conversation_to_summarize>`,
+    `<previous_context>\n${previousContext}\n</previous_context>`,
+    `<conversation_segment>\n${text}\n</conversation_segment>`,
+  ].join("\n\n");
+}
+
+/**
+ * Build a condensed summarization prompt with Pi-style structured sections.
+ */
+function buildCondensedSummaryPrompt(params: {
+  text: string;
+  targetTokens: number;
+  previousSummary?: string;
+  customInstructions?: string;
+}): string {
+  const { text, targetTokens, previousSummary, customInstructions } = params;
+  const previousContext = previousSummary?.trim() || "(none)";
+  const instructionBlock = customInstructions?.trim()
+    ? `Operator instructions:\n${customInstructions.trim()}`
+    : "Operator instructions: (none)";
+
+  return [
+    "You produce a Pi-inspired condensed OpenClaw memory summary for long-context handoff.",
+    "Capture only durable facts that matter for future execution and safe continuation.",
+    instructionBlock,
+    [
+      "Output requirements:",
+      "- Use plain text.",
+      "- Use these exact section headings in this exact order:",
+      "Goals & Context",
+      "Key Decisions",
+      "Progress",
+      "Constraints",
+      "Critical Details",
+      "Files",
+      "- Under Files, list file operations (created, modified, deleted, renamed) with path and current status.",
+      "- If no file operations are present, set Files to: none.",
+      `- Target length: about ${targetTokens} tokens.`,
+    ].join("\n"),
+    `<previous_context>\n${previousContext}\n</previous_context>`,
+    `<conversation_to_condense>\n${text}\n</conversation_to_condense>`,
   ].join("\n\n");
 }
 
@@ -161,19 +226,44 @@ export async function createLcmSummarizeFromLegacyParams(params: {
     apiKey = requireApiKey(auth, resolvedModel.provider);
   }
 
-  return async (text: string, aggressive?: boolean): Promise<string> => {
+  const runtimeLcmConfig = resolveLcmConfig();
+  const condensedTargetTokens =
+    Number.isFinite(runtimeLcmConfig.condensedTargetTokens) &&
+    runtimeLcmConfig.condensedTargetTokens > 0
+      ? runtimeLcmConfig.condensedTargetTokens
+      : DEFAULT_CONDENSED_TARGET_TOKENS;
+
+  return async (
+    text: string,
+    aggressive?: boolean,
+    options?: LcmSummarizeOptions,
+  ): Promise<string> => {
     if (!text.trim()) {
       return "";
     }
 
     const mode: SummaryMode = aggressive ? "aggressive" : "normal";
-    const targetTokens = resolveTargetTokens(estimateTokens(text), mode);
-    const prompt = buildSummaryPrompt({
-      text,
+    const isCondensed = options?.isCondensed === true;
+    const targetTokens = resolveTargetTokens({
+      inputTokens: estimateTokens(text),
       mode,
-      targetTokens,
-      customInstructions: params.customInstructions,
+      isCondensed,
+      condensedTargetTokens,
     });
+    const prompt = isCondensed
+      ? buildCondensedSummaryPrompt({
+          text,
+          targetTokens,
+          previousSummary: options?.previousSummary,
+          customInstructions: params.customInstructions,
+        })
+      : buildLeafSummaryPrompt({
+          text,
+          mode,
+          targetTokens,
+          previousSummary: options?.previousSummary,
+          customInstructions: params.customInstructions,
+        });
 
     const controller = new AbortController();
     const timeout = setTimeout(controller.abort.bind(controller), SUMMARY_TIMEOUT_MS);
@@ -195,6 +285,7 @@ export async function createLcmSummarizeFromLegacyParams(params: {
           maxTokens: targetTokens,
           temperature: aggressive ? 0.1 : 0.2,
           signal: controller.signal,
+          ...(isCondensed ? { reasoning: "high" as const } : {}),
         },
       );
 
