@@ -399,6 +399,10 @@ function readLeafPathMessages(sessionFile: string): AgentMessage[] {
   return messages.filter(isBootstrapMessage);
 }
 
+function messageIdentity(role: string, content: string): string {
+  return `${role}\u0000${content}`;
+}
+
 // ── LcmContextEngine ────────────────────────────────────────────────────────
 
 export class LcmContextEngine implements ContextEngine {
@@ -673,67 +677,157 @@ export class LcmContextEngine implements ContextEngine {
 
   // ── ContextEngine interface ─────────────────────────────────────────────
 
+  /**
+   * Reconcile session-file history with persisted messages and append only the
+   * tail that is present in JSONL but missing from LCM.
+   */
+  private async reconcileSessionTail(params: {
+    sessionId: string;
+    conversationId: number;
+    historicalMessages: AgentMessage[];
+  }): Promise<{
+    importedMessages: number;
+    hasOverlap: boolean;
+  }> {
+    const { sessionId, conversationId, historicalMessages } = params;
+    if (historicalMessages.length === 0) {
+      return { importedMessages: 0, hasOverlap: false };
+    }
+
+    const latestDbMessage = await this.conversationStore.getLastMessage(conversationId);
+    if (!latestDbMessage) {
+      return { importedMessages: 0, hasOverlap: false };
+    }
+
+    // Fast path: one tail comparison for the common in-sync case.
+    const latestHistorical = toStoredMessage(historicalMessages[historicalMessages.length - 1]);
+    if (
+      messageIdentity(latestDbMessage.role, latestDbMessage.content) ===
+      messageIdentity(latestHistorical.role, latestHistorical.content)
+    ) {
+      return { importedMessages: 0, hasOverlap: true };
+    }
+
+    // Slow path: walk backward through JSONL to find the most recent anchor
+    // message that already exists in LCM, then append everything after it.
+    let anchorIndex = -1;
+    for (let index = historicalMessages.length - 1; index >= 0; index--) {
+      const stored = toStoredMessage(historicalMessages[index]);
+      const exists = await this.conversationStore.hasMessage(
+        conversationId,
+        stored.role,
+        stored.content,
+      );
+      if (!exists) {
+        continue;
+      }
+      anchorIndex = index;
+      break;
+    }
+
+    if (anchorIndex < 0) {
+      return { importedMessages: 0, hasOverlap: false };
+    }
+    if (anchorIndex >= historicalMessages.length - 1) {
+      return { importedMessages: 0, hasOverlap: true };
+    }
+
+    const missingTail = historicalMessages.slice(anchorIndex + 1);
+    let importedMessages = 0;
+    for (const message of missingTail) {
+      const result = await this.ingestSingle({ sessionId, message });
+      if (result.ingested) {
+        importedMessages += 1;
+      }
+    }
+
+    return { importedMessages, hasOverlap: true };
+  }
+
   async bootstrap(params: { sessionId: string; sessionFile: string }): Promise<BootstrapResult> {
     this.ensureMigrated();
 
-    return this.conversationStore.withTransaction(async () => {
-      const conversation = await this.conversationStore.getOrCreateConversation(params.sessionId);
-      const conversationId = conversation.conversationId;
+    return this.withSessionQueue(params.sessionId, async () =>
+      this.conversationStore.withTransaction(async () => {
+        const conversation = await this.conversationStore.getOrCreateConversation(params.sessionId);
+        const conversationId = conversation.conversationId;
+        const historicalMessages = readLeafPathMessages(params.sessionFile);
 
-      if (conversation.bootstrappedAt) {
-        return {
-          bootstrapped: false,
-          importedMessages: 0,
-          reason: "already bootstrapped",
-        };
-      }
+        // First-time import path: no LCM rows yet, so seed directly from the
+        // active leaf context snapshot.
+        const existingCount = await this.conversationStore.getMessageCount(conversationId);
+        if (existingCount === 0) {
+          if (historicalMessages.length === 0) {
+            await this.conversationStore.markConversationBootstrapped(conversationId);
+            return {
+              bootstrapped: false,
+              importedMessages: 0,
+              reason: "no leaf-path messages in session",
+            };
+          }
 
-      // If data already exists but bootstrap marker was never written (for example
-      // from a partial deploy), avoid re-importing duplicates and just seal state.
-      const existingCount = await this.conversationStore.getMessageCount(conversationId);
-      if (existingCount > 0) {
-        await this.conversationStore.markConversationBootstrapped(conversationId);
-        return {
-          bootstrapped: false,
-          importedMessages: 0,
-          reason: "conversation already has messages",
-        };
-      }
+          const nextSeq = (await this.conversationStore.getMaxSeq(conversationId)) + 1;
+          const bulkInput = historicalMessages.map((message, index) => {
+            const stored = toStoredMessage(message);
+            return {
+              conversationId,
+              seq: nextSeq + index,
+              role: stored.role,
+              content: stored.content,
+              tokenCount: stored.tokenCount,
+            };
+          });
 
-      const historicalMessages = readLeafPathMessages(params.sessionFile);
-      if (historicalMessages.length === 0) {
-        await this.conversationStore.markConversationBootstrapped(conversationId);
-        return {
-          bootstrapped: false,
-          importedMessages: 0,
-          reason: "no leaf-path messages in session",
-        };
-      }
+          const inserted = await this.conversationStore.createMessagesBulk(bulkInput);
+          await this.summaryStore.appendContextMessages(
+            conversationId,
+            inserted.map((record) => record.messageId),
+          );
+          await this.conversationStore.markConversationBootstrapped(conversationId);
 
-      const nextSeq = (await this.conversationStore.getMaxSeq(conversationId)) + 1;
-      const bulkInput = historicalMessages.map((message, index) => {
-        const stored = toStoredMessage(message);
-        return {
+          return {
+            bootstrapped: true,
+            importedMessages: inserted.length,
+          };
+        }
+
+        // Existing conversation path: reconcile crash gaps by appending JSONL
+        // messages that were never persisted to LCM.
+        const reconcile = await this.reconcileSessionTail({
+          sessionId: params.sessionId,
           conversationId,
-          seq: nextSeq + index,
-          role: stored.role,
-          content: stored.content,
-          tokenCount: stored.tokenCount,
+          historicalMessages,
+        });
+
+        if (!conversation.bootstrappedAt) {
+          await this.conversationStore.markConversationBootstrapped(conversationId);
+        }
+
+        if (reconcile.importedMessages > 0) {
+          return {
+            bootstrapped: true,
+            importedMessages: reconcile.importedMessages,
+            reason: "reconciled missing session messages",
+          };
+        }
+
+        if (conversation.bootstrappedAt) {
+          return {
+            bootstrapped: false,
+            importedMessages: 0,
+            reason: "already bootstrapped",
+          };
+        }
+
+        return {
+          bootstrapped: false,
+          importedMessages: 0,
+          reason: reconcile.hasOverlap
+            ? "conversation already up to date"
+            : "conversation already has messages",
         };
-      });
-
-      const inserted = await this.conversationStore.createMessagesBulk(bulkInput);
-      await this.summaryStore.appendContextMessages(
-        conversationId,
-        inserted.map((record) => record.messageId),
-      );
-      await this.conversationStore.markConversationBootstrapped(conversationId);
-
-      return {
-        bootstrapped: true,
-        importedMessages: inserted.length,
-      };
-    });
+      }),
+    );
   }
 
   private async ingestSingle(params: {

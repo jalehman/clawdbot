@@ -396,6 +396,84 @@ describe("LcmContextEngine.bootstrap", () => {
     );
   });
 
+  it("reconciles missing tail messages when JSONL advanced past LCM", async () => {
+    const sessionFile = createSessionFilePath("reconcile-tail");
+    const sm = SessionManager.open(sessionFile);
+    sm.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "seed user" }],
+    } as AgentMessage);
+    sm.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "seed assistant" }],
+    } as AgentMessage);
+
+    const engine = createEngine();
+    const sessionId = "bootstrap-reconcile-tail";
+
+    const first = await engine.bootstrap({ sessionId, sessionFile });
+    expect(first.bootstrapped).toBe(true);
+    expect(first.importedMessages).toBe(2);
+
+    sm.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "lost user turn" }],
+    } as AgentMessage);
+    sm.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "lost assistant turn" }],
+    } as AgentMessage);
+
+    const second = await engine.bootstrap({ sessionId, sessionFile });
+    expect(second.bootstrapped).toBe(true);
+    expect(second.importedMessages).toBe(2);
+    expect(second.reason).toBe("reconciled missing session messages");
+
+    const conversation = await engine.getConversationStore().getConversationBySessionId(sessionId);
+    expect(conversation).not.toBeNull();
+    const stored = await engine.getConversationStore().getMessages(conversation!.conversationId);
+    expect(stored.map((message) => message.content)).toEqual([
+      "seed user",
+      "seed assistant",
+      "lost user turn",
+      "lost assistant turn",
+    ]);
+  });
+
+  it("does not append JSONL when no overlapping anchor exists in LCM", async () => {
+    const sessionFile = createSessionFilePath("reconcile-no-overlap");
+    const sm = SessionManager.open(sessionFile);
+    sm.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "json only user" }],
+    } as AgentMessage);
+    sm.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "json only assistant" }],
+    } as AgentMessage);
+
+    const engine = createEngine();
+    const sessionId = "bootstrap-reconcile-no-overlap";
+    await engine.ingest({
+      sessionId,
+      message: { role: "user", content: "db only user" } as AgentMessage,
+    });
+    await engine.ingest({
+      sessionId,
+      message: { role: "assistant", content: "db only assistant" } as AgentMessage,
+    });
+
+    const result = await engine.bootstrap({ sessionId, sessionFile });
+    expect(result.bootstrapped).toBe(false);
+    expect(result.importedMessages).toBe(0);
+    expect(result.reason).toBe("conversation already has messages");
+
+    const conversation = await engine.getConversationStore().getConversationBySessionId(sessionId);
+    expect(conversation).not.toBeNull();
+    const stored = await engine.getConversationStore().getMessages(conversation!.conversationId);
+    expect(stored.map((message) => message.content)).toEqual(["db only user", "db only assistant"]);
+  });
+
   it("uses the bulk import path for initial bootstrap", async () => {
     const sessionFile = createSessionFilePath("bulk");
     const sm = SessionManager.open(sessionFile);

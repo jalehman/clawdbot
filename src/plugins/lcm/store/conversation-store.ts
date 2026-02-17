@@ -370,6 +370,37 @@ export class ConversationStore {
     return rows.map(toMessageRecord);
   }
 
+  async getLastMessage(conversationId: ConversationId): Promise<MessageRecord | null> {
+    const row = this.db
+      .prepare(
+        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at
+       FROM messages
+       WHERE conversation_id = ?
+       ORDER BY seq DESC
+       LIMIT 1`,
+      )
+      .get(conversationId) as unknown as MessageRow | undefined;
+
+    return row ? toMessageRecord(row) : null;
+  }
+
+  async hasMessage(
+    conversationId: ConversationId,
+    role: MessageRole,
+    content: string,
+  ): Promise<boolean> {
+    const row = this.db
+      .prepare(
+        `SELECT 1 AS count
+       FROM messages
+       WHERE conversation_id = ? AND role = ? AND content = ?
+       LIMIT 1`,
+      )
+      .get(conversationId, role, content) as unknown as CountRow | undefined;
+
+    return row?.count === 1;
+  }
+
   async getMessageById(messageId: MessageId): Promise<MessageRecord | null> {
     const row = this.db
       .prepare(
