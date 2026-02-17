@@ -782,6 +782,66 @@ describe("LCM integration: compaction", () => {
     expect(contextItems.length).toBeLessThan(10);
   });
 
+  it("compactLeaf uses preceding summary context for soft leaf continuity", async () => {
+    const incrementalEngine = new CompactionEngine(convStore as any, sumStore as any, {
+      ...defaultCompactionConfig,
+      freshTailCount: 1,
+    });
+
+    await convStore.createConversation({ sessionId: "leaf-continuity-session" });
+
+    await sumStore.insertSummary({
+      summaryId: "sum_pre_1",
+      conversationId: CONV_ID,
+      kind: "leaf",
+      content: "Prior summary one.",
+      tokenCount: 4,
+    });
+    await sumStore.appendContextSummary(CONV_ID, "sum_pre_1");
+    await sumStore.insertSummary({
+      summaryId: "sum_pre_2",
+      conversationId: CONV_ID,
+      kind: "leaf",
+      content: "Prior summary two.",
+      tokenCount: 4,
+    });
+    await sumStore.appendContextSummary(CONV_ID, "sum_pre_2");
+    await sumStore.insertSummary({
+      summaryId: "sum_pre_3",
+      conversationId: CONV_ID,
+      kind: "leaf",
+      content: "Prior summary three.",
+      tokenCount: 4,
+    });
+    await sumStore.appendContextSummary(CONV_ID, "sum_pre_3");
+
+    await ingestMessages(convStore, sumStore, 4, {
+      contentFn: (i) => `Turn ${i}: ${"k".repeat(160)}`,
+      tokenCountFn: () => 40,
+    });
+
+    type SummarizeOptions = { previousSummary?: string; isCondensed?: boolean };
+    const summarizeCalls: SummarizeOptions[] = [];
+    const summarize = vi.fn(
+      async (_text: string, _aggressive?: boolean, options?: SummarizeOptions) => {
+        summarizeCalls.push(options ?? {});
+        return "Leaf summary with continuity.";
+      },
+    );
+
+    const result = await incrementalEngine.compactLeaf({
+      conversationId: CONV_ID,
+      tokenBudget: 200,
+      summarize,
+      force: true,
+    });
+
+    expect(result.actionTaken).toBe(true);
+    expect(summarizeCalls.length).toBeGreaterThan(0);
+    expect(summarizeCalls[0]?.previousSummary).toBe("Prior summary two.\n\nPrior summary three.");
+    expect(summarizeCalls[0]?.isCondensed).toBe(false);
+  });
+
   it("compaction propagates referenced file ids into summary metadata", async () => {
     const productionTailEngine = new CompactionEngine(convStore as any, sumStore as any, {
       ...defaultCompactionConfig,

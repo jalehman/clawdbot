@@ -213,11 +213,15 @@ export class CompactionEngine {
       };
     }
 
+    const previousSummaryContent =
+      input.previousSummaryContent ??
+      (await this.resolvePriorLeafSummaryContext(conversationId, leafChunk.items));
+
     const leafResult = await this.leafPass(
       conversationId,
       leafChunk.items,
       summarize,
-      input.previousSummaryContent,
+      previousSummaryContent,
     );
     const tokensAfter = await this.summaryStore.getContextTokenCount(conversationId);
 
@@ -578,6 +582,53 @@ export class CompactionEngine {
     }
 
     return { items: chunk, rawTokensOutsideTail, threshold };
+  }
+
+  /**
+   * Resolve recent summary continuity for a leaf pass.
+   *
+   * Collects up to two most recent summary context items that precede the
+   * compacted raw-message chunk and returns their combined content.
+   */
+  private async resolvePriorLeafSummaryContext(
+    conversationId: number,
+    messageItems: ContextItemRecord[],
+  ): Promise<string | undefined> {
+    if (messageItems.length === 0) {
+      return undefined;
+    }
+
+    const startOrdinal = Math.min(...messageItems.map((item) => item.ordinal));
+    const priorSummaryItems = (await this.summaryStore.getContextItems(conversationId))
+      .filter(
+        (item) =>
+          item.ordinal < startOrdinal &&
+          item.itemType === "summary" &&
+          typeof item.summaryId === "string",
+      )
+      .slice(-2);
+
+    if (priorSummaryItems.length === 0) {
+      return undefined;
+    }
+
+    const summaryContents: string[] = [];
+    for (const item of priorSummaryItems) {
+      if (typeof item.summaryId !== "string") {
+        continue;
+      }
+      const summary = await this.summaryStore.getSummary(item.summaryId);
+      const content = summary?.content.trim();
+      if (content) {
+        summaryContents.push(content);
+      }
+    }
+
+    if (summaryContents.length === 0) {
+      return undefined;
+    }
+
+    return summaryContents.join("\n\n");
   }
 
   /** Resolve summary token count with content-length fallback. */
