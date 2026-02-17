@@ -165,6 +165,12 @@ export function createLcmExpandTool(options?: {
           : undefined;
       const includeMessages = typeof p.includeMessages === "boolean" ? p.includeMessages : false;
       const sessionKey = typeof options?.sessionId === "string" ? options.sessionId.trim() : "";
+      if (!isSubagentSessionKey(sessionKey)) {
+        return jsonResult({
+          error:
+            "lcm_expand is only available in sub-agent sessions. Use lcm_describe or lcm_grep to inspect summaries, or delegate expansion to a sub-agent.",
+        });
+      }
       const isDelegatedSession = isSubagentSessionKey(sessionKey);
       const delegatedGrantId = isDelegatedSession
         ? (resolveDelegatedExpansionGrantId(sessionKey) ?? undefined)

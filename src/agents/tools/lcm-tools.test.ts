@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  createDelegatedExpansionGrant,
+  resetDelegatedExpansionGrantsForTests,
+} from "../../plugins/lcm/expansion-auth.js";
 import { createLcmDescribeTool } from "./lcm-describe-tool.js";
 import { createLcmExpandTool } from "./lcm-expand-tool.js";
 import { createLcmGrepTool } from "./lcm-grep-tool.js";
@@ -48,6 +52,7 @@ describe("LCM tools session scoping", () => {
   beforeEach(() => {
     mocks.ensureContextEnginesInitialized.mockClear();
     mocks.resolveContextEngine.mockReset();
+    resetDelegatedExpansionGrantsForTests();
   });
 
   it("lcm_expand query mode infers conversationId from session", async () => {
@@ -77,7 +82,13 @@ describe("LCM tools session scoping", () => {
       buildLcmEngine({ retrieval, conversationId: 42 }) as never,
     );
 
-    const tool = createLcmExpandTool({ sessionId: "session-1" });
+    createDelegatedExpansionGrant({
+      delegatedSessionKey: "agent:main:subagent:session-1",
+      issuerSessionId: "main",
+      allowedConversationIds: [42],
+      tokenCap: 120,
+    });
+    const tool = createLcmExpandTool({ sessionId: "agent:main:subagent:session-1" });
     const result = await tool.execute("call-1", { query: "recent snippet" });
 
     expect(retrieval.grep).toHaveBeenCalledWith(
