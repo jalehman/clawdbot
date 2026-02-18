@@ -457,3 +457,18 @@ export type { ProcessedLineMessage } from "../line/markdown-to-line.js";
 
 // Media utilities
 export { loadWebMedia, type WebMediaResult } from "../web/media.js";
+
+// Context engine
+export type {
+  ContextEngine,
+  ContextEngineInfo,
+  AssembleResult,
+  CompactResult,
+  IngestResult,
+  IngestBatchResult,
+  BootstrapResult,
+  SubagentSpawnPreparation,
+  SubagentEndReason,
+} from "../context-engine/types.js";
+export { registerContextEngine } from "../context-engine/registry.js";
+export type { ContextEngineFactory } from "../context-engine/registry.js";

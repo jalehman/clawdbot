@@ -1,7 +1,6 @@
 import type { OpenClawConfig } from "../config/config.js";
 import type { ContextEngine } from "./types.js";
-
-const DEFAULT_ENGINE_ID = "legacy";
+import { defaultSlotIdForKey } from "../plugins/slots.js";
 
 /**
  * A factory that creates a ContextEngine instance.
@@ -50,9 +49,11 @@ export function listContextEngineIds(): string[] {
  * Throws if the resolved engine id has no registered factory.
  */
 export async function resolveContextEngine(config?: OpenClawConfig): Promise<ContextEngine> {
-  const slotValue = (config?.plugins?.slots as Record<string, unknown> | undefined)?.contextEngine;
+  const slotValue = config?.plugins?.slots?.contextEngine;
   const engineId =
-    typeof slotValue === "string" && slotValue.trim() ? slotValue.trim() : DEFAULT_ENGINE_ID;
+    typeof slotValue === "string" && slotValue.trim()
+      ? slotValue.trim()
+      : defaultSlotIdForKey("contextEngine");
 
   const factory = _engines.get(engineId);
   if (!factory) {
