@@ -1,6 +1,10 @@
+import type { SubagentEndReason } from "../context-engine/types.js";
 import { loadConfig } from "../config/config.js";
+import { ensureContextEnginesInitialized } from "../context-engine/init.js";
+import { resolveContextEngine } from "../context-engine/registry.js";
 import { callGateway } from "../gateway/call.js";
 import { onAgentEvent } from "../infra/agent-events.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { defaultRuntime } from "../runtime.js";
 import { type DeliveryContext, normalizeDeliveryContext } from "../utils/delivery-context.js";
 import { resetAnnounceQueuesForTests } from "./subagent-announce-queue.js";
@@ -10,6 +14,8 @@ import {
   saveSubagentRegistryToDisk,
 } from "./subagent-registry.store.js";
 import { resolveAgentTimeoutMs } from "./timeout.js";
+
+const log = createSubsystemLogger("agents/subagent-registry");
 
 export type SubagentRunRecord = {
   runId: string;
@@ -85,6 +91,22 @@ function persistSubagentRuns() {
 }
 
 const resumedRuns = new Set<string>();
+
+async function notifyContextEngineSubagentEnded(params: {
+  childSessionKey: string;
+  reason: SubagentEndReason;
+}) {
+  try {
+    ensureContextEnginesInitialized();
+    const engine = await resolveContextEngine(loadConfig());
+    if (!engine.onSubagentEnded) {
+      return;
+    }
+    await engine.onSubagentEnded(params);
+  } catch (err) {
+    log.warn("context-engine onSubagentEnded failed (best-effort)", { err });
+  }
+}
 
 function suppressAnnounceForSteerRestart(entry?: SubagentRunRecord) {
   return entry?.suppressAnnounceReason === "steer-restart";
@@ -250,6 +272,10 @@ async function sweepSubagentRuns() {
     if (!entry.archiveAtMs || entry.archiveAtMs > now) {
       continue;
     }
+    void notifyContextEngineSubagentEnded({
+      childSessionKey: entry.childSessionKey,
+      reason: "swept",
+    });
     subagentRuns.delete(runId);
     mutated = true;
     try {
@@ -355,11 +381,19 @@ function finalizeSubagentCleanup(runId: string, cleanup: "delete" | "keep", didA
     return;
   }
   if (cleanup === "delete") {
+    void notifyContextEngineSubagentEnded({
+      childSessionKey: entry.childSessionKey,
+      reason: "deleted",
+    });
     subagentRuns.delete(runId);
     persistSubagentRuns();
     retryDeferredCompletedAnnounces(runId);
     return;
   }
+  void notifyContextEngineSubagentEnded({
+    childSessionKey: entry.childSessionKey,
+    reason: "completed",
+  });
   entry.cleanupCompletedAt = Date.now();
   persistSubagentRuns();
   retryDeferredCompletedAnnounces(runId);
@@ -630,6 +664,13 @@ export function addSubagentRunForTests(entry: SubagentRunRecord) {
 }
 
 export function releaseSubagentRun(runId: string) {
+  const entry = subagentRuns.get(runId);
+  if (entry) {
+    void notifyContextEngineSubagentEnded({
+      childSessionKey: entry.childSessionKey,
+      reason: "released",
+    });
+  }
   const didDelete = subagentRuns.delete(runId);
   if (didDelete) {
     persistSubagentRuns();
