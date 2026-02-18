@@ -195,6 +195,37 @@ function createMockSummaryStore() {
         .toSorted((a, b) => a.ordinal - b.ordinal);
     }),
 
+    getDistinctDepthsInContext: vi.fn(
+      async (
+        conversationId: number,
+        options?: {
+          maxOrdinalExclusive?: number;
+        },
+      ): Promise<number[]> => {
+        const ordinalBound = options?.maxOrdinalExclusive;
+        const summaryIds = contextItems
+          .filter((ci) => {
+            if (ci.conversationId !== conversationId || ci.itemType !== "summary") {
+              return false;
+            }
+            if (typeof ordinalBound === "number" && ci.ordinal >= ordinalBound) {
+              return false;
+            }
+            return typeof ci.summaryId === "string";
+          })
+          .map((ci) => ci.summaryId as string);
+        const distinctDepths = new Set<number>();
+        for (const summaryId of summaryIds) {
+          const summary = summaries.find((candidate) => candidate.summaryId === summaryId);
+          if (!summary) {
+            continue;
+          }
+          distinctDepths.add(summary.depth);
+        }
+        return [...distinctDepths].toSorted((a, b) => a - b);
+      },
+    ),
+
     appendContextMessage: vi.fn(
       async (conversationId: number, messageId: number): Promise<void> => {
         const existing = contextItems.filter((ci) => ci.conversationId === conversationId);
@@ -306,6 +337,7 @@ function createMockSummaryStore() {
         summaryId: string;
         conversationId: number;
         kind: SummaryKind;
+        depth?: number;
         content: string;
         tokenCount: number;
         fileIds?: string[];
@@ -314,6 +346,7 @@ function createMockSummaryStore() {
           summaryId: input.summaryId,
           conversationId: input.conversationId,
           kind: input.kind,
+          depth: input.depth ?? (input.kind === "leaf" ? 0 : 1),
           content: input.content,
           tokenCount: input.tokenCount,
           fileIds: input.fileIds ?? [],
@@ -560,6 +593,9 @@ function wireStores(
 const defaultCompactionConfig: CompactionConfig = {
   contextThreshold: 0.75,
   freshTailCount: 4,
+  leafMinFanout: 8,
+  condensedMinFanout: 4,
+  condensedMinFanoutHard: 2,
   leafTargetTokens: 600,
   condensedTargetTokens: 900,
   maxRounds: 10,
@@ -913,6 +949,7 @@ describe("LCM integration: compaction", () => {
   it("compaction emits durable compaction parts for leaf and condensed passes", async () => {
     const condensedFriendlyEngine = new CompactionEngine(convStore as any, sumStore as any, {
       ...defaultCompactionConfig,
+      leafMinFanout: 2,
       leafChunkTokens: 100,
       condensedTargetTokens: 10,
     });
@@ -962,6 +999,435 @@ describe("LCM integration: compaction", () => {
     expect((condensedPart!.createdSummaryIds as unknown[]).length).toBeGreaterThanOrEqual(1);
     expect(typeof leafPart!.condensedPassOccurred).toBe("boolean");
     expect(typeof condensedPart!.condensedPassOccurred).toBe("boolean");
+  });
+
+  it("depth-aware condensation sets condensed depth to max parent depth plus one", async () => {
+    const depthAwareEngine = new CompactionEngine(convStore as any, sumStore as any, {
+      ...defaultCompactionConfig,
+      leafMinFanout: 2,
+      condensedMinFanout: 2,
+      leafChunkTokens: 200,
+      condensedTargetTokens: 10,
+    });
+
+    await convStore.createConversation({ sessionId: "depth-aware-depth-assignment" });
+    await sumStore.insertSummary({
+      summaryId: "sum_depth_parent_a",
+      conversationId: CONV_ID,
+      kind: "condensed",
+      depth: 1,
+      content: "Depth one summary A",
+      tokenCount: 60,
+    });
+    await sumStore.insertSummary({
+      summaryId: "sum_depth_parent_b",
+      conversationId: CONV_ID,
+      kind: "condensed",
+      depth: 1,
+      content: "Depth one summary B",
+      tokenCount: 60,
+    });
+    await sumStore.appendContextSummary(CONV_ID, "sum_depth_parent_a");
+    await sumStore.appendContextSummary(CONV_ID, "sum_depth_parent_b");
+
+    const summarize = vi.fn(async () => "Depth two merged summary");
+    const result = await depthAwareEngine.compact({
+      conversationId: CONV_ID,
+      tokenBudget: 500,
+      summarize,
+      force: true,
+    });
+
+    expect(result.actionTaken).toBe(true);
+    const createdSummary = sumStore._summaries.find((s) => s.summaryId === result.createdSummaryId);
+    expect(createdSummary).toBeDefined();
+    expect(createdSummary!.depth).toBe(2);
+  });
+
+  it("depth-aware selection stops on depth mismatch and does not mix depth bands", async () => {
+    const depthAwareEngine = new CompactionEngine(convStore as any, sumStore as any, {
+      ...defaultCompactionConfig,
+      leafMinFanout: 2,
+      condensedMinFanout: 3,
+      leafChunkTokens: 200,
+      condensedTargetTokens: 10,
+    });
+
+    await convStore.createConversation({ sessionId: "depth-break-session" });
+    await sumStore.insertSummary({
+      summaryId: "sum_break_leaf_1",
+      conversationId: CONV_ID,
+      kind: "leaf",
+      depth: 0,
+      content: "Leaf depth zero A",
+      tokenCount: 60,
+    });
+    await sumStore.insertSummary({
+      summaryId: "sum_break_leaf_2",
+      conversationId: CONV_ID,
+      kind: "leaf",
+      depth: 0,
+      content: "Leaf depth zero B",
+      tokenCount: 60,
+    });
+    await sumStore.insertSummary({
+      summaryId: "sum_break_mid_1",
+      conversationId: CONV_ID,
+      kind: "condensed",
+      depth: 1,
+      content: "Depth one block",
+      tokenCount: 60,
+    });
+    await sumStore.insertSummary({
+      summaryId: "sum_break_leaf_3",
+      conversationId: CONV_ID,
+      kind: "leaf",
+      depth: 0,
+      content: "Leaf depth zero C",
+      tokenCount: 60,
+    });
+    await sumStore.appendContextSummary(CONV_ID, "sum_break_leaf_1");
+    await sumStore.appendContextSummary(CONV_ID, "sum_break_leaf_2");
+    await sumStore.appendContextSummary(CONV_ID, "sum_break_mid_1");
+    await sumStore.appendContextSummary(CONV_ID, "sum_break_leaf_3");
+
+    const summarize = vi.fn(async () => "Depth-aware merged summary");
+    const result = await depthAwareEngine.compact({
+      conversationId: CONV_ID,
+      tokenBudget: 500,
+      summarize,
+      force: true,
+    });
+
+    expect(result.actionTaken).toBe(true);
+    const parentIds = sumStore._summaryParents
+      .filter((edge) => edge.summaryId === result.createdSummaryId)
+      .toSorted((a, b) => a.ordinal - b.ordinal)
+      .map((edge) => edge.parentSummaryId);
+    expect(parentIds).toEqual(["sum_break_leaf_1", "sum_break_leaf_2"]);
+  });
+
+  it("depth-aware phase 2 processes shallowest eligible depth first", async () => {
+    const depthAwareEngine = new CompactionEngine(convStore as any, sumStore as any, {
+      ...defaultCompactionConfig,
+      leafMinFanout: 2,
+      condensedMinFanout: 2,
+      leafChunkTokens: 200,
+      condensedTargetTokens: 10,
+    });
+
+    await convStore.createConversation({ sessionId: "shallowest-first-session" });
+    await sumStore.insertSummary({
+      summaryId: "sum_depth_one_a",
+      conversationId: CONV_ID,
+      kind: "condensed",
+      depth: 1,
+      content: "D1-A existing condensed context",
+      tokenCount: 60,
+    });
+    await sumStore.insertSummary({
+      summaryId: "sum_depth_one_b",
+      conversationId: CONV_ID,
+      kind: "condensed",
+      depth: 1,
+      content: "D1-B existing condensed context",
+      tokenCount: 60,
+    });
+    await sumStore.insertSummary({
+      summaryId: "sum_depth_zero_a",
+      conversationId: CONV_ID,
+      kind: "leaf",
+      depth: 0,
+      content: "L0-A leaf context",
+      tokenCount: 60,
+    });
+    await sumStore.insertSummary({
+      summaryId: "sum_depth_zero_b",
+      conversationId: CONV_ID,
+      kind: "leaf",
+      depth: 0,
+      content: "L0-B leaf context",
+      tokenCount: 60,
+    });
+    await sumStore.appendContextSummary(CONV_ID, "sum_depth_one_a");
+    await sumStore.appendContextSummary(CONV_ID, "sum_depth_one_b");
+    await sumStore.appendContextSummary(CONV_ID, "sum_depth_zero_a");
+    await sumStore.appendContextSummary(CONV_ID, "sum_depth_zero_b");
+
+    const summarize = vi.fn(async () => "Depth-aware summary output");
+    const result = await depthAwareEngine.compact({
+      conversationId: CONV_ID,
+      tokenBudget: 500,
+      summarize,
+      force: true,
+    });
+
+    expect(result.actionTaken).toBe(true);
+    const firstSourceText = summarize.mock.calls[0]?.[0] as string;
+    expect(firstSourceText).toContain("L0-A leaf context");
+    expect(firstSourceText).toContain("L0-B leaf context");
+    expect(firstSourceText).not.toContain("D1-A existing condensed context");
+  });
+
+  it("includes continuity context only when condensing depth-0 summaries", async () => {
+    const depthAwareEngine = new CompactionEngine(convStore as any, sumStore as any, {
+      ...defaultCompactionConfig,
+      leafMinFanout: 2,
+      condensedMinFanout: 2,
+      leafChunkTokens: 200,
+      condensedTargetTokens: 10,
+    });
+
+    const depthOneConversation = await convStore.createConversation({
+      sessionId: "continuity-gate-depth-one",
+    });
+    await sumStore.insertSummary({
+      summaryId: "sum_depth_one_prior",
+      conversationId: depthOneConversation.conversationId,
+      kind: "condensed",
+      depth: 1,
+      content: "Depth one prior context",
+      tokenCount: 60,
+    });
+    await sumStore.insertSummary({
+      summaryId: "sum_depth_one_focus_a",
+      conversationId: depthOneConversation.conversationId,
+      kind: "condensed",
+      depth: 1,
+      content: "Depth one focus A",
+      tokenCount: 60,
+    });
+    await sumStore.insertSummary({
+      summaryId: "sum_depth_one_focus_b",
+      conversationId: depthOneConversation.conversationId,
+      kind: "condensed",
+      depth: 1,
+      content: "Depth one focus B",
+      tokenCount: 60,
+    });
+    await sumStore.appendContextSummary(depthOneConversation.conversationId, "sum_depth_one_prior");
+    await sumStore.appendContextSummary(
+      depthOneConversation.conversationId,
+      "sum_depth_one_focus_a",
+    );
+    await sumStore.appendContextSummary(
+      depthOneConversation.conversationId,
+      "sum_depth_one_focus_b",
+    );
+
+    const summarizeCalls: Array<{
+      options?: {
+        previousSummary?: string;
+        isCondensed?: boolean;
+      };
+    }> = [];
+    const summarize = vi.fn(
+      async (
+        _text: string,
+        _aggressive?: boolean,
+        options?: { previousSummary?: string; isCondensed?: boolean },
+      ) => {
+        summarizeCalls.push({ options });
+        return "Condensed output";
+      },
+    );
+
+    const depthOneContext = await sumStore.getContextItems(depthOneConversation.conversationId);
+    const depthOneItems = depthOneContext.filter(
+      (item) =>
+        item.itemType === "summary" &&
+        (item.summaryId === "sum_depth_one_focus_a" || item.summaryId === "sum_depth_one_focus_b"),
+    );
+    await (depthAwareEngine as any).condensedPass(
+      depthOneConversation.conversationId,
+      depthOneItems,
+      1,
+      summarize,
+    );
+
+    expect(summarizeCalls[0]?.options?.isCondensed).toBe(true);
+    expect(summarizeCalls[0]?.options?.previousSummary).toBeUndefined();
+
+    const depthZeroConversation = await convStore.createConversation({
+      sessionId: "continuity-gate-depth-zero",
+    });
+    await sumStore.insertSummary({
+      summaryId: "sum_depth_zero_prior",
+      conversationId: depthZeroConversation.conversationId,
+      kind: "leaf",
+      depth: 0,
+      content: "Depth zero prior context",
+      tokenCount: 60,
+    });
+    await sumStore.insertSummary({
+      summaryId: "sum_depth_zero_focus_a",
+      conversationId: depthZeroConversation.conversationId,
+      kind: "leaf",
+      depth: 0,
+      content: "Depth zero focus A",
+      tokenCount: 60,
+    });
+    await sumStore.insertSummary({
+      summaryId: "sum_depth_zero_focus_b",
+      conversationId: depthZeroConversation.conversationId,
+      kind: "leaf",
+      depth: 0,
+      content: "Depth zero focus B",
+      tokenCount: 60,
+    });
+    await sumStore.appendContextSummary(
+      depthZeroConversation.conversationId,
+      "sum_depth_zero_prior",
+    );
+    await sumStore.appendContextSummary(
+      depthZeroConversation.conversationId,
+      "sum_depth_zero_focus_a",
+    );
+    await sumStore.appendContextSummary(
+      depthZeroConversation.conversationId,
+      "sum_depth_zero_focus_b",
+    );
+
+    const depthZeroContext = await sumStore.getContextItems(depthZeroConversation.conversationId);
+    const depthZeroItems = depthZeroContext.filter(
+      (item) =>
+        item.itemType === "summary" &&
+        (item.summaryId === "sum_depth_zero_focus_a" ||
+          item.summaryId === "sum_depth_zero_focus_b"),
+    );
+    await (depthAwareEngine as any).condensedPass(
+      depthZeroConversation.conversationId,
+      depthZeroItems,
+      0,
+      summarize,
+    );
+
+    const depthZeroCall = summarizeCalls[summarizeCalls.length - 1];
+    expect(depthZeroCall?.options?.previousSummary).toContain("Depth zero prior context");
+  });
+
+  it("enforces fanout thresholds and only relaxes them in hard-trigger mode", async () => {
+    const depthAwareEngine = new CompactionEngine(convStore as any, sumStore as any, {
+      ...defaultCompactionConfig,
+      leafMinFanout: 3,
+      condensedMinFanout: 4,
+      condensedMinFanoutHard: 2,
+      leafChunkTokens: 200,
+      condensedTargetTokens: 10,
+    });
+
+    await convStore.createConversation({ sessionId: "fanout-threshold-session" });
+    await sumStore.insertSummary({
+      summaryId: "sum_fanout_leaf_a",
+      conversationId: CONV_ID,
+      kind: "leaf",
+      depth: 0,
+      content: "Leaf A",
+      tokenCount: 60,
+    });
+    await sumStore.insertSummary({
+      summaryId: "sum_fanout_leaf_b",
+      conversationId: CONV_ID,
+      kind: "leaf",
+      depth: 0,
+      content: "Leaf B",
+      tokenCount: 60,
+    });
+    await sumStore.appendContextSummary(CONV_ID, "sum_fanout_leaf_a");
+    await sumStore.appendContextSummary(CONV_ID, "sum_fanout_leaf_b");
+
+    const summarize = vi.fn(async () => "Fanout relaxed summary");
+    const normalResult = await depthAwareEngine.compact({
+      conversationId: CONV_ID,
+      tokenBudget: 500,
+      summarize,
+      force: true,
+    });
+    expect(normalResult.actionTaken).toBe(false);
+
+    const hardResult = await depthAwareEngine.compactFullSweep({
+      conversationId: CONV_ID,
+      tokenBudget: 500,
+      summarize,
+      force: true,
+      hardTrigger: true,
+    });
+    expect(hardResult.actionTaken).toBe(true);
+  });
+
+  it("keeps condensed parents at uniform depth across interleaved sweeps", async () => {
+    const depthAwareEngine = new CompactionEngine(convStore as any, sumStore as any, {
+      ...defaultCompactionConfig,
+      leafMinFanout: 2,
+      condensedMinFanout: 2,
+      leafChunkTokens: 200,
+      condensedTargetTokens: 10,
+    });
+
+    await convStore.createConversation({ sessionId: "balanced-depth-sweep-session" });
+    for (let i = 0; i < 8; i++) {
+      const summaryId = `sum_balanced_leaf_initial_${i}`;
+      await sumStore.insertSummary({
+        summaryId,
+        conversationId: CONV_ID,
+        kind: "leaf",
+        depth: 0,
+        content: `Initial leaf ${i}`,
+        tokenCount: 60,
+      });
+      await sumStore.appendContextSummary(CONV_ID, summaryId);
+    }
+
+    let summarizeCallCount = 0;
+    const summarize = vi.fn(async () => `Balanced tree summary ${++summarizeCallCount}`);
+    await depthAwareEngine.compact({
+      conversationId: CONV_ID,
+      tokenBudget: 800,
+      summarize,
+      force: true,
+    });
+
+    for (let i = 0; i < 4; i++) {
+      const summaryId = `sum_balanced_leaf_late_${i}`;
+      await sumStore.insertSummary({
+        summaryId,
+        conversationId: CONV_ID,
+        kind: "leaf",
+        depth: 0,
+        content: `Late leaf ${i}`,
+        tokenCount: 60,
+      });
+      await sumStore.appendContextSummary(CONV_ID, summaryId);
+    }
+
+    await depthAwareEngine.compact({
+      conversationId: CONV_ID,
+      tokenBudget: 800,
+      summarize,
+      force: true,
+    });
+
+    const condensedSummaries = sumStore._summaries.filter(
+      (summary) => summary.kind === "condensed",
+    );
+    expect(condensedSummaries.length).toBeGreaterThan(0);
+    for (const condensedSummary of condensedSummaries) {
+      const parentIds = sumStore._summaryParents
+        .filter((edge) => edge.summaryId === condensedSummary.summaryId)
+        .map((edge) => edge.parentSummaryId);
+      if (parentIds.length === 0) {
+        continue;
+      }
+
+      const parentDepths = new Set<number>();
+      for (const parentId of parentIds) {
+        const parent = sumStore._summaries.find((summary) => summary.summaryId === parentId);
+        if (parent) {
+          parentDepths.add(parent.depth);
+        }
+      }
+      expect(parentDepths.size).toBeLessThanOrEqual(1);
+    }
   });
 
   it("compaction escalates to aggressive when normal does not converge", async () => {
@@ -1669,6 +2135,7 @@ describe("LCM integration: full round-trip", () => {
     const condensedFriendlyEngine = new CompactionEngine(convStore as any, sumStore as any, {
       ...defaultCompactionConfig,
       freshTailCount: 4,
+      leafMinFanout: 2,
       leafChunkTokens: 100,
       condensedTargetTokens: 10,
     });

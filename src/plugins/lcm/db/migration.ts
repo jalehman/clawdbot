@@ -1,5 +1,130 @@
 import type { DatabaseSync } from "node:sqlite";
 
+type SummaryColumnInfo = {
+  name?: string;
+};
+
+type SummaryDepthRow = {
+  summary_id: string;
+  kind: "leaf" | "condensed";
+};
+
+type SummaryParentEdgeRow = {
+  summary_id: string;
+  parent_summary_id: string;
+};
+
+function ensureSummaryDepthColumn(db: DatabaseSync): void {
+  const summaryColumns = db.prepare(`PRAGMA table_info(summaries)`).all() as SummaryColumnInfo[];
+  const hasDepth = summaryColumns.some((col) => col.name === "depth");
+  if (!hasDepth) {
+    db.exec(`ALTER TABLE summaries ADD COLUMN depth INTEGER NOT NULL DEFAULT 0`);
+  }
+}
+
+function backfillSummaryDepths(db: DatabaseSync): void {
+  // Leaves are always depth 0, even if legacy rows had malformed values.
+  db.exec(`UPDATE summaries SET depth = 0 WHERE kind = 'leaf'`);
+
+  const conversationRows = db
+    .prepare(`SELECT DISTINCT conversation_id FROM summaries WHERE kind = 'condensed'`)
+    .all() as Array<{ conversation_id: number }>;
+  if (conversationRows.length === 0) {
+    return;
+  }
+
+  const updateDepthStmt = db.prepare(`UPDATE summaries SET depth = ? WHERE summary_id = ?`);
+
+  for (const row of conversationRows) {
+    const conversationId = row.conversation_id;
+    const summaries = db
+      .prepare(
+        `SELECT summary_id, kind
+         FROM summaries
+         WHERE conversation_id = ?`,
+      )
+      .all(conversationId) as SummaryDepthRow[];
+
+    const depthBySummaryId = new Map<string, number>();
+    const unresolvedCondensedIds = new Set<string>();
+    for (const summary of summaries) {
+      if (summary.kind === "leaf") {
+        depthBySummaryId.set(summary.summary_id, 0);
+        continue;
+      }
+      unresolvedCondensedIds.add(summary.summary_id);
+    }
+
+    const edges = db
+      .prepare(
+        `SELECT summary_id, parent_summary_id
+         FROM summary_parents
+         WHERE summary_id IN (
+           SELECT summary_id FROM summaries
+           WHERE conversation_id = ? AND kind = 'condensed'
+         )`,
+      )
+      .all(conversationId) as SummaryParentEdgeRow[];
+    const parentsBySummaryId = new Map<string, string[]>();
+    for (const edge of edges) {
+      const existing = parentsBySummaryId.get(edge.summary_id) ?? [];
+      existing.push(edge.parent_summary_id);
+      parentsBySummaryId.set(edge.summary_id, existing);
+    }
+
+    while (unresolvedCondensedIds.size > 0) {
+      let progressed = false;
+
+      for (const summaryId of [...unresolvedCondensedIds]) {
+        const parentIds = parentsBySummaryId.get(summaryId) ?? [];
+        if (parentIds.length === 0) {
+          depthBySummaryId.set(summaryId, 1);
+          unresolvedCondensedIds.delete(summaryId);
+          progressed = true;
+          continue;
+        }
+
+        let maxParentDepth = -1;
+        let allParentsResolved = true;
+        for (const parentId of parentIds) {
+          const parentDepth = depthBySummaryId.get(parentId);
+          if (parentDepth == null) {
+            allParentsResolved = false;
+            break;
+          }
+          if (parentDepth > maxParentDepth) {
+            maxParentDepth = parentDepth;
+          }
+        }
+
+        if (!allParentsResolved) {
+          continue;
+        }
+
+        depthBySummaryId.set(summaryId, maxParentDepth + 1);
+        unresolvedCondensedIds.delete(summaryId);
+        progressed = true;
+      }
+
+      // Guard against malformed cycles/cross-conversation references.
+      if (!progressed) {
+        for (const summaryId of unresolvedCondensedIds) {
+          depthBySummaryId.set(summaryId, 1);
+        }
+        unresolvedCondensedIds.clear();
+      }
+    }
+
+    for (const summary of summaries) {
+      const depth = depthBySummaryId.get(summary.summary_id);
+      if (depth == null) {
+        continue;
+      }
+      updateDepthStmt.run(depth, summary.summary_id);
+    }
+  }
+}
+
 export function runLcmMigrations(db: DatabaseSync): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS conversations (
@@ -26,6 +151,7 @@ export function runLcmMigrations(db: DatabaseSync): void {
       summary_id TEXT PRIMARY KEY,
       conversation_id INTEGER NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
       kind TEXT NOT NULL CHECK (kind IN ('leaf', 'condensed')),
+      depth INTEGER NOT NULL DEFAULT 0,
       content TEXT NOT NULL,
       token_count INTEGER NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -126,6 +252,9 @@ export function runLcmMigrations(db: DatabaseSync): void {
   if (!hasBootstrappedAt) {
     db.exec(`ALTER TABLE conversations ADD COLUMN bootstrapped_at TEXT`);
   }
+
+  ensureSummaryDepthColumn(db);
+  backfillSummaryDepths(db);
 
   // FTS5 virtual tables for full-text search (cannot use IF NOT EXISTS, so check manually)
   const hasFts = db

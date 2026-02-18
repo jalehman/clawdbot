@@ -8,6 +8,7 @@ export type CreateSummaryInput = {
   summaryId: string;
   conversationId: number;
   kind: SummaryKind;
+  depth?: number;
   content: string;
   tokenCount: number;
   fileIds?: string[];
@@ -17,6 +18,7 @@ export type SummaryRecord = {
   summaryId: string;
   conversationId: number;
   kind: SummaryKind;
+  depth: number;
   content: string;
   tokenCount: number;
   fileIds: string[];
@@ -77,6 +79,7 @@ interface SummaryRow {
   summary_id: string;
   conversation_id: number;
   kind: SummaryKind;
+  depth: number;
   content: string;
   token_count: number;
   file_ids: string;
@@ -103,6 +106,10 @@ interface SummarySearchRow {
 
 interface MaxOrdinalRow {
   max_ordinal: number;
+}
+
+interface DistinctDepthRow {
+  depth: number;
 }
 
 interface TokenSumRow {
@@ -137,6 +144,7 @@ function toSummaryRecord(row: SummaryRow): SummaryRecord {
     summaryId: row.summary_id,
     conversationId: row.conversation_id,
     kind: row.kind,
+    depth: row.depth,
     content: row.content,
     tokenCount: row.token_count,
     fileIds,
@@ -188,16 +196,23 @@ export class SummaryStore {
 
   async insertSummary(input: CreateSummaryInput): Promise<SummaryRecord> {
     const fileIds = JSON.stringify(input.fileIds ?? []);
+    const depth =
+      typeof input.depth === "number" && Number.isFinite(input.depth) && input.depth >= 0
+        ? Math.floor(input.depth)
+        : input.kind === "leaf"
+          ? 0
+          : 1;
 
     this.db
       .prepare(
-        `INSERT INTO summaries (summary_id, conversation_id, kind, content, token_count, file_ids)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO summaries (summary_id, conversation_id, kind, depth, content, token_count, file_ids)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.summaryId,
         input.conversationId,
         input.kind,
+        depth,
         input.content,
         input.tokenCount,
         fileIds,
@@ -216,7 +231,7 @@ export class SummaryStore {
 
     const row = this.db
       .prepare(
-        `SELECT summary_id, conversation_id, kind, content, token_count, file_ids, created_at
+        `SELECT summary_id, conversation_id, kind, depth, content, token_count, file_ids, created_at
        FROM summaries WHERE summary_id = ?`,
       )
       .get(input.summaryId) as unknown as SummaryRow;
@@ -227,7 +242,7 @@ export class SummaryStore {
   async getSummary(summaryId: string): Promise<SummaryRecord | null> {
     const row = this.db
       .prepare(
-        `SELECT summary_id, conversation_id, kind, content, token_count, file_ids, created_at
+        `SELECT summary_id, conversation_id, kind, depth, content, token_count, file_ids, created_at
        FROM summaries WHERE summary_id = ?`,
       )
       .get(summaryId) as unknown as SummaryRow | undefined;
@@ -237,7 +252,7 @@ export class SummaryStore {
   async getSummariesByConversation(conversationId: number): Promise<SummaryRecord[]> {
     const rows = this.db
       .prepare(
-        `SELECT summary_id, conversation_id, kind, content, token_count, file_ids, created_at
+        `SELECT summary_id, conversation_id, kind, depth, content, token_count, file_ids, created_at
        FROM summaries
        WHERE conversation_id = ?
        ORDER BY created_at`,
@@ -294,7 +309,7 @@ export class SummaryStore {
   async getSummaryChildren(parentSummaryId: string): Promise<SummaryRecord[]> {
     const rows = this.db
       .prepare(
-        `SELECT s.summary_id, s.conversation_id, s.kind, s.content, s.token_count, s.file_ids, s.created_at
+        `SELECT s.summary_id, s.conversation_id, s.kind, s.depth, s.content, s.token_count, s.file_ids, s.created_at
        FROM summaries s
        JOIN summary_parents sp ON sp.summary_id = s.summary_id
        WHERE sp.parent_summary_id = ?
@@ -307,7 +322,7 @@ export class SummaryStore {
   async getSummaryParents(summaryId: string): Promise<SummaryRecord[]> {
     const rows = this.db
       .prepare(
-        `SELECT s.summary_id, s.conversation_id, s.kind, s.content, s.token_count, s.file_ids, s.created_at
+        `SELECT s.summary_id, s.conversation_id, s.kind, s.depth, s.content, s.token_count, s.file_ids, s.created_at
        FROM summaries s
        JOIN summary_parents sp ON sp.parent_summary_id = s.summary_id
        WHERE sp.summary_id = ?
@@ -329,6 +344,40 @@ export class SummaryStore {
       )
       .all(conversationId) as unknown as ContextItemRow[];
     return rows.map(toContextItemRecord);
+  }
+
+  async getDistinctDepthsInContext(
+    conversationId: number,
+    options?: { maxOrdinalExclusive?: number },
+  ): Promise<number[]> {
+    const maxOrdinalExclusive = options?.maxOrdinalExclusive;
+    const useOrdinalBound =
+      typeof maxOrdinalExclusive === "number" &&
+      Number.isFinite(maxOrdinalExclusive) &&
+      maxOrdinalExclusive !== Infinity;
+
+    const sql = useOrdinalBound
+      ? `SELECT DISTINCT s.depth
+         FROM context_items ci
+         JOIN summaries s ON s.summary_id = ci.summary_id
+         WHERE ci.conversation_id = ?
+           AND ci.item_type = 'summary'
+           AND ci.ordinal < ?
+         ORDER BY s.depth ASC`
+      : `SELECT DISTINCT s.depth
+         FROM context_items ci
+         JOIN summaries s ON s.summary_id = ci.summary_id
+         WHERE ci.conversation_id = ?
+           AND ci.item_type = 'summary'
+         ORDER BY s.depth ASC`;
+
+    const rows = useOrdinalBound
+      ? (this.db
+          .prepare(sql)
+          .all(conversationId, Math.floor(maxOrdinalExclusive)) as unknown as DistinctDepthRow[])
+      : (this.db.prepare(sql).all(conversationId) as unknown as DistinctDepthRow[]);
+
+    return rows.map((row) => row.depth);
   }
 
   async appendContextMessage(conversationId: number, messageId: number): Promise<void> {
@@ -550,7 +599,7 @@ export class SummaryStore {
     const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
     const rows = this.db
       .prepare(
-        `SELECT summary_id, conversation_id, kind, content, token_count, file_ids, created_at
+        `SELECT summary_id, conversation_id, kind, depth, content, token_count, file_ids, created_at
          FROM summaries
          ${whereClause}
          ORDER BY created_at DESC`,

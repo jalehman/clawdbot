@@ -436,6 +436,9 @@ export class LcmContextEngine implements ContextEngine {
     const compactionConfig: CompactionConfig = {
       contextThreshold: this.config.contextThreshold,
       freshTailCount: this.config.freshTailCount,
+      leafMinFanout: this.config.leafMinFanout,
+      condensedMinFanout: this.config.condensedMinFanout,
+      condensedMinFanoutHard: this.config.condensedMinFanoutHard,
       leafChunkTokens: this.config.leafChunkTokens,
       leafTargetTokens: this.config.leafTargetTokens,
       condensedTargetTokens: this.config.condensedTargetTokens,
@@ -1174,6 +1177,7 @@ export class LcmContextEngine implements ContextEngine {
           tokenBudget,
           summarize,
           force: forceCompaction,
+          hardTrigger: useHardTriggerSweep,
         });
 
         return {

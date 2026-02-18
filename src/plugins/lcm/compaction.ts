@@ -31,6 +31,12 @@ export interface CompactionConfig {
   contextThreshold: number;
   /** Number of fresh tail turns to protect (default 8) */
   freshTailCount: number;
+  /** Minimum number of depth-0 summaries needed for condensation. */
+  leafMinFanout: number;
+  /** Minimum number of depth>=1 summaries needed for condensation. */
+  condensedMinFanout: number;
+  /** Relaxed minimum fanout for hard-trigger sweeps and /compact. */
+  condensedMinFanoutHard: number;
   /** Max source tokens to compact per leaf/condensed chunk (default 20000) */
   leafChunkTokens?: number;
   /** Target tokens for leaf summaries (default 600) */
@@ -61,6 +67,10 @@ type LeafChunkSelection = {
 type CondensedChunkSelection = {
   items: ContextItemRecord[];
   summaryTokens: number;
+};
+type CondensedPhaseCandidate = {
+  targetDepth: number;
+  chunk: CondensedChunkSelection;
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -172,6 +182,7 @@ export class CompactionEngine {
     /** LLM call function for summarization */
     summarize: CompactionSummarizeFn;
     force?: boolean;
+    hardTrigger?: boolean;
   }): Promise<CompactionResult> {
     return this.compactFullSweep(input);
   }
@@ -256,8 +267,9 @@ export class CompactionEngine {
     tokenBudget: number;
     summarize: CompactionSummarizeFn;
     force?: boolean;
+    hardTrigger?: boolean;
   }): Promise<CompactionResult> {
-    const { conversationId, tokenBudget, summarize, force } = input;
+    const { conversationId, tokenBudget, summarize, force, hardTrigger } = input;
 
     const tokensBefore = await this.summaryStore.getContextTokenCount(conversationId);
     const threshold = Math.floor(this.config.contextThreshold * tokenBudget);
@@ -324,20 +336,21 @@ export class CompactionEngine {
       previousTokens = passTokensAfter;
     }
 
-    // Phase 2: condensed passes over ratio-sized summary chunks.
+    // Phase 2: depth-aware condensed passes, always processing shallowest depth first.
     while (true) {
-      const condensedChunk = await this.selectOldestCondensedChunk(conversationId);
-      if (condensedChunk.items.length < 2) {
-        break;
-      }
-      if (condensedChunk.summaryTokens < this.resolveCondensedMinChunkTokens()) {
+      const candidate = await this.selectShallowestCondensationCandidate({
+        conversationId,
+        hardTrigger: hardTrigger === true,
+      });
+      if (!candidate) {
         break;
       }
 
       const passTokensBefore = await this.summaryStore.getContextTokenCount(conversationId);
       const condenseResult = await this.condensedPass(
         conversationId,
-        condensedChunk.items,
+        candidate.chunk.items,
+        candidate.targetDepth,
         summarize,
       );
       const passTokensAfter = await this.summaryStore.getContextTokenCount(conversationId);
@@ -643,6 +656,49 @@ export class CompactionEngine {
     return estimateTokens(summary.content);
   }
 
+  private resolveLeafMinFanout(): number {
+    if (
+      typeof this.config.leafMinFanout === "number" &&
+      Number.isFinite(this.config.leafMinFanout) &&
+      this.config.leafMinFanout > 0
+    ) {
+      return Math.floor(this.config.leafMinFanout);
+    }
+    return 8;
+  }
+
+  private resolveCondensedMinFanout(): number {
+    if (
+      typeof this.config.condensedMinFanout === "number" &&
+      Number.isFinite(this.config.condensedMinFanout) &&
+      this.config.condensedMinFanout > 0
+    ) {
+      return Math.floor(this.config.condensedMinFanout);
+    }
+    return 4;
+  }
+
+  private resolveCondensedMinFanoutHard(): number {
+    if (
+      typeof this.config.condensedMinFanoutHard === "number" &&
+      Number.isFinite(this.config.condensedMinFanoutHard) &&
+      this.config.condensedMinFanoutHard > 0
+    ) {
+      return Math.floor(this.config.condensedMinFanoutHard);
+    }
+    return 2;
+  }
+
+  private resolveFanoutForDepth(targetDepth: number, hardTrigger: boolean): number {
+    if (hardTrigger) {
+      return this.resolveCondensedMinFanoutHard();
+    }
+    if (targetDepth === 0) {
+      return this.resolveLeafMinFanout();
+    }
+    return this.resolveCondensedMinFanout();
+  }
+
   /** Minimum condensed input size before we run another condensed pass. */
   private resolveCondensedMinChunkTokens(): number {
     const chunkTarget = this.resolveLeafChunkTokens();
@@ -651,41 +707,78 @@ export class CompactionEngine {
   }
 
   /**
-   * Select the oldest contiguous summary chunk for condensed compaction.
-   *
-   * The chunk is bounded by summary-token budget (`leafChunkTokens`), matching
-   * the leaf pass' token-budgeted chunking. This naturally produces
-   * ~ceil(leafChunkTokens / leafTargetTokens) summaries per chunk.
+   * Find the shallowest depth with an eligible same-depth summary chunk.
    */
-  private async selectOldestCondensedChunk(
-    conversationId: number,
-  ): Promise<CondensedChunkSelection> {
+  private async selectShallowestCondensationCandidate(params: {
+    conversationId: number;
+    hardTrigger: boolean;
+  }): Promise<CondensedPhaseCandidate | null> {
+    const { conversationId, hardTrigger } = params;
     const contextItems = await this.summaryStore.getContextItems(conversationId);
     const freshTailOrdinal = this.resolveFreshTailOrdinal(contextItems);
+    const minChunkTokens = this.resolveCondensedMinChunkTokens();
+    const depthLevels = await this.summaryStore.getDistinctDepthsInContext(conversationId, {
+      maxOrdinalExclusive: freshTailOrdinal,
+    });
+
+    for (const targetDepth of depthLevels) {
+      const fanout = this.resolveFanoutForDepth(targetDepth, hardTrigger);
+      const chunk = await this.selectOldestChunkAtDepth(
+        conversationId,
+        targetDepth,
+        freshTailOrdinal,
+      );
+      if (chunk.items.length < fanout) {
+        continue;
+      }
+      if (chunk.summaryTokens < minChunkTokens) {
+        continue;
+      }
+      return { targetDepth, chunk };
+    }
+
+    return null;
+  }
+
+  /**
+   * Select the oldest contiguous summary chunk at a specific summary depth.
+   *
+   * Once selection starts, any non-summary item or depth mismatch terminates
+   * the chunk to prevent mixed-depth condensation.
+   */
+  private async selectOldestChunkAtDepth(
+    conversationId: number,
+    targetDepth: number,
+    freshTailOrdinalOverride?: number,
+  ): Promise<CondensedChunkSelection> {
+    const contextItems = await this.summaryStore.getContextItems(conversationId);
+    const freshTailOrdinal =
+      typeof freshTailOrdinalOverride === "number"
+        ? freshTailOrdinalOverride
+        : this.resolveFreshTailOrdinal(contextItems);
     const chunkTokenBudget = this.resolveLeafChunkTokens();
 
     const chunk: ContextItemRecord[] = [];
     let summaryTokens = 0;
-    let started = false;
     for (const item of contextItems) {
       if (item.ordinal >= freshTailOrdinal) {
         break;
       }
-
-      if (!started) {
-        if (item.itemType !== "summary" || item.summaryId == null) {
-          continue;
+      if (item.itemType !== "summary" || item.summaryId == null) {
+        if (chunk.length > 0) {
+          break;
         }
-        started = true;
-      } else if (item.itemType !== "summary" || item.summaryId == null) {
-        break;
-      }
-
-      if (item.summaryId == null) {
         continue;
       }
+
       const summary = await this.summaryStore.getSummary(item.summaryId);
       if (!summary) {
+        if (chunk.length > 0) {
+          break;
+        }
+        continue;
+      }
+      if (summary.depth !== targetDepth) {
         if (chunk.length > 0) {
           break;
         }
@@ -705,6 +798,49 @@ export class CompactionEngine {
     }
 
     return { items: chunk, summaryTokens };
+  }
+
+  private async resolvePriorSummaryContextAtDepth(
+    conversationId: number,
+    summaryItems: ContextItemRecord[],
+    targetDepth: number,
+  ): Promise<string | undefined> {
+    if (summaryItems.length === 0) {
+      return undefined;
+    }
+
+    const startOrdinal = Math.min(...summaryItems.map((item) => item.ordinal));
+    const priorSummaryItems = (await this.summaryStore.getContextItems(conversationId))
+      .filter(
+        (item) =>
+          item.ordinal < startOrdinal &&
+          item.itemType === "summary" &&
+          typeof item.summaryId === "string",
+      )
+      .slice(-4);
+    if (priorSummaryItems.length === 0) {
+      return undefined;
+    }
+
+    const summaryContents: string[] = [];
+    for (const item of priorSummaryItems) {
+      if (typeof item.summaryId !== "string") {
+        continue;
+      }
+      const summary = await this.summaryStore.getSummary(item.summaryId);
+      if (!summary || summary.depth !== targetDepth) {
+        continue;
+      }
+      const content = summary.content.trim();
+      if (content) {
+        summaryContents.push(content);
+      }
+    }
+
+    if (summaryContents.length === 0) {
+      return undefined;
+    }
+    return summaryContents.slice(-2).join("\n\n");
   }
 
   /**
@@ -792,6 +928,7 @@ export class CompactionEngine {
       summaryId,
       conversationId,
       kind: "leaf",
+      depth: 0,
       content: summary.content,
       tokenCount,
       fileIds,
@@ -824,6 +961,7 @@ export class CompactionEngine {
   private async condensedPass(
     conversationId: number,
     summaryItems: ContextItemRecord[],
+    targetDepth: number,
     summarize: CompactionSummarizeFn,
   ): Promise<PassResult> {
     // Fetch full summary records
@@ -845,10 +983,15 @@ export class CompactionEngine {
         ...extractFileIdsFromContent(summary.content),
       ]),
     );
+    const previousSummaryContent =
+      targetDepth === 0
+        ? await this.resolvePriorSummaryContextAtDepth(conversationId, summaryItems, targetDepth)
+        : undefined;
     const condensed = await this.summarizeWithEscalation({
       sourceText: concatenated,
       summarize,
       options: {
+        previousSummary: previousSummaryContent,
         isCondensed: true,
       },
     });
@@ -861,6 +1004,7 @@ export class CompactionEngine {
       summaryId,
       conversationId,
       kind: "condensed",
+      depth: targetDepth + 1,
       content: condensed.content,
       tokenCount,
       fileIds,
