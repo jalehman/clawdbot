@@ -285,7 +285,6 @@ export async function createLcmSummarizeFromLegacyParams(params: {
           maxTokens: targetTokens,
           temperature: aggressive ? 0.1 : 0.2,
           signal: controller.signal,
-          ...(isCondensed ? { reasoning: "high" as const } : {}),
         },
       );
 

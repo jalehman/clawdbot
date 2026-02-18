@@ -120,6 +120,26 @@ describe("createLcmSummarizeFromLegacyParams", () => {
     expect(mockedCompleteSimple.mock.calls[1]?.[2]?.temperature).toBe(0.1);
   });
 
+  it("does not pass reasoning overrides for condensed summaries", async () => {
+    const summarize = await createLcmSummarizeFromLegacyParams({
+      legacyParams: {
+        provider: "anthropic",
+        model: "claude-opus-4-5",
+      },
+    });
+
+    await summarize!("A".repeat(8_000), false, { isCondensed: true });
+
+    expect(mockedCompleteSimple).toHaveBeenCalledTimes(1);
+    const prompt = mockedCompleteSimple.mock.calls[0]?.[1]?.messages?.[0]?.content as string;
+    const requestOptions = mockedCompleteSimple.mock.calls[0]?.[2] as {
+      reasoning?: "high" | "medium" | "low";
+    };
+
+    expect(prompt).toContain("<conversation_to_condense>");
+    expect(requestOptions.reasoning).toBeUndefined();
+  });
+
   it("resolves and uses copilot runtime token when provider is github-copilot", async () => {
     mockedResolveModel.mockReturnValue({
       model: {
