@@ -6,6 +6,18 @@ import { stripThoughtSignatures } from "./bootstrap.js";
 
 type ContentBlock = AgentToolResult<unknown>["content"][number];
 
+function normalizeAssistantStringContent(
+  message: Extract<AgentMessage, { role: "assistant" }>,
+): Extract<AgentMessage, { role: "assistant" }> {
+  if (typeof message.content !== "string") {
+    return message;
+  }
+  return {
+    ...message,
+    content: [{ type: "text", text: message.content }] as unknown as typeof message.content,
+  };
+}
+
 export function isEmptyAssistantMessageContent(
   message: Extract<AgentMessage, { role: "assistant" }>,
 ): boolean {
@@ -88,7 +100,9 @@ export async function sanitizeSessionMessagesImages(
     }
 
     if (role === "assistant") {
-      const assistantMsg = msg as Extract<AgentMessage, { role: "assistant" }>;
+      const assistantMsg = normalizeAssistantStringContent(
+        msg as Extract<AgentMessage, { role: "assistant" }>,
+      );
       if (assistantMsg.stopReason === "error") {
         const content = assistantMsg.content;
         if (Array.isArray(content)) {

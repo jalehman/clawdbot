@@ -9,6 +9,7 @@ export type NormalizedPluginsConfig = {
   loadPaths: string[];
   slots: {
     memory?: string | null;
+    contextEngine?: string | null;
   };
   entries: Record<string, { enabled?: boolean; config?: unknown }>;
 };
@@ -66,6 +67,7 @@ export const normalizePluginsConfig = (
   config?: OpenClawConfig["plugins"],
 ): NormalizedPluginsConfig => {
   const memorySlot = normalizeSlotValue(config?.slots?.memory);
+  const contextEngineSlot = normalizeSlotValue(config?.slots?.contextEngine);
   return {
     enabled: config?.enabled !== false,
     allow: normalizeList(config?.allow),
@@ -73,6 +75,10 @@ export const normalizePluginsConfig = (
     loadPaths: normalizeList(config?.load?.paths),
     slots: {
       memory: memorySlot === undefined ? defaultSlotIdForKey("memory") : memorySlot,
+      contextEngine:
+        contextEngineSlot === undefined
+          ? defaultSlotIdForKey("contextEngine")
+          : contextEngineSlot,
     },
     entries: normalizePluginEntries(config?.entries),
   };

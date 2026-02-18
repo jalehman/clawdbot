@@ -11,6 +11,9 @@ import {
 import { loadSubagentRegistryFromDisk } from "./subagent-registry.store.js";
 
 const noop = () => {};
+const hoisted = vi.hoisted(() => ({
+  announceSpy: vi.fn(async () => true),
+}));
 
 vi.mock("../gateway/call.js", () => ({
   callGateway: vi.fn(async () => ({
@@ -24,9 +27,8 @@ vi.mock("../infra/agent-events.js", () => ({
   onAgentEvent: vi.fn(() => noop),
 }));
 
-const announceSpy = vi.fn(async () => true);
 vi.mock("./subagent-announce.js", () => ({
-  runSubagentAnnounceFlow: announceSpy,
+  runSubagentAnnounceFlow: hoisted.announceSpy,
 }));
 
 describe("subagent registry persistence", () => {
@@ -71,7 +73,7 @@ describe("subagent registry persistence", () => {
   };
 
   afterEach(async () => {
-    announceSpy.mockClear();
+    hoisted.announceSpy.mockClear();
     resetSubagentRegistryForTests({ persist: false });
     if (tempStateDir) {
       await fs.rm(tempStateDir, { recursive: true, force: true });
@@ -119,7 +121,7 @@ describe("subagent registry persistence", () => {
     // allow queued async wait/cleanup to execute
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(announceSpy).toHaveBeenCalled();
+    expect(hoisted.announceSpy).toHaveBeenCalled();
 
     type AnnounceParams = {
       childSessionKey: string;
@@ -130,7 +132,7 @@ describe("subagent registry persistence", () => {
       cleanup: string;
       label?: string;
     };
-    const first = (announceSpy.mock.calls as unknown as Array<[unknown]>)[0]?.[0] as
+    const first = (hoisted.announceSpy.mock.calls as unknown as Array<[unknown]>)[0]?.[0] as
       | AnnounceParams
       | undefined;
     if (!first) {
@@ -172,7 +174,9 @@ describe("subagent registry persistence", () => {
     await new Promise((r) => setTimeout(r, 0));
 
     // announce should NOT be called since cleanupHandled was true
-    const calls = (announceSpy.mock.calls as unknown as Array<[unknown]>).map((call) => call[0]);
+    const calls = (hoisted.announceSpy.mock.calls as unknown as Array<[unknown]>).map(
+      (call) => call[0],
+    );
     const match = calls.find(
       (params) =>
         (params as { childSessionKey?: string }).childSessionKey === "agent:main:subagent:two",
@@ -223,20 +227,20 @@ describe("subagent registry persistence", () => {
     });
     const registryPath = await writePersistedRegistry(persisted);
 
-    announceSpy.mockResolvedValueOnce(false);
+    hoisted.announceSpy.mockResolvedValueOnce(false);
     await restartRegistryAndFlush();
 
-    expect(announceSpy).toHaveBeenCalledTimes(1);
+    expect(hoisted.announceSpy).toHaveBeenCalledTimes(1);
     const afterFirst = JSON.parse(await fs.readFile(registryPath, "utf8")) as {
       runs: Record<string, { cleanupHandled?: boolean; cleanupCompletedAt?: number }>;
     };
     expect(afterFirst.runs["run-3"].cleanupHandled).toBe(false);
     expect(afterFirst.runs["run-3"].cleanupCompletedAt).toBeUndefined();
 
-    announceSpy.mockResolvedValueOnce(true);
+    hoisted.announceSpy.mockResolvedValueOnce(true);
     await restartRegistryAndFlush();
 
-    expect(announceSpy).toHaveBeenCalledTimes(2);
+    expect(hoisted.announceSpy).toHaveBeenCalledTimes(2);
     const afterSecond = JSON.parse(await fs.readFile(registryPath, "utf8")) as {
       runs: Record<string, { cleanupCompletedAt?: number }>;
     };
@@ -252,19 +256,19 @@ describe("subagent registry persistence", () => {
     });
     const registryPath = await writePersistedRegistry(persisted);
 
-    announceSpy.mockResolvedValueOnce(false);
+    hoisted.announceSpy.mockResolvedValueOnce(false);
     await restartRegistryAndFlush();
 
-    expect(announceSpy).toHaveBeenCalledTimes(1);
+    expect(hoisted.announceSpy).toHaveBeenCalledTimes(1);
     const afterFirst = JSON.parse(await fs.readFile(registryPath, "utf8")) as {
       runs: Record<string, { cleanupHandled?: boolean }>;
     };
     expect(afterFirst.runs["run-4"]?.cleanupHandled).toBe(false);
 
-    announceSpy.mockResolvedValueOnce(true);
+    hoisted.announceSpy.mockResolvedValueOnce(true);
     await restartRegistryAndFlush();
 
-    expect(announceSpy).toHaveBeenCalledTimes(2);
+    expect(hoisted.announceSpy).toHaveBeenCalledTimes(2);
     const afterSecond = JSON.parse(await fs.readFile(registryPath, "utf8")) as {
       runs?: Record<string, unknown>;
     };

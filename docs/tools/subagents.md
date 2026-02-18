@@ -52,6 +52,47 @@ Tool params:
 - `runTimeoutSeconds?` (default `0`; when set, the sub-agent run is aborted after N seconds)
 - `cleanup?` (`delete|keep`, default `keep`)
 
+## Automatic LCM Expansion Delegation
+
+When the active context engine is LCM, `lcm_expand` can run an internal route-vs-delegate decision before expanding summaries. LCM storage is SQLite-based, and delegated passes are used only when traversal complexity crosses policy thresholds.
+
+### Decision Outcomes
+
+| Policy action        | Runtime behavior                                                          |
+| -------------------- | ------------------------------------------------------------------------- |
+| `answer_directly`    | No traversal; returns direct answer metadata                              |
+| `expand_shallow`     | Runs local expansion in the current session                               |
+| `delegate_traversal` | Runs bounded delegated traversal passes in short-lived sub-agent sessions |
+
+### Limits and Safety Bounds
+
+- Delegated traversal is capped at **2 passes**.
+- Each delegated pass waits up to **45 seconds**.
+- Per-pass token budget is bounded and decreases after each pass (`remaining = previous - used`).
+- Delegated sessions receive a scoped grant and must stay within allowed conversation, depth, and token bounds.
+- Delegated sessions are deleted after each pass (`deleteTranscript: true`).
+
+### Tune Disable Inspect
+
+Tune:
+
+- Set `tokenCap` and `maxDepth` on `lcm_expand` calls to constrain traversal.
+- Use `LCM_MAX_EXPAND_TOKENS` to cap global expansion budget.
+
+Disable:
+
+- Remove or deny `lcm_expand` from the agent tool allowlist.
+- Or switch away from the LCM context engine for that agent/session.
+
+Inspect:
+
+- Read `details.policy` for routing action, triggers, and reasons.
+- Read `details.executionPath` (`direct`, `delegated`, or `direct_fallback`).
+- Read `details.observability.delegatedRunRefs[]` for delegated pass references (`pass`, `runId`, `childSessionKey`, `status`).
+- Read `details.delegated.passes[]` for cited-ID handoff and pass-level token accounting.
+
+## Configuration
+
 Allowlist:
 
 - `agents.list[].subagents.allowAgents`: list of agent ids that can be targeted via `agentId` (`["*"]` to allow any). Default: only the requester agent.

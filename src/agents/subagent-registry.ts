@@ -1,7 +1,9 @@
 import { loadConfig } from "../config/config.js";
+import { ensureContextEnginesInitialized } from "../context-engine/init.js";
+import { resolveContextEngine } from "../context-engine/registry.js";
+import type { SubagentEndReason } from "../context-engine/types.js";
 import { callGateway } from "../gateway/call.js";
 import { onAgentEvent } from "../infra/agent-events.js";
-import { defaultRuntime } from "../runtime.js";
 import { type DeliveryContext, normalizeDeliveryContext } from "../utils/delivery-context.js";
 import { resetAnnounceQueuesForTests } from "./subagent-announce-queue.js";
 import { runSubagentAnnounceFlow, type SubagentRunOutcome } from "./subagent-announce.js";
@@ -30,10 +32,6 @@ export type SubagentRunRecord = {
   cleanupCompletedAt?: number;
   cleanupHandled?: boolean;
   suppressAnnounceReason?: "steer-restart" | "killed";
-  /** Number of times announce delivery has been attempted and returned false (deferred). */
-  announceRetryCount?: number;
-  /** Timestamp of the last announce retry attempt (for backoff). */
-  lastAnnounceRetryAt?: number;
 };
 
 const subagentRuns = new Map<string, SubagentRunRecord>();
@@ -43,27 +41,6 @@ let listenerStop: (() => void) | null = null;
 // Use var to avoid TDZ when init runs across circular imports during bootstrap.
 var restoreAttempted = false;
 const SUBAGENT_ANNOUNCE_TIMEOUT_MS = 120_000;
-/**
- * Maximum number of announce delivery attempts before giving up.
- * Prevents infinite retry loops when `runSubagentAnnounceFlow` repeatedly
- * returns `false` due to stale state or transient conditions (#18264).
- */
-const MAX_ANNOUNCE_RETRY_COUNT = 3;
-/**
- * Announce entries older than this are force-expired even if delivery never
- * succeeded. Guards against stale registry entries surviving gateway restarts.
- */
-const ANNOUNCE_EXPIRY_MS = 5 * 60_000; // 5 minutes
-
-function logAnnounceGiveUp(entry: SubagentRunRecord, reason: "retry-limit" | "expiry") {
-  const retryCount = entry.announceRetryCount ?? 0;
-  const endedAgoMs =
-    typeof entry.endedAt === "number" ? Math.max(0, Date.now() - entry.endedAt) : undefined;
-  const endedAgoLabel = endedAgoMs != null ? `${Math.round(endedAgoMs / 1000)}s` : "n/a";
-  defaultRuntime.log(
-    `[warn] Subagent announce give up (${reason}) run=${entry.runId} child=${entry.childSessionKey} requester=${entry.requesterSessionKey} retries=${retryCount} endedAgo=${endedAgoLabel}`,
-  );
-}
 
 function persistSubagentRuns() {
   try {
@@ -74,6 +51,22 @@ function persistSubagentRuns() {
 }
 
 const resumedRuns = new Set<string>();
+
+async function notifyContextEngineSubagentEnded(params: {
+  childSessionKey: string;
+  reason: SubagentEndReason;
+}) {
+  try {
+    ensureContextEnginesInitialized();
+    const engine = await resolveContextEngine(loadConfig());
+    if (!engine.onSubagentEnded) {
+      return;
+    }
+    await engine.onSubagentEnded(params);
+  } catch {
+    // ignore context-engine cleanup failures
+  }
+}
 
 function suppressAnnounceForSteerRestart(entry?: SubagentRunRecord) {
   return entry?.suppressAnnounceReason === "steer-restart";
@@ -99,7 +92,7 @@ function startSubagentAnnounceCleanupFlow(runId: string, entry: SubagentRunRecor
     label: entry.label,
     outcome: entry.outcome,
   }).then((didAnnounce) => {
-    finalizeSubagentCleanup(runId, entry.cleanup, didAnnounce);
+    void finalizeSubagentCleanup(runId, entry.cleanup, didAnnounce);
   });
   return true;
 }
@@ -113,19 +106,6 @@ function resumeSubagentRun(runId: string) {
     return;
   }
   if (entry.cleanupCompletedAt) {
-    return;
-  }
-  // Skip entries that have exhausted their retry budget or expired (#18264).
-  if ((entry.announceRetryCount ?? 0) >= MAX_ANNOUNCE_RETRY_COUNT) {
-    logAnnounceGiveUp(entry, "retry-limit");
-    entry.cleanupCompletedAt = Date.now();
-    persistSubagentRuns();
-    return;
-  }
-  if (typeof entry.endedAt === "number" && Date.now() - entry.endedAt > ANNOUNCE_EXPIRY_MS) {
-    logAnnounceGiveUp(entry, "expiry");
-    entry.cleanupCompletedAt = Date.now();
-    persistSubagentRuns();
     return;
   }
 
@@ -223,6 +203,10 @@ async function sweepSubagentRuns() {
       continue;
     }
     subagentRuns.delete(runId);
+    await notifyContextEngineSubagentEnded({
+      childSessionKey: entry.childSessionKey,
+      reason: "swept",
+    });
     mutated = true;
     try {
       await callGateway({
@@ -289,28 +273,16 @@ function ensureListener() {
   });
 }
 
-function finalizeSubagentCleanup(runId: string, cleanup: "delete" | "keep", didAnnounce: boolean) {
+async function finalizeSubagentCleanup(
+  runId: string,
+  cleanup: "delete" | "keep",
+  didAnnounce: boolean,
+) {
   const entry = subagentRuns.get(runId);
   if (!entry) {
     return;
   }
   if (!didAnnounce) {
-    const now = Date.now();
-    const retryCount = (entry.announceRetryCount ?? 0) + 1;
-    entry.announceRetryCount = retryCount;
-    entry.lastAnnounceRetryAt = now;
-
-    // Check if the announce has exceeded retry limits or expired (#18264).
-    const endedAgo = typeof entry.endedAt === "number" ? now - entry.endedAt : 0;
-    if (retryCount >= MAX_ANNOUNCE_RETRY_COUNT || endedAgo > ANNOUNCE_EXPIRY_MS) {
-      // Give up: mark as completed to break the infinite retry loop.
-      logAnnounceGiveUp(entry, retryCount >= MAX_ANNOUNCE_RETRY_COUNT ? "retry-limit" : "expiry");
-      entry.cleanupCompletedAt = now;
-      persistSubagentRuns();
-      retryDeferredCompletedAnnounces(runId);
-      return;
-    }
-
     // Allow retry on the next wake if announce was deferred or failed.
     entry.cleanupHandled = false;
     resumedRuns.delete(runId);
@@ -318,18 +290,25 @@ function finalizeSubagentCleanup(runId: string, cleanup: "delete" | "keep", didA
     return;
   }
   if (cleanup === "delete") {
+    await notifyContextEngineSubagentEnded({
+      childSessionKey: entry.childSessionKey,
+      reason: "deleted",
+    });
     subagentRuns.delete(runId);
     persistSubagentRuns();
     retryDeferredCompletedAnnounces(runId);
     return;
   }
+  await notifyContextEngineSubagentEnded({
+    childSessionKey: entry.childSessionKey,
+    reason: "completed",
+  });
   entry.cleanupCompletedAt = Date.now();
   persistSubagentRuns();
   retryDeferredCompletedAnnounces(runId);
 }
 
 function retryDeferredCompletedAnnounces(excludeRunId?: string) {
-  const now = Date.now();
   for (const [runId, entry] of subagentRuns.entries()) {
     if (excludeRunId && runId === excludeRunId) {
       continue;
@@ -341,14 +320,6 @@ function retryDeferredCompletedAnnounces(excludeRunId?: string) {
       continue;
     }
     if (suppressAnnounceForSteerRestart(entry)) {
-      continue;
-    }
-    // Force-expire announces that have been pending too long (#18264).
-    const endedAgo = now - (entry.endedAt ?? now);
-    if (endedAgo > ANNOUNCE_EXPIRY_MS) {
-      logAnnounceGiveUp(entry, "expiry");
-      entry.cleanupCompletedAt = now;
-      persistSubagentRuns();
       continue;
     }
     resumedRuns.delete(runId);
@@ -451,8 +422,6 @@ export function replaceSubagentRunAfterSteer(params: {
     cleanupCompletedAt: undefined,
     cleanupHandled: false,
     suppressAnnounceReason: undefined,
-    announceRetryCount: undefined,
-    lastAnnounceRetryAt: undefined,
     archiveAtMs,
     runTimeoutSeconds,
   };
@@ -571,6 +540,12 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
 }
 
 export function resetSubagentRegistryForTests(opts?: { persist?: boolean }) {
+  for (const entry of subagentRuns.values()) {
+    void notifyContextEngineSubagentEnded({
+      childSessionKey: entry.childSessionKey,
+      reason: "released",
+    });
+  }
   subagentRuns.clear();
   resumedRuns.clear();
   resetAnnounceQueuesForTests();
@@ -591,6 +566,13 @@ export function addSubagentRunForTests(entry: SubagentRunRecord) {
 }
 
 export function releaseSubagentRun(runId: string) {
+  const entry = subagentRuns.get(runId);
+  if (entry) {
+    void notifyContextEngineSubagentEnded({
+      childSessionKey: entry.childSessionKey,
+      reason: "released",
+    });
+  }
   const didDelete = subagentRuns.delete(runId);
   if (didDelete) {
     persistSubagentRuns();

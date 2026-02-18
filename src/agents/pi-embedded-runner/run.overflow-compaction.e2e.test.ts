@@ -110,6 +110,9 @@ describe("overflow compaction in run loop", () => {
       expect.objectContaining({ authProfileId: "test-profile" }),
     );
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({ contextTokenBudget: 200000 }),
+    );
     expect(log.warn).toHaveBeenCalledWith(
       expect.stringContaining(
         "context overflow detected (attempt 1/3); attempting auto-compaction",

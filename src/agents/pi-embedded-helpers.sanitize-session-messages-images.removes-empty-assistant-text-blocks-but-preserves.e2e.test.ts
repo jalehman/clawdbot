@@ -191,6 +191,16 @@ describe("sanitizeSessionMessagesImages", () => {
       expect(entry.text).toBe("ok");
     });
   });
+  it("normalizes assistant string content into text blocks", async () => {
+    const input = [
+      { role: "assistant", content: "legacy assistant text" },
+    ] as unknown as AgentMessage[];
+
+    const out = await sanitizeSessionMessagesImages(input, "test");
+    const assistant = out[0] as { content?: unknown };
+    expect(Array.isArray(assistant.content)).toBe(true);
+    expect(assistant.content).toEqual([{ type: "text", text: "legacy assistant text" }]);
+  });
   it("drops assistant messages that only contain empty text", async () => {
     const input = [
       { role: "user", content: "hello" },

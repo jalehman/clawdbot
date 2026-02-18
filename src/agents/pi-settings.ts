@@ -1,10 +1,12 @@
 import type { OpenClawConfig } from "../config/config.js";
+import type { ContextEngineInfo } from "../context-engine/types.js";
 
 export const DEFAULT_PI_COMPACTION_RESERVE_TOKENS_FLOOR = 20_000;
 
 type PiSettingsManagerLike = {
   getCompactionReserveTokens: () => number;
   applyOverrides: (overrides: { compaction: { reserveTokens: number } }) => void;
+  setCompactionEnabled?: (enabled: boolean) => void;
 };
 
 export function ensurePiCompactionReserveTokens(params: {
@@ -31,4 +33,33 @@ export function resolveCompactionReserveTokensFloor(cfg?: OpenClawConfig): numbe
     return Math.floor(raw);
   }
   return DEFAULT_PI_COMPACTION_RESERVE_TOKENS_FLOOR;
+}
+
+/** Decide whether Pi's internal auto-compaction should be disabled for this run. */
+export function shouldDisablePiAutoCompaction(params: {
+  contextEngineInfo?: ContextEngineInfo;
+  env?: NodeJS.ProcessEnv;
+}): boolean {
+  if (params.contextEngineInfo?.ownsCompaction === true) {
+    return true;
+  }
+  return params.env?.LCM_AUTOCOMPACT_DISABLED === "true";
+}
+
+/** Disable Pi auto-compaction via settings when LCM (or explicit runtime flag) is active. */
+export function applyPiAutoCompactionGuard(params: {
+  settingsManager: PiSettingsManagerLike;
+  contextEngineInfo?: ContextEngineInfo;
+  env?: NodeJS.ProcessEnv;
+}): { supported: boolean; disabled: boolean } {
+  const disable = shouldDisablePiAutoCompaction({
+    contextEngineInfo: params.contextEngineInfo,
+    env: params.env,
+  });
+  const hasMethod = typeof params.settingsManager.setCompactionEnabled === "function";
+  if (!disable || !hasMethod) {
+    return { supported: hasMethod, disabled: false };
+  }
+  params.settingsManager.setCompactionEnabled!(false);
+  return { supported: true, disabled: true };
 }

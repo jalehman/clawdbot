@@ -1,9 +1,9 @@
 import crypto from "node:crypto";
+import type { OpenClawConfig } from "../../config/config.js";
 import { resolveUserTimezone } from "../../agents/date-time.js";
 import { buildWorkspaceSkillSnapshot } from "../../agents/skills.js";
 import { ensureSkillsWatcher, getSkillsSnapshotVersion } from "../../agents/skills/refresh.js";
-import type { OpenClawConfig } from "../../config/config.js";
-import { type SessionEntry, updateSessionStore } from "../../config/sessions.js";
+import { loadSessionStore, type SessionEntry, updateSessionStore } from "../../config/sessions.js";
 import { buildChannelSummary } from "../../infra/channel-summary.js";
 import {
   resolveTimezone,
@@ -238,6 +238,7 @@ export async function incrementCompactionCount(params: {
   sessionKey?: string;
   storePath?: string;
   now?: number;
+  amount?: number;
   /** Token count after compaction - if provided, updates session token counts */
   tokensAfter?: number;
 }): Promise<number | undefined> {
@@ -247,16 +248,24 @@ export async function incrementCompactionCount(params: {
     sessionKey,
     storePath,
     now = Date.now(),
+    amount = 1,
     tokensAfter,
   } = params;
-  if (!sessionStore || !sessionKey) {
+  if (!sessionKey) {
     return undefined;
   }
-  const entry = sessionStore[sessionKey] ?? sessionEntry;
+
+  const persistedEntry =
+    !sessionStore && storePath
+      ? loadSessionStore(storePath, { skipCache: true })[sessionKey]
+      : undefined;
+  const entry = sessionStore?.[sessionKey] ?? sessionEntry ?? persistedEntry;
   if (!entry) {
     return undefined;
   }
-  const nextCount = (entry.compactionCount ?? 0) + 1;
+
+  const incrementBy = Number.isFinite(amount) ? Math.max(0, Math.trunc(amount)) : 0;
+  const nextCount = (entry.compactionCount ?? 0) + incrementBy;
   // Build update payload with compaction count and optionally updated token counts
   const updates: Partial<SessionEntry> = {
     compactionCount: nextCount,
@@ -270,11 +279,18 @@ export async function incrementCompactionCount(params: {
     updates.inputTokens = undefined;
     updates.outputTokens = undefined;
   }
-  sessionStore[sessionKey] = {
-    ...entry,
-    ...updates,
-  };
+
+  if (sessionStore) {
+    sessionStore[sessionKey] = {
+      ...entry,
+      ...updates,
+    };
+  }
+
   if (storePath) {
+    console.warn(
+      `[session] persisting compaction count: storePath=${storePath} sessionKey=${sessionKey} nextCount=${nextCount}`,
+    );
     await updateSessionStore(storePath, (store) => {
       store[sessionKey] = {
         ...store[sessionKey],
@@ -282,5 +298,6 @@ export async function incrementCompactionCount(params: {
       };
     });
   }
+
   return nextCount;
 }

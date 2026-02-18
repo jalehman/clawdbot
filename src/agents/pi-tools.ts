@@ -168,6 +168,8 @@ export function createOpenClawCodingTools(options?: {
   messageThreadId?: string | number;
   sandbox?: SandboxContext | null;
   sessionKey?: string;
+  /** UUID session ID used by LCM for conversation scoping. */
+  lcmSessionId?: string;
   agentDir?: string;
   workspaceDir?: string;
   config?: OpenClawConfig;
@@ -414,6 +416,7 @@ export function createOpenClawCodingTools(options?: {
       sandboxBrowserBridgeUrl: sandbox?.browser?.bridgeUrl,
       allowHostBrowserControl: sandbox ? sandbox.browserAllowHostControl : true,
       agentSessionKey: options?.sessionKey,
+      lcmSessionId: options?.lcmSessionId,
       agentChannel: resolveGatewayMessageChannel(options?.messageProvider),
       agentAccountId: options?.agentAccountId,
       agentTo: options?.messageTo,

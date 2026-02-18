@@ -42,6 +42,7 @@ export async function incrementRunCompactionCount(
     sessionStore: params.sessionStore,
     sessionKey: params.sessionKey,
     storePath: params.storePath,
+    amount: params.amount,
     tokensAfter: tokensAfterCompaction,
   });
 }
