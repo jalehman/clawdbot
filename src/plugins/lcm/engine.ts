@@ -4,6 +4,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
+import { loadConfig } from "../../config/config.js";
+import {
+  loadSessionStore,
+  resolveAgentIdFromSessionKey,
+  resolveStorePath,
+} from "../../config/sessions.js";
 import type {
   ContextEngine,
   ContextEngineInfo,
@@ -12,12 +18,19 @@ import type {
   CompactResult,
   IngestBatchResult,
   IngestResult,
+  SubagentEndReason,
+  SubagentSpawnPreparation,
 } from "../../context-engine/types.js";
 import { ContextAssembler } from "./assembler.js";
 import { CompactionEngine, type CompactionConfig } from "./compaction.js";
 import { resolveLcmConfig, type LcmConfig } from "./db/config.js";
 import { getLcmConnection, closeLcmConnection } from "./db/connection.js";
 import { runLcmMigrations } from "./db/migration.js";
+import {
+  createDelegatedExpansionGrant,
+  removeDelegatedExpansionGrantForSession,
+  revokeDelegatedExpansionGrantForSession,
+} from "./expansion-auth.js";
 import {
   extensionFromNameOrMime,
   formatFileReference,
@@ -571,6 +584,33 @@ export class LcmContextEngine implements ContextEngine {
       return Math.floor(lp.tokenBudget);
     }
     return undefined;
+  }
+
+  /** Resolve an LCM conversation id from a session key via the session store. */
+  private async resolveConversationIdForSessionKey(
+    sessionKey: string,
+  ): Promise<number | undefined> {
+    const trimmedKey = sessionKey.trim();
+    if (!trimmedKey) {
+      return undefined;
+    }
+    try {
+      const cfg = loadConfig();
+      const agentId = resolveAgentIdFromSessionKey(trimmedKey);
+      const storePath = resolveStorePath(cfg.session?.store, { agentId });
+      const store = loadSessionStore(storePath);
+      const sessionEntry = store[trimmedKey];
+      const runtimeSessionId =
+        typeof sessionEntry?.sessionId === "string" ? sessionEntry.sessionId.trim() : "";
+      if (!runtimeSessionId) {
+        return undefined;
+      }
+      const conversation =
+        await this.conversationStore.getConversationBySessionId(runtimeSessionId);
+      return conversation?.conversationId;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Build a summarize callback with runtime provider fallback handling. */
@@ -1367,6 +1407,67 @@ export class LcmContextEngine implements ContextEngine {
         },
       };
     });
+  }
+
+  async prepareSubagentSpawn(params: {
+    parentSessionKey: string;
+    childSessionKey: string;
+    ttlMs?: number;
+  }): Promise<SubagentSpawnPreparation | undefined> {
+    this.ensureMigrated();
+
+    const childSessionKey = params.childSessionKey.trim();
+    const parentSessionKey = params.parentSessionKey.trim();
+    if (!childSessionKey || !parentSessionKey) {
+      return undefined;
+    }
+
+    const conversationId = await this.resolveConversationIdForSessionKey(parentSessionKey);
+    if (typeof conversationId !== "number") {
+      return undefined;
+    }
+
+    const ttlMs =
+      typeof params.ttlMs === "number" && Number.isFinite(params.ttlMs) && params.ttlMs > 0
+        ? Math.floor(params.ttlMs)
+        : undefined;
+
+    createDelegatedExpansionGrant({
+      delegatedSessionKey: childSessionKey,
+      issuerSessionId: parentSessionKey,
+      allowedConversationIds: [conversationId],
+      tokenCap: this.config.maxExpandTokens,
+      ttlMs,
+    });
+
+    return {
+      rollback: () => {
+        revokeDelegatedExpansionGrantForSession(childSessionKey, { removeBinding: true });
+      },
+    };
+  }
+
+  async onSubagentEnded(params: {
+    childSessionKey: string;
+    reason: SubagentEndReason;
+  }): Promise<void> {
+    const childSessionKey = params.childSessionKey.trim();
+    if (!childSessionKey) {
+      return;
+    }
+
+    switch (params.reason) {
+      case "deleted":
+        revokeDelegatedExpansionGrantForSession(childSessionKey, { removeBinding: true });
+        break;
+      case "completed":
+        revokeDelegatedExpansionGrantForSession(childSessionKey);
+        break;
+      case "released":
+      case "swept":
+        removeDelegatedExpansionGrantForSession(childSessionKey);
+        break;
+    }
   }
 
   async dispose(): Promise<void> {

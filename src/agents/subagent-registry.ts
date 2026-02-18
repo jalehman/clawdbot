@@ -1,11 +1,9 @@
 import { loadConfig } from "../config/config.js";
+import { ensureContextEnginesInitialized } from "../context-engine/init.js";
+import { resolveContextEngine } from "../context-engine/registry.js";
+import type { SubagentEndReason } from "../context-engine/types.js";
 import { callGateway } from "../gateway/call.js";
 import { onAgentEvent } from "../infra/agent-events.js";
-import {
-  removeDelegatedExpansionGrantForSession,
-  resetDelegatedExpansionGrantsForTests,
-  revokeDelegatedExpansionGrantForSession,
-} from "../plugins/lcm/expansion-auth.js";
 import { type DeliveryContext, normalizeDeliveryContext } from "../utils/delivery-context.js";
 import { resetAnnounceQueuesForTests } from "./subagent-announce-queue.js";
 import { runSubagentAnnounceFlow, type SubagentRunOutcome } from "./subagent-announce.js";
@@ -54,6 +52,22 @@ function persistSubagentRuns() {
 
 const resumedRuns = new Set<string>();
 
+async function notifyContextEngineSubagentEnded(params: {
+  childSessionKey: string;
+  reason: SubagentEndReason;
+}) {
+  try {
+    ensureContextEnginesInitialized();
+    const engine = await resolveContextEngine(loadConfig());
+    if (!engine.onSubagentEnded) {
+      return;
+    }
+    await engine.onSubagentEnded(params);
+  } catch {
+    // ignore context-engine cleanup failures
+  }
+}
+
 function suppressAnnounceForSteerRestart(entry?: SubagentRunRecord) {
   return entry?.suppressAnnounceReason === "steer-restart";
 }
@@ -78,7 +92,7 @@ function startSubagentAnnounceCleanupFlow(runId: string, entry: SubagentRunRecor
     label: entry.label,
     outcome: entry.outcome,
   }).then((didAnnounce) => {
-    finalizeSubagentCleanup(runId, entry.cleanup, didAnnounce);
+    void finalizeSubagentCleanup(runId, entry.cleanup, didAnnounce);
   });
   return true;
 }
@@ -189,7 +203,10 @@ async function sweepSubagentRuns() {
       continue;
     }
     subagentRuns.delete(runId);
-    removeDelegatedExpansionGrantForSession(entry.childSessionKey);
+    await notifyContextEngineSubagentEnded({
+      childSessionKey: entry.childSessionKey,
+      reason: "swept",
+    });
     mutated = true;
     try {
       await callGateway({
@@ -256,7 +273,11 @@ function ensureListener() {
   });
 }
 
-function finalizeSubagentCleanup(runId: string, cleanup: "delete" | "keep", didAnnounce: boolean) {
+async function finalizeSubagentCleanup(
+  runId: string,
+  cleanup: "delete" | "keep",
+  didAnnounce: boolean,
+) {
   const entry = subagentRuns.get(runId);
   if (!entry) {
     return;
@@ -269,13 +290,19 @@ function finalizeSubagentCleanup(runId: string, cleanup: "delete" | "keep", didA
     return;
   }
   if (cleanup === "delete") {
-    revokeDelegatedExpansionGrantForSession(entry.childSessionKey, { removeBinding: true });
+    await notifyContextEngineSubagentEnded({
+      childSessionKey: entry.childSessionKey,
+      reason: "deleted",
+    });
     subagentRuns.delete(runId);
     persistSubagentRuns();
     retryDeferredCompletedAnnounces(runId);
     return;
   }
-  revokeDelegatedExpansionGrantForSession(entry.childSessionKey);
+  await notifyContextEngineSubagentEnded({
+    childSessionKey: entry.childSessionKey,
+    reason: "completed",
+  });
   entry.cleanupCompletedAt = Date.now();
   persistSubagentRuns();
   retryDeferredCompletedAnnounces(runId);
@@ -514,9 +541,11 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
 
 export function resetSubagentRegistryForTests(opts?: { persist?: boolean }) {
   for (const entry of subagentRuns.values()) {
-    removeDelegatedExpansionGrantForSession(entry.childSessionKey);
+    void notifyContextEngineSubagentEnded({
+      childSessionKey: entry.childSessionKey,
+      reason: "released",
+    });
   }
-  resetDelegatedExpansionGrantsForTests();
   subagentRuns.clear();
   resumedRuns.clear();
   resetAnnounceQueuesForTests();
@@ -539,7 +568,10 @@ export function addSubagentRunForTests(entry: SubagentRunRecord) {
 export function releaseSubagentRun(runId: string) {
   const entry = subagentRuns.get(runId);
   if (entry) {
-    removeDelegatedExpansionGrantForSession(entry.childSessionKey);
+    void notifyContextEngineSubagentEnded({
+      childSessionKey: entry.childSessionKey,
+      reason: "released",
+    });
   }
   const didDelete = subagentRuns.delete(runId);
   if (didDelete) {

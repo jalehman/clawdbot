@@ -49,6 +49,13 @@ export type ContextEngineInfo = {
   ownsCompaction?: boolean;
 };
 
+export type SubagentSpawnPreparation = {
+  /** Roll back pre-spawn setup when subagent launch fails. */
+  rollback: () => void | Promise<void>;
+};
+
+export type SubagentEndReason = "deleted" | "completed" | "swept" | "released";
+
 /**
  * ContextEngine defines the pluggable contract for context management.
  *
@@ -134,6 +141,23 @@ export interface ContextEngine {
     /** Full params needed for legacy compaction behavior */
     legacyParams?: Record<string, unknown>;
   }): Promise<CompactResult>;
+
+  /**
+   * Prepare context-engine-managed subagent state before the child run starts.
+   *
+   * Implementations can return a rollback handle that is invoked when spawn
+   * fails after preparation succeeds.
+   */
+  prepareSubagentSpawn?(params: {
+    parentSessionKey: string;
+    childSessionKey: string;
+    ttlMs?: number;
+  }): Promise<SubagentSpawnPreparation | undefined>;
+
+  /**
+   * Notify the context engine that a subagent lifecycle ended.
+   */
+  onSubagentEnded?(params: { childSessionKey: string; reason: SubagentEndReason }): Promise<void>;
 
   /**
    * Dispose of any resources held by the engine.
