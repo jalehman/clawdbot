@@ -596,6 +596,7 @@ const defaultCompactionConfig: CompactionConfig = {
   leafMinFanout: 8,
   condensedMinFanout: 4,
   condensedMinFanoutHard: 2,
+  incrementalMaxDepth: 0,
   leafTargetTokens: 600,
   condensedTargetTokens: 900,
   maxRounds: 10,
@@ -876,6 +877,184 @@ describe("LCM integration: compaction", () => {
     expect(summarizeCalls.length).toBeGreaterThan(0);
     expect(summarizeCalls[0]?.previousSummary).toBe("Prior summary two.\n\nPrior summary three.");
     expect(summarizeCalls[0]?.isCondensed).toBe(false);
+  });
+
+  it("compactLeaf keeps incremental behavior leaf-only when incrementalMaxDepth is zero", async () => {
+    const incrementalEngine = new CompactionEngine(convStore as any, sumStore as any, {
+      ...defaultCompactionConfig,
+      freshTailCount: 0,
+      condensedMinFanout: 2,
+      leafChunkTokens: 500,
+      condensedTargetTokens: 10,
+      incrementalMaxDepth: 0,
+    });
+
+    await convStore.createConversation({ sessionId: "incremental-depth-zero" });
+
+    await sumStore.insertSummary({
+      summaryId: "sum_depth_zero_leaf_a",
+      conversationId: CONV_ID,
+      kind: "leaf",
+      depth: 0,
+      content: "Depth zero leaf A",
+      tokenCount: 60,
+    });
+    await sumStore.insertSummary({
+      summaryId: "sum_depth_zero_leaf_b",
+      conversationId: CONV_ID,
+      kind: "leaf",
+      depth: 0,
+      content: "Depth zero leaf B",
+      tokenCount: 60,
+    });
+    await sumStore.appendContextSummary(CONV_ID, "sum_depth_zero_leaf_a");
+    await sumStore.appendContextSummary(CONV_ID, "sum_depth_zero_leaf_b");
+
+    await ingestMessages(convStore, sumStore, 2, {
+      contentFn: (i) => `Leaf source turn ${i}: ${"m".repeat(160)}`,
+      tokenCountFn: () => 120,
+    });
+
+    const summarize = vi.fn(
+      async (_text: string, _aggressive?: boolean, options?: { isCondensed?: boolean }) => {
+        return options?.isCondensed ? "Condensed summary" : "Leaf summary";
+      },
+    );
+    const result = await incrementalEngine.compactLeaf({
+      conversationId: CONV_ID,
+      tokenBudget: 1_200,
+      summarize,
+      force: true,
+    });
+
+    expect(result.actionTaken).toBe(true);
+    expect(result.condensed).toBe(false);
+    expect(sumStore._summaries.filter((summary) => summary.kind === "condensed")).toHaveLength(0);
+  });
+
+  it("compactLeaf performs one depth-zero condensation pass when incrementalMaxDepth is one", async () => {
+    const incrementalEngine = new CompactionEngine(convStore as any, sumStore as any, {
+      ...defaultCompactionConfig,
+      freshTailCount: 0,
+      condensedMinFanout: 2,
+      leafChunkTokens: 500,
+      condensedTargetTokens: 10,
+      incrementalMaxDepth: 1,
+    });
+
+    await convStore.createConversation({ sessionId: "incremental-depth-one" });
+
+    await sumStore.insertSummary({
+      summaryId: "sum_depth_one_leaf_a",
+      conversationId: CONV_ID,
+      kind: "leaf",
+      depth: 0,
+      content: "Depth zero leaf A",
+      tokenCount: 60,
+    });
+    await sumStore.insertSummary({
+      summaryId: "sum_depth_one_leaf_b",
+      conversationId: CONV_ID,
+      kind: "leaf",
+      depth: 0,
+      content: "Depth zero leaf B",
+      tokenCount: 60,
+    });
+    await sumStore.appendContextSummary(CONV_ID, "sum_depth_one_leaf_a");
+    await sumStore.appendContextSummary(CONV_ID, "sum_depth_one_leaf_b");
+
+    await ingestMessages(convStore, sumStore, 2, {
+      contentFn: (i) => `Leaf source turn ${i}: ${"n".repeat(160)}`,
+      tokenCountFn: () => 120,
+    });
+
+    const summarize = vi.fn(
+      async (_text: string, _aggressive?: boolean, options?: { isCondensed?: boolean }) => {
+        return options?.isCondensed ? "Condensed summary" : "Leaf summary";
+      },
+    );
+    const result = await incrementalEngine.compactLeaf({
+      conversationId: CONV_ID,
+      tokenBudget: 1_200,
+      summarize,
+      force: true,
+    });
+
+    expect(result.actionTaken).toBe(true);
+    expect(result.condensed).toBe(true);
+    const condensedSummaries = sumStore._summaries.filter(
+      (summary) => summary.kind === "condensed",
+    );
+    expect(condensedSummaries).toHaveLength(1);
+    expect(condensedSummaries[0].depth).toBe(1);
+  });
+
+  it("compactLeaf cascades to depth two when incrementalMaxDepth is two", async () => {
+    const incrementalEngine = new CompactionEngine(convStore as any, sumStore as any, {
+      ...defaultCompactionConfig,
+      freshTailCount: 0,
+      condensedMinFanout: 2,
+      leafChunkTokens: 500,
+      condensedTargetTokens: 10,
+      incrementalMaxDepth: 2,
+    });
+
+    await convStore.createConversation({ sessionId: "incremental-depth-two" });
+
+    await sumStore.insertSummary({
+      summaryId: "sum_depth_two_existing_d1",
+      conversationId: CONV_ID,
+      kind: "condensed",
+      depth: 1,
+      content: "Existing depth one summary",
+      tokenCount: 60,
+    });
+    await sumStore.insertSummary({
+      summaryId: "sum_depth_two_leaf_a",
+      conversationId: CONV_ID,
+      kind: "leaf",
+      depth: 0,
+      content: "Depth zero leaf A",
+      tokenCount: 60,
+    });
+    await sumStore.insertSummary({
+      summaryId: "sum_depth_two_leaf_b",
+      conversationId: CONV_ID,
+      kind: "leaf",
+      depth: 0,
+      content: "Depth zero leaf B",
+      tokenCount: 60,
+    });
+    await sumStore.appendContextSummary(CONV_ID, "sum_depth_two_existing_d1");
+    await sumStore.appendContextSummary(CONV_ID, "sum_depth_two_leaf_a");
+    await sumStore.appendContextSummary(CONV_ID, "sum_depth_two_leaf_b");
+
+    await ingestMessages(convStore, sumStore, 2, {
+      contentFn: (i) => `Leaf source turn ${i}: ${"p".repeat(160)}`,
+      tokenCountFn: () => 120,
+    });
+
+    let summarizeCount = 0;
+    const summarize = vi.fn(
+      async (_text: string, _aggressive?: boolean, options?: { isCondensed?: boolean }) => {
+        summarizeCount += 1;
+        return options?.isCondensed ? `Condensed summary ${summarizeCount}` : "Leaf summary";
+      },
+    );
+    const result = await incrementalEngine.compactLeaf({
+      conversationId: CONV_ID,
+      tokenBudget: 1_200,
+      summarize,
+      force: true,
+    });
+
+    expect(result.actionTaken).toBe(true);
+    expect(result.condensed).toBe(true);
+
+    const condensedSummaries = sumStore._summaries.filter(
+      (summary) => summary.kind === "condensed",
+    );
+    expect(condensedSummaries.some((summary) => summary.depth === 2)).toBe(true);
   });
 
   it("compaction propagates referenced file ids into summary metadata", async () => {

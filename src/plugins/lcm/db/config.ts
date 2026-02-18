@@ -9,6 +9,7 @@ export type LcmConfig = {
   leafMinFanout: number;
   condensedMinFanout: number;
   condensedMinFanoutHard: number;
+  incrementalMaxDepth: number;
   leafChunkTokens: number;
   leafTargetTokens: number;
   condensedTargetTokens: number;
@@ -26,6 +27,7 @@ export function resolveLcmConfig(env: NodeJS.ProcessEnv = process.env): LcmConfi
     leafMinFanout: parseInt(env.LCM_LEAF_MIN_FANOUT ?? "8", 10),
     condensedMinFanout: parseInt(env.LCM_CONDENSED_MIN_FANOUT ?? "4", 10),
     condensedMinFanoutHard: parseInt(env.LCM_CONDENSED_MIN_FANOUT_HARD ?? "2", 10),
+    incrementalMaxDepth: parseInt(env.LCM_INCREMENTAL_MAX_DEPTH ?? "0", 10),
     leafChunkTokens: parseInt(env.LCM_LEAF_CHUNK_TOKENS ?? "20000", 10),
     leafTargetTokens: parseInt(env.LCM_LEAF_TARGET_TOKENS ?? "1200", 10),
     condensedTargetTokens: parseInt(env.LCM_CONDENSED_TARGET_TOKENS ?? "2000", 10),

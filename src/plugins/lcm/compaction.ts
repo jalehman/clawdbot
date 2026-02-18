@@ -35,8 +35,10 @@ export interface CompactionConfig {
   leafMinFanout: number;
   /** Minimum number of depth>=1 summaries needed for condensation. */
   condensedMinFanout: number;
-  /** Relaxed minimum fanout for hard-trigger sweeps and /compact. */
+  /** Relaxed minimum fanout for hard-trigger sweeps. */
   condensedMinFanoutHard: number;
+  /** Incremental depth passes to run after each leaf compaction (default 0). */
+  incrementalMaxDepth: number;
   /** Max source tokens to compact per leaf/condensed chunk (default 20000) */
   leafChunkTokens?: number;
   /** Target tokens for leaf summaries (default 600) */
@@ -234,24 +236,67 @@ export class CompactionEngine {
       summarize,
       previousSummaryContent,
     );
-    const tokensAfter = await this.summaryStore.getContextTokenCount(conversationId);
+    const tokensAfterLeaf = await this.summaryStore.getContextTokenCount(conversationId);
 
     await this.persistCompactionEvents({
       conversationId,
       tokensBefore,
-      tokensAfterLeaf: tokensAfter,
-      tokensAfterFinal: tokensAfter,
+      tokensAfterLeaf,
+      tokensAfterFinal: tokensAfterLeaf,
       leafResult: { summaryId: leafResult.summaryId, level: leafResult.level },
       condenseResult: null,
     });
+
+    let tokensAfter = tokensAfterLeaf;
+    let condensed = false;
+    let createdSummaryId = leafResult.summaryId;
+    let level = leafResult.level;
+
+    const incrementalMaxDepth = this.resolveIncrementalMaxDepth();
+    const condensedFanout = this.resolveCondensedMinFanout();
+    const condensedMinChunkTokens = this.resolveCondensedMinChunkTokens();
+    if (incrementalMaxDepth > 0) {
+      for (let targetDepth = 0; targetDepth < incrementalMaxDepth; targetDepth++) {
+        const chunk = await this.selectOldestChunkAtDepth(conversationId, targetDepth);
+        if (chunk.items.length < condensedFanout || chunk.summaryTokens < condensedMinChunkTokens) {
+          break;
+        }
+
+        const passTokensBefore = await this.summaryStore.getContextTokenCount(conversationId);
+        const condenseResult = await this.condensedPass(
+          conversationId,
+          chunk.items,
+          targetDepth,
+          summarize,
+        );
+        const passTokensAfter = await this.summaryStore.getContextTokenCount(conversationId);
+        await this.persistCompactionEvents({
+          conversationId,
+          tokensBefore: passTokensBefore,
+          tokensAfterLeaf: passTokensBefore,
+          tokensAfterFinal: passTokensAfter,
+          leafResult: null,
+          condenseResult,
+        });
+
+        tokensAfter = passTokensAfter;
+        condensed = true;
+        createdSummaryId = condenseResult.summaryId;
+        level = condenseResult.level;
+
+        if (passTokensAfter >= passTokensBefore) {
+          break;
+        }
+      }
+    }
 
     return {
       actionTaken: true,
       tokensBefore,
       tokensAfter,
-      createdSummaryId: leafResult.summaryId,
-      condensed: false,
-      level: leafResult.level,
+      createdSummaryId,
+      condensed,
+      level,
     };
   }
 
@@ -687,6 +732,17 @@ export class CompactionEngine {
       return Math.floor(this.config.condensedMinFanoutHard);
     }
     return 2;
+  }
+
+  private resolveIncrementalMaxDepth(): number {
+    if (
+      typeof this.config.incrementalMaxDepth === "number" &&
+      Number.isFinite(this.config.incrementalMaxDepth) &&
+      this.config.incrementalMaxDepth > 0
+    ) {
+      return Math.floor(this.config.incrementalMaxDepth);
+    }
+    return 0;
   }
 
   private resolveFanoutForDepth(targetDepth: number, hardTrigger: boolean): number {

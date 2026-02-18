@@ -21,6 +21,7 @@ function createTestConfig(databasePath: string): LcmConfig {
     leafMinFanout: 8,
     condensedMinFanout: 4,
     condensedMinFanoutHard: 2,
+    incrementalMaxDepth: 0,
     leafChunkTokens: 20_000,
     leafTargetTokens: 600,
     condensedTargetTokens: 900,
@@ -945,6 +946,7 @@ describe("LcmContextEngine.compact token budget plumbing", () => {
         tokenBudget: 200_000,
         summarize: expect.any(Function),
         force: true,
+        hardTrigger: false,
       }),
     );
     expect(compactUntilUnderSpy).not.toHaveBeenCalled();
@@ -996,6 +998,7 @@ describe("LcmContextEngine.compact token budget plumbing", () => {
         tokenBudget: 400,
         summarize: expect.any(Function),
         force: false,
+        hardTrigger: false,
       }),
     );
   });
@@ -1051,6 +1054,7 @@ describe("LcmContextEngine.compact token budget plumbing", () => {
         tokenBudget: 400,
         summarize: expect.any(Function),
         force: false,
+        hardTrigger: false,
       }),
     );
   });

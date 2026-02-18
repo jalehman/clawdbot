@@ -439,6 +439,7 @@ export class LcmContextEngine implements ContextEngine {
       leafMinFanout: this.config.leafMinFanout,
       condensedMinFanout: this.config.condensedMinFanout,
       condensedMinFanoutHard: this.config.condensedMinFanoutHard,
+      incrementalMaxDepth: this.config.incrementalMaxDepth,
       leafChunkTokens: this.config.leafChunkTokens,
       leafTargetTokens: this.config.leafTargetTokens,
       condensedTargetTokens: this.config.condensedTargetTokens,
@@ -1169,15 +1170,15 @@ export class LcmContextEngine implements ContextEngine {
         };
       }
 
-      const useHardTriggerSweep =
+      const useSweep =
         manualCompactionRequested || forceCompaction || params.compactionTarget === "threshold";
-      if (useHardTriggerSweep) {
+      if (useSweep) {
         const sweepResult = await this.compaction.compactFullSweep({
           conversationId,
           tokenBudget,
           summarize,
           force: forceCompaction,
-          hardTrigger: useHardTriggerSweep,
+          hardTrigger: false,
         });
 
         return {
