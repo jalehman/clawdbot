@@ -402,6 +402,22 @@ export class ConversationStore {
     return row?.count === 1;
   }
 
+  async countMessagesByIdentity(
+    conversationId: ConversationId,
+    role: MessageRole,
+    content: string,
+  ): Promise<number> {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count
+       FROM messages
+       WHERE conversation_id = ? AND role = ? AND content = ?`,
+      )
+      .get(conversationId, role, content) as unknown as CountRow | undefined;
+
+    return row?.count ?? 0;
+  }
+
   async getMessageById(messageId: MessageId): Promise<MessageRecord | null> {
     const row = this.db
       .prepare(

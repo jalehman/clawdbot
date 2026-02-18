@@ -451,6 +451,59 @@ describe("LcmContextEngine.bootstrap", () => {
     ]);
   });
 
+  it("reconciles missing structured tool-call tail when prior empty tool content exists", async () => {
+    const sessionFile = createSessionFilePath("reconcile-tool-tail");
+    const sm = SessionManager.open(sessionFile);
+    sm.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "seed user" }],
+    } as AgentMessage);
+    sm.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "seed assistant" }],
+    } as AgentMessage);
+    sm.appendMessage({
+      role: "assistant",
+      content: [{ type: "toolCall", id: "call_existing", name: "read", input: { path: "a.txt" } }],
+    } as AgentMessage);
+    sm.appendMessage({
+      role: "toolResult",
+      toolCallId: "call_existing",
+      content: [{ type: "tool_result", tool_use_id: "call_existing", output: { ok: true } }],
+    } as AgentMessage);
+
+    const engine = createEngine();
+    const sessionId = "bootstrap-reconcile-tool-tail";
+
+    const first = await engine.bootstrap({ sessionId, sessionFile });
+    expect(first.bootstrapped).toBe(true);
+    expect(first.importedMessages).toBe(4);
+
+    sm.appendMessage({
+      role: "assistant",
+      content: [{ type: "toolCall", id: "call_missing", name: "read", input: { path: "b.txt" } }],
+    } as AgentMessage);
+    sm.appendMessage({
+      role: "toolResult",
+      toolCallId: "call_missing",
+      content: [{ type: "tool_result", tool_use_id: "call_missing", output: { ok: true } }],
+    } as AgentMessage);
+
+    const second = await engine.bootstrap({ sessionId, sessionFile });
+    expect(second.bootstrapped).toBe(true);
+    expect(second.importedMessages).toBe(2);
+    expect(second.reason).toBe("reconciled missing session messages");
+
+    const conversation = await engine.getConversationStore().getConversationBySessionId(sessionId);
+    expect(conversation).not.toBeNull();
+    const stored = await engine.getConversationStore().getMessages(conversation!.conversationId);
+    expect(stored).toHaveLength(6);
+    expect(stored[4].role).toBe("assistant");
+    expect(stored[4].content).toBe("");
+    expect(stored[5].role).toBe("tool");
+    expect(stored[5].content).toBe("");
+  });
+
   it("does not append JSONL when no overlapping anchor exists in LCM", async () => {
     const sessionFile = createSessionFilePath("reconcile-no-overlap");
     const sm = SessionManager.open(sessionFile);

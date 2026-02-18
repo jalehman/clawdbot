@@ -796,28 +796,71 @@ export class LcmContextEngine implements ContextEngine {
       return { importedMessages: 0, hasOverlap: false };
     }
 
+    const storedHistoricalMessages = historicalMessages.map((message) => toStoredMessage(message));
+
     // Fast path: one tail comparison for the common in-sync case.
-    const latestHistorical = toStoredMessage(historicalMessages[historicalMessages.length - 1]);
-    if (
-      messageIdentity(latestDbMessage.role, latestDbMessage.content) ===
-      messageIdentity(latestHistorical.role, latestHistorical.content)
-    ) {
-      return { importedMessages: 0, hasOverlap: true };
+    const latestHistorical = storedHistoricalMessages[storedHistoricalMessages.length - 1];
+    const latestIdentity = messageIdentity(latestDbMessage.role, latestDbMessage.content);
+    if (latestIdentity === messageIdentity(latestHistorical.role, latestHistorical.content)) {
+      const dbOccurrences = await this.conversationStore.countMessagesByIdentity(
+        conversationId,
+        latestDbMessage.role,
+        latestDbMessage.content,
+      );
+      let historicalOccurrences = 0;
+      for (const stored of storedHistoricalMessages) {
+        if (messageIdentity(stored.role, stored.content) === latestIdentity) {
+          historicalOccurrences += 1;
+        }
+      }
+      if (dbOccurrences === historicalOccurrences) {
+        return { importedMessages: 0, hasOverlap: true };
+      }
     }
 
     // Slow path: walk backward through JSONL to find the most recent anchor
     // message that already exists in LCM, then append everything after it.
     let anchorIndex = -1;
-    for (let index = historicalMessages.length - 1; index >= 0; index--) {
-      const stored = toStoredMessage(historicalMessages[index]);
+    const historicalIdentityTotals = new Map<string, number>();
+    for (const stored of storedHistoricalMessages) {
+      const identity = messageIdentity(stored.role, stored.content);
+      historicalIdentityTotals.set(identity, (historicalIdentityTotals.get(identity) ?? 0) + 1);
+    }
+
+    const historicalIdentityCountsAfterIndex = new Map<string, number>();
+    const dbIdentityCounts = new Map<string, number>();
+    for (let index = storedHistoricalMessages.length - 1; index >= 0; index--) {
+      const stored = storedHistoricalMessages[index];
+      const identity = messageIdentity(stored.role, stored.content);
+      const seenAfter = historicalIdentityCountsAfterIndex.get(identity) ?? 0;
+      const total = historicalIdentityTotals.get(identity) ?? 0;
+      const occurrencesThroughIndex = total - seenAfter;
       const exists = await this.conversationStore.hasMessage(
         conversationId,
         stored.role,
         stored.content,
       );
+      historicalIdentityCountsAfterIndex.set(identity, seenAfter + 1);
       if (!exists) {
         continue;
       }
+
+      let dbCountForIdentity = dbIdentityCounts.get(identity);
+      if (dbCountForIdentity === undefined) {
+        dbCountForIdentity = await this.conversationStore.countMessagesByIdentity(
+          conversationId,
+          stored.role,
+          stored.content,
+        );
+        dbIdentityCounts.set(identity, dbCountForIdentity);
+      }
+
+      // Match the same occurrence index as the DB tail so repeated empty
+      // tool messages do not anchor against a later, still-missing entry.
+      if (dbCountForIdentity !== occurrencesThroughIndex) {
+        continue;
+      }
+
       anchorIndex = index;
       break;
     }
