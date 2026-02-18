@@ -24,7 +24,6 @@ export function handleAgentStart(ctx: EmbeddedPiSubscribeContext) {
     data: { phase: "start" },
   });
 }
-
 export function handleAgentEnd(ctx: EmbeddedPiSubscribeContext) {
   const lastAssistant = ctx.state.lastAssistant;
   const isError = isAssistantMessage(lastAssistant) && lastAssistant.stopReason === "error";

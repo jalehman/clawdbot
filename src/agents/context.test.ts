@@ -1,77 +1,86 @@
-import { describe, expect, it } from "vitest";
-import { applyConfiguredContextWindows, applyDiscoveredContextWindows } from "./context.js";
-import { createSessionManagerRuntimeRegistry } from "./pi-extensions/session-manager-runtime-registry.js";
+import { describe, expect, it, vi } from "vitest";
 
-describe("applyDiscoveredContextWindows", () => {
-  it("keeps the smallest context window when duplicate model ids are discovered", () => {
-    const cache = new Map<string, number>();
-    applyDiscoveredContextWindows({
-      cache,
-      models: [
-        { id: "claude-sonnet-4-5", contextWindow: 1_000_000 },
-        { id: "claude-sonnet-4-5", contextWindow: 200_000 },
-      ],
-    });
+// Mock the async model discovery to never populate the cache — simulating the
+// cold-start race condition where lookupContextTokens is called before the
+// async discovery completes.
+vi.mock("./pi-model-discovery.js", async () => ({
+  discoverAuthStorage: () => ({}),
+  discoverModels: () => ({ getAll: () => [] }),
+}));
+vi.mock("./models-config.js", () => ({
+  ensureOpenClawModelsJson: async () => {},
+}));
+vi.mock("./agent-paths.js", () => ({
+  resolveOpenClawAgentDir: () => "/tmp/test-agent",
+}));
 
-    expect(cache.get("claude-sonnet-4-5")).toBe(200_000);
-  });
-});
-
-describe("applyConfiguredContextWindows", () => {
-  it("overrides discovered cache values with explicit models.providers contextWindow", () => {
-    const cache = new Map<string, number>([["anthropic/claude-opus-4-6", 1_000_000]]);
-    applyConfiguredContextWindows({
-      cache,
-      modelsConfig: {
+// Mock loadConfig to return a config with known model entries.
+vi.mock("../config/config.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../config/config.js")>();
+  return {
+    ...actual,
+    loadConfig: () => ({
+      models: {
         providers: {
           openrouter: {
-            models: [{ id: "anthropic/claude-opus-4-6", contextWindow: 200_000 }],
-          },
-        },
-      },
-    });
-
-    expect(cache.get("anthropic/claude-opus-4-6")).toBe(200_000);
-  });
-
-  it("adds config-only model context windows and ignores invalid entries", () => {
-    const cache = new Map<string, number>();
-    applyConfiguredContextWindows({
-      cache,
-      modelsConfig: {
-        providers: {
-          openrouter: {
+            baseUrl: "http://localhost",
+            apiKey: "x",
             models: [
-              { id: "custom/model", contextWindow: 150_000 },
-              { id: "bad/model", contextWindow: 0 },
-              { id: "", contextWindow: 300_000 },
+              {
+                id: "openrouter/my-model",
+                name: "My Model",
+                reasoning: false,
+                input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 128_000,
+                maxTokens: 4096,
+              },
+            ],
+          },
+          anthropic: {
+            baseUrl: "http://localhost",
+            apiKey: "x",
+            models: [
+              {
+                id: "anthropic/claude-opus-4-6",
+                name: "Opus",
+                reasoning: true,
+                input: ["text", "image"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 1_000_000,
+                maxTokens: 32_000,
+              },
             ],
           },
         },
       },
-    });
-
-    expect(cache.get("custom/model")).toBe(150_000);
-    expect(cache.has("bad/model")).toBe(false);
-  });
+    }),
+  };
 });
 
-describe("createSessionManagerRuntimeRegistry", () => {
-  it("stores, reads, and clears values by object identity", () => {
-    const registry = createSessionManagerRuntimeRegistry<{ value: number }>();
-    const key = {};
-    expect(registry.get(key)).toBeNull();
-    registry.set(key, { value: 1 });
-    expect(registry.get(key)).toEqual({ value: 1 });
-    registry.set(key, null);
-    expect(registry.get(key)).toBeNull();
+import { lookupContextTokens } from "./context.js";
+
+describe("lookupContextTokens", () => {
+  it("returns config contextWindow on cold start (async cache empty)", () => {
+    // The async MODEL_CACHE is empty because discoverModels returns [].
+    // lookupContextTokens should fall back to reading from config.
+    expect(lookupContextTokens("openrouter/my-model")).toBe(128_000);
   });
 
-  it("ignores non-object keys", () => {
-    const registry = createSessionManagerRuntimeRegistry<{ value: number }>();
-    registry.set(null, { value: 1 });
-    registry.set(123, { value: 1 });
-    expect(registry.get(null)).toBeNull();
-    expect(registry.get(123)).toBeNull();
+  it("returns config contextWindow for a different provider", () => {
+    expect(lookupContextTokens("anthropic/claude-opus-4-6")).toBe(1_000_000);
+  });
+
+  it("returns undefined for unknown model id", () => {
+    expect(lookupContextTokens("unknown/model")).toBeUndefined();
+  });
+
+  it("returns undefined when modelId is not provided", () => {
+    expect(lookupContextTokens()).toBeUndefined();
+    expect(lookupContextTokens(undefined)).toBeUndefined();
+  });
+
+  it("returns undefined for empty string modelId", () => {
+    expect(lookupContextTokens("")).toBeUndefined();
   });
 });

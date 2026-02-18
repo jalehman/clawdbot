@@ -10,6 +10,10 @@ import type { AnyAgentTool } from "./tools/common.js";
 import { createCronTool } from "./tools/cron-tool.js";
 import { createGatewayTool } from "./tools/gateway-tool.js";
 import { createImageTool } from "./tools/image-tool.js";
+import { createLcmDescribeTool } from "./tools/lcm-describe-tool.js";
+import { createLcmExpandQueryTool } from "./tools/lcm-expand-query-tool.js";
+import { createLcmExpandTool } from "./tools/lcm-expand-tool.js";
+import { createLcmGrepTool } from "./tools/lcm-grep-tool.js";
 import { createMessageTool } from "./tools/message-tool.js";
 import { createNodesTool } from "./tools/nodes-tool.js";
 import { createSessionStatusTool } from "./tools/session-status-tool.js";
@@ -26,6 +30,8 @@ export function createOpenClawTools(options?: {
   sandboxBrowserBridgeUrl?: string;
   allowHostBrowserControl?: boolean;
   agentSessionKey?: string;
+  /** UUID session ID for LCM conversation scoping. */
+  lcmSessionId?: string;
   agentChannel?: GatewayMessageChannel;
   agentAccountId?: string;
   /** Delivery target (e.g. telegram:group:123:topic:456) for topic/thread routing. */
@@ -158,6 +164,28 @@ export function createOpenClawTools(options?: {
     ...(webSearchTool ? [webSearchTool] : []),
     ...(webFetchTool ? [webFetchTool] : []),
     ...(imageTool ? [imageTool] : []),
+    // LCM tools — only when the LCM context engine is configured
+    ...(options?.config?.plugins?.slots?.contextEngine === "lcm"
+      ? [
+          createLcmDescribeTool({
+            config: options?.config,
+            sessionId: options?.lcmSessionId ?? options?.agentSessionKey,
+          }),
+          createLcmExpandTool({
+            config: options?.config,
+            sessionId: options?.lcmSessionId ?? options?.agentSessionKey,
+          }),
+          createLcmExpandQueryTool({
+            config: options?.config,
+            sessionId: options?.lcmSessionId ?? options?.agentSessionKey,
+            requesterSessionKey: options?.agentSessionKey,
+          }),
+          createLcmGrepTool({
+            config: options?.config,
+            sessionId: options?.lcmSessionId ?? options?.agentSessionKey,
+          }),
+        ]
+      : []),
   ];
 
   const pluginTools = resolvePluginTools({

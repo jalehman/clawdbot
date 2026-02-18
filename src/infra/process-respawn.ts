@@ -11,9 +11,11 @@ export type GatewayRespawnResult = {
 const SUPERVISOR_HINT_ENV_VARS = [
   "LAUNCH_JOB_LABEL",
   "LAUNCH_JOB_NAME",
+  "OPENCLAW_LAUNCHD_LABEL", // set by our own plist when LAUNCH_JOB_LABEL isn't injected
   "INVOCATION_ID",
   "SYSTEMD_EXEC_PID",
   "JOURNAL_STREAM",
+  "OPENCLAW_SYSTEMD_UNIT", // set by our own systemd unit
 ];
 
 function isTruthy(value: string | undefined): boolean {
