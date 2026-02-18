@@ -1,12 +1,12 @@
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import { SessionManager } from "@mariozechner/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import { SessionManager } from "@mariozechner/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { LcmConfig } from "./db/config.js";
 import { ContextAssembler } from "./assembler.js";
+import type { LcmConfig } from "./db/config.js";
 import { closeLcmConnection } from "./db/connection.js";
 import { LcmContextEngine } from "./engine.js";
 
@@ -124,6 +124,13 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+describe("LcmContextEngine metadata", () => {
+  it("advertises ownsCompaction capability", () => {
+    const engine = createEngine();
+    expect(engine.info.ownsCompaction).toBe(true);
+  });
 });
 
 // ── Ingest content extraction ───────────────────────────────────────────────
@@ -630,6 +637,52 @@ describe("LcmContextEngine.assemble canonical path", () => {
     expect(result.messages).toBe(liveMessages);
     expect(result.estimatedTokens).toBe(0);
   });
+
+  it("drops orphan tool results during assembled transcript repair", async () => {
+    const engine = createEngine();
+    const sessionId = "session-orphan-tool-result";
+
+    await engine.ingest({
+      sessionId,
+      message: {
+        role: "toolResult",
+        toolCallId: "call_orphan",
+        content: [{ type: "tool_result", tool_use_id: "call_orphan", content: "ok" }],
+      } as AgentMessage,
+    });
+
+    const result = await engine.assemble({
+      sessionId,
+      messages: [],
+      tokenBudget: 10_000,
+    });
+
+    expect(result.messages).toEqual([]);
+  });
+
+  it("inserts synthetic tool results when assembled tool calls have no result", async () => {
+    const engine = createEngine();
+    const sessionId = "session-missing-tool-result";
+
+    await engine.ingest({
+      sessionId,
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_2", name: "read", input: { path: "foo.txt" } }],
+      } as AgentMessage,
+    });
+
+    const result = await engine.assemble({
+      sessionId,
+      messages: [],
+      tokenBudget: 10_000,
+    });
+
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[0]?.role).toBe("assistant");
+    expect(result.messages[1]?.role).toBe("toolResult");
+    expect((result.messages[1] as { toolCallId?: string }).toolCallId).toBe("call_2");
+  });
 });
 
 describe("LcmContextEngine fidelity and token budget", () => {
@@ -676,6 +729,10 @@ describe("LcmContextEngine fidelity and token budget", () => {
   it("preserves structured toolResult content via message_parts and assembler", async () => {
     const engine = createEngine();
     const sessionId = randomUUID();
+    const assistantToolCall = {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "call_123", name: "read", input: { path: "foo.txt" } }],
+    } as AgentMessage;
     const toolResult = {
       role: "toolResult",
       toolCallId: "call_123",
@@ -690,6 +747,11 @@ describe("LcmContextEngine fidelity and token budget", () => {
 
     await engine.ingest({
       sessionId,
+      message: assistantToolCall,
+    });
+
+    await engine.ingest({
+      sessionId,
       message: toolResult,
     });
 
@@ -699,10 +761,10 @@ describe("LcmContextEngine fidelity and token budget", () => {
     const storedMessages = await engine
       .getConversationStore()
       .getMessages(conversation!.conversationId);
-    expect(storedMessages).toHaveLength(1);
-    expect(storedMessages[0].role).toBe("tool");
+    expect(storedMessages).toHaveLength(2);
+    expect(storedMessages[1].role).toBe("tool");
 
-    const parts = await engine.getConversationStore().getMessageParts(storedMessages[0].messageId);
+    const parts = await engine.getConversationStore().getMessageParts(storedMessages[1].messageId);
     expect(parts).toHaveLength(1);
     expect(parts[0].partType).toBe("tool");
     expect(parts[0].toolCallId).toBe("call_123");
@@ -712,9 +774,10 @@ describe("LcmContextEngine fidelity and token budget", () => {
       conversationId: conversation!.conversationId,
       tokenBudget: 10_000,
     });
-    expect(assembled.messages).toHaveLength(1);
+    expect(assembled.messages).toHaveLength(2);
+    expect(assembled.messages[0]?.role).toBe("assistant");
 
-    const assembledMessage = assembled.messages[0] as {
+    const assembledMessage = assembled.messages[1] as {
       role: string;
       toolCallId?: string;
       content?: unknown;
@@ -845,6 +908,69 @@ describe("LcmContextEngine fidelity and token budget", () => {
     expect(assembledText).toContain("keep this turn");
     expect(assembledText).not.toContain("heartbeat poll");
     expect(assembledText).not.toContain("worker snapshot");
+  });
+
+  it("afterTurn ingests auto-compaction summary and new turn messages", async () => {
+    const engine = createEngine();
+    const sessionId = "after-turn-ingest";
+
+    await engine.afterTurn({
+      sessionId,
+      sessionFile: createSessionFilePath("after-turn-ingest"),
+      messages: [
+        makeMessage({ role: "user", content: "already present before prompt" }),
+        makeMessage({ role: "assistant", content: "new assistant reply" }),
+      ],
+      prePromptMessageCount: 1,
+      autoCompactionSummary: "[summary] compacted older history",
+    });
+
+    const conversation = await engine.getConversationStore().getConversationBySessionId(sessionId);
+    expect(conversation).not.toBeNull();
+
+    const stored = await engine.getConversationStore().getMessages(conversation!.conversationId);
+    expect(stored.map((message) => message.content)).toEqual([
+      "[summary] compacted older history",
+      "new assistant reply",
+    ]);
+  });
+
+  it("afterTurn runs proactive threshold compaction when tokenBudget is provided", async () => {
+    const engine = createEngine();
+    const sessionId = "after-turn-proactive-compact";
+
+    const evaluateLeafTriggerSpy = vi.spyOn(engine, "evaluateLeafTrigger").mockResolvedValue({
+      shouldCompact: false,
+      rawTokensOutsideTail: 0,
+      threshold: 20_000,
+    });
+    const compactLeafAsyncSpy = vi.spyOn(engine, "compactLeafAsync");
+    const compactSpy = vi.spyOn(engine, "compact").mockResolvedValue({
+      ok: true,
+      compacted: false,
+      reason: "below threshold",
+      result: {
+        tokensBefore: 42,
+      },
+    });
+
+    await engine.afterTurn({
+      sessionId,
+      sessionFile: createSessionFilePath("after-turn-proactive-compact"),
+      messages: [makeMessage({ role: "assistant", content: "fresh turn content" })],
+      prePromptMessageCount: 0,
+      tokenBudget: 4096,
+    });
+
+    expect(evaluateLeafTriggerSpy).toHaveBeenCalledWith(sessionId);
+    expect(compactLeafAsyncSpy).not.toHaveBeenCalled();
+    expect(compactSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId,
+        tokenBudget: 4096,
+        compactionTarget: "threshold",
+      }),
+    );
   });
 });
 

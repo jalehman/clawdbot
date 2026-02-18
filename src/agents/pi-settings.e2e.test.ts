@@ -61,7 +61,11 @@ describe("shouldDisablePiAutoCompaction", () => {
   it("disables when LCM is the active context engine", () => {
     expect(
       shouldDisablePiAutoCompaction({
-        contextEngineId: "lcm",
+        contextEngineInfo: {
+          id: "lcm",
+          name: "Lossless Context Management Engine",
+          ownsCompaction: true,
+        },
         env: {},
       }),
     ).toBe(true);
@@ -70,7 +74,10 @@ describe("shouldDisablePiAutoCompaction", () => {
   it("disables when explicitly flagged via env", () => {
     expect(
       shouldDisablePiAutoCompaction({
-        contextEngineId: "legacy",
+        contextEngineInfo: {
+          id: "legacy",
+          name: "Legacy Context Engine",
+        },
         env: { LCM_AUTOCOMPACT_DISABLED: "true" },
       }),
     ).toBe(true);
@@ -79,7 +86,10 @@ describe("shouldDisablePiAutoCompaction", () => {
   it("keeps Pi auto-compaction enabled otherwise", () => {
     expect(
       shouldDisablePiAutoCompaction({
-        contextEngineId: "legacy",
+        contextEngineInfo: {
+          id: "legacy",
+          name: "Legacy Context Engine",
+        },
         env: {},
       }),
     ).toBe(false);
@@ -96,7 +106,11 @@ describe("applyPiAutoCompactionGuard", () => {
 
     const result = applyPiAutoCompactionGuard({
       settingsManager,
-      contextEngineId: "lcm",
+      contextEngineInfo: {
+        id: "lcm",
+        name: "Lossless Context Management Engine",
+        ownsCompaction: true,
+      },
       env: {},
     });
 
@@ -113,7 +127,10 @@ describe("applyPiAutoCompactionGuard", () => {
 
     const result = applyPiAutoCompactionGuard({
       settingsManager,
-      contextEngineId: "legacy",
+      contextEngineInfo: {
+        id: "legacy",
+        name: "Legacy Context Engine",
+      },
       env: {},
     });
 

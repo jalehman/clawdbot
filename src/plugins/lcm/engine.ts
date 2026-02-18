@@ -1,9 +1,9 @@
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import { SessionManager } from "@mariozechner/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import { SessionManager } from "@mariozechner/pi-coding-agent";
 import type {
   ContextEngine,
   ContextEngineInfo,
@@ -370,6 +370,58 @@ function toStoredMessage(message: AgentMessage): StoredMessage {
   };
 }
 
+function estimateMessageContentTokensForAfterTurn(content: unknown): number {
+  if (typeof content === "string") {
+    return estimateTokens(content);
+  }
+  if (Array.isArray(content)) {
+    let total = 0;
+    for (const part of content) {
+      if (!part || typeof part !== "object") {
+        continue;
+      }
+      const record = part as Record<string, unknown>;
+      const text =
+        typeof record.text === "string"
+          ? record.text
+          : typeof record.thinking === "string"
+            ? record.thinking
+            : "";
+      if (text) {
+        total += estimateTokens(text);
+      }
+    }
+    return total;
+  }
+  if (content == null) {
+    return 0;
+  }
+  const serialized = JSON.stringify(content);
+  return estimateTokens(typeof serialized === "string" ? serialized : "");
+}
+
+function estimateSessionTokenCountForAfterTurn(messages: AgentMessage[]): number {
+  let total = 0;
+  for (const message of messages) {
+    if ("content" in message) {
+      total += estimateMessageContentTokensForAfterTurn(message.content);
+      continue;
+    }
+    if ("command" in message || "output" in message) {
+      const commandText =
+        typeof (message as { command?: unknown }).command === "string"
+          ? (message as { command?: string }).command
+          : "";
+      const outputText =
+        typeof (message as { output?: unknown }).output === "string"
+          ? (message as { output?: string }).output
+          : "";
+      total += estimateTokens(`${commandText}\n${outputText}`);
+    }
+  }
+  return total;
+}
+
 function isBootstrapMessage(value: unknown): value is AgentMessage {
   if (!value || typeof value !== "object") {
     return false;
@@ -410,6 +462,7 @@ export class LcmContextEngine implements ContextEngine {
     id: "lcm",
     name: "Lossless Context Management Engine",
     version: "0.1.0",
+    ownsCompaction: true,
   };
 
   private config: LcmConfig;
@@ -926,6 +979,85 @@ export class LcmContextEngine implements ContextEngine {
       }
       return { ingestedCount };
     });
+  }
+
+  async afterTurn(params: {
+    sessionId: string;
+    sessionFile: string;
+    messages: AgentMessage[];
+    prePromptMessageCount: number;
+    autoCompactionSummary?: string;
+    isHeartbeat?: boolean;
+    tokenBudget?: number;
+    legacyCompactionParams?: Record<string, unknown>;
+  }): Promise<void> {
+    this.ensureMigrated();
+
+    const ingestBatch: AgentMessage[] = [];
+    if (params.autoCompactionSummary) {
+      ingestBatch.push({
+        role: "user",
+        content: params.autoCompactionSummary,
+      } as AgentMessage);
+    }
+
+    const newMessages = params.messages.slice(params.prePromptMessageCount);
+    ingestBatch.push(...newMessages);
+    if (ingestBatch.length === 0) {
+      return;
+    }
+
+    try {
+      await this.ingestBatch({
+        sessionId: params.sessionId,
+        messages: ingestBatch,
+        isHeartbeat: params.isHeartbeat === true,
+      });
+    } catch {
+      // Continue with proactive compaction even if ingest fails.
+    }
+
+    const tokenBudget =
+      typeof params.tokenBudget === "number" &&
+      Number.isFinite(params.tokenBudget) &&
+      params.tokenBudget > 0
+        ? Math.floor(params.tokenBudget)
+        : undefined;
+    if (!tokenBudget) {
+      return;
+    }
+
+    const liveContextTokens = estimateSessionTokenCountForAfterTurn(params.messages);
+
+    try {
+      const leafTrigger = await this.evaluateLeafTrigger(params.sessionId);
+      if (leafTrigger.shouldCompact) {
+        this.compactLeafAsync({
+          sessionId: params.sessionId,
+          sessionFile: params.sessionFile,
+          tokenBudget,
+          currentTokenCount: liveContextTokens,
+          legacyParams: params.legacyCompactionParams,
+        }).catch(() => {
+          // Leaf compaction is best-effort and should not fail the caller.
+        });
+      }
+    } catch {
+      // Leaf trigger checks are best-effort.
+    }
+
+    try {
+      await this.compact({
+        sessionId: params.sessionId,
+        sessionFile: params.sessionFile,
+        tokenBudget,
+        currentTokenCount: liveContextTokens,
+        compactionTarget: "threshold",
+        legacyParams: params.legacyCompactionParams,
+      });
+    } catch {
+      // Proactive compaction is best-effort in the post-turn lifecycle.
+    }
   }
 
   async assemble(params: {

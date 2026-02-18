@@ -1,11 +1,9 @@
+import fs from "node:fs/promises";
+import os from "node:os";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { ImageContent } from "@mariozechner/pi-ai";
 import { streamSimple } from "@mariozechner/pi-ai";
 import { createAgentSession, SessionManager, SettingsManager } from "@mariozechner/pi-coding-agent";
-import fs from "node:fs/promises";
-import os from "node:os";
-import type { CompactEmbeddedPiSessionParams } from "../compact.js";
-import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
 import { resolveHeartbeatPrompt } from "../../../auto-reply/heartbeat.js";
 import { resolveChannelCapabilities } from "../../../config/channel-capabilities.js";
 import { getMachineDisplayName } from "../../../infra/machine-name.js";
@@ -70,6 +68,7 @@ import { resolveTranscriptPolicy } from "../../transcript-policy.js";
 import { DEFAULT_BOOTSTRAP_FILENAME } from "../../workspace.js";
 import { isRunnerAbortError } from "../abort.js";
 import { appendCacheTtlTimestamp, isCacheTtlEligibleProvider } from "../cache-ttl.js";
+import type { CompactEmbeddedPiSessionParams } from "../compact.js";
 import { buildEmbeddedExtensionPaths } from "../extensions.js";
 import { applyExtraParamsToAgent } from "../extra-params.js";
 import {
@@ -102,6 +101,7 @@ import {
   shouldFlagCompactionTimeout,
 } from "./compaction-timeout.js";
 import { detectAndLoadPromptImages } from "./images.js";
+import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
 
 export function injectHistoryImagesIntoMessages(
   messages: AgentMessage[],
@@ -213,88 +213,6 @@ function summarizeSessionContext(messages: AgentMessage[]): {
     maxMessageTextChars,
   };
 }
-export function repairAssembledMessagesForLcm(params: {
-  messages: AgentMessage[];
-  contextEngineId?: string;
-  repairToolUseResultPairing: boolean;
-}): AgentMessage[] {
-  if (!params.repairToolUseResultPairing || params.contextEngineId !== "lcm") {
-    return params.messages;
-  }
-  return sanitizeToolUseResultPairing(params.messages);
-}
-
-function estimateTextTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
-
-function estimateMessageContentTokens(content: unknown): number {
-  if (typeof content === "string") {
-    return estimateTextTokens(content);
-  }
-  if (Array.isArray(content)) {
-    let total = 0;
-    for (const part of content) {
-      if (!part || typeof part !== "object") {
-        continue;
-      }
-      const record = part as Record<string, unknown>;
-      const text =
-        typeof record.text === "string"
-          ? record.text
-          : typeof record.thinking === "string"
-            ? record.thinking
-            : "";
-      if (text) {
-        total += estimateTextTokens(text);
-      }
-    }
-    return total;
-  }
-  if (content == null) {
-    return 0;
-  }
-  const serialized = JSON.stringify(content);
-  return estimateTextTokens(typeof serialized === "string" ? serialized : "");
-}
-
-function estimateSessionTokenCount(messages: AgentMessage[]): number {
-  let total = 0;
-  for (const message of messages) {
-    if ("content" in message) {
-      total += estimateMessageContentTokens(message.content);
-      continue;
-    }
-    if ("command" in message || "output" in message) {
-      const commandText =
-        typeof (message as { command?: unknown }).command === "string"
-          ? (message as { command?: string }).command
-          : "";
-      const outputText =
-        typeof (message as { output?: unknown }).output === "string"
-          ? (message as { output?: string }).output
-          : "";
-      total += estimateTextTokens(`${commandText}\n${outputText}`);
-    }
-  }
-  return total;
-}
-
-type LcmCompactionHooks = {
-  evaluateLeafTrigger: (sessionId: string) => Promise<{
-    shouldCompact: boolean;
-    rawTokensOutsideTail: number;
-    threshold: number;
-  }>;
-  compactLeafAsync: (params: {
-    sessionId: string;
-    sessionFile: string;
-    tokenBudget?: number;
-    currentTokenCount?: number;
-    legacyParams?: Record<string, unknown>;
-  }) => Promise<unknown>;
-};
-
 export async function runEmbeddedAttempt(
   params: EmbeddedRunAttemptParams,
 ): Promise<EmbeddedRunAttemptResult> {
@@ -619,7 +537,7 @@ export async function runEmbeddedAttempt(
       });
       applyPiAutoCompactionGuard({
         settingsManager,
-        contextEngineId: params.contextEngine?.info.id,
+        contextEngineInfo: params.contextEngine?.info,
         env: process.env,
       });
 
@@ -776,13 +694,8 @@ export async function runEmbeddedAttempt(
               messages: activeSession.messages,
               tokenBudget: params.contextTokenBudget,
             });
-            const repairedAssembled = repairAssembledMessagesForLcm({
-              messages: assembled.messages,
-              contextEngineId: params.contextEngine.info.id,
-              repairToolUseResultPairing: transcriptPolicy.repairToolUseResultPairing,
-            });
-            if (repairedAssembled !== activeSession.messages) {
-              activeSession.agent.replaceMessages(repairedAssembled);
+            if (assembled.messages !== activeSession.messages) {
+              activeSession.agent.replaceMessages(assembled.messages);
             }
           } catch (assembleErr) {
             log.warn(
@@ -1163,112 +1076,77 @@ export async function runEmbeddedAttempt(
         messagesSnapshot = snapshotSelection.messagesSnapshot;
         sessionIdUsed = snapshotSelection.sessionIdUsed;
 
-        // Ingest new messages into the context engine's canonical store.
-        // Legacy engine: no-op. LCM engine: persists to SQLite for future assembly/compaction.
+        // Let the active context engine run its post-turn lifecycle.
         if (params.contextEngine) {
-          const autoCompactionResult = getLastCompactionResult?.();
-          const isHeartbeatIngest = params.isHeartbeat === true;
-          const ingestBatch: AgentMessage[] = [];
-          if (autoCompactionResult?.summary) {
-            ingestBatch.push({
-              role: "user",
-              content: autoCompactionResult.summary,
-            } as AgentMessage);
-          }
+          const autoCompactionSummary = getLastCompactionResult?.()?.summary;
+          const afterTurnLegacyCompactionParams = {
+            sessionKey: params.sessionKey,
+            messageChannel: params.messageChannel,
+            messageProvider: params.messageProvider,
+            agentAccountId: params.agentAccountId,
+            workspaceDir: effectiveWorkspace,
+            agentDir,
+            config: params.config,
+            skillsSnapshot: params.skillsSnapshot,
+            senderIsOwner: params.senderIsOwner,
+            provider: params.provider,
+            model: params.modelId,
+            tokenBudget: params.contextTokenBudget,
+            thinkLevel: params.thinkLevel,
+            reasoningLevel: params.reasoningLevel,
+            bashElevated: params.bashElevated,
+            extraSystemPrompt: params.extraSystemPrompt,
+            ownerNumbers: params.ownerNumbers,
+          } satisfies Partial<CompactEmbeddedPiSessionParams>;
 
-          const newMessages = messagesSnapshot.slice(prePromptMessageCount);
-          ingestBatch.push(...newMessages);
-          if (ingestBatch.length > 0) {
-            if (typeof params.contextEngine.ingestBatch === "function") {
-              try {
-                await params.contextEngine.ingestBatch({
-                  sessionId: sessionIdUsed,
-                  messages: ingestBatch,
-                  isHeartbeat: isHeartbeatIngest,
-                });
-              } catch (ingestErr) {
-                log.warn(`context engine ingest failed: ${String(ingestErr)}`);
-              }
-            } else {
-              for (const msg of ingestBatch) {
+          if (typeof params.contextEngine.afterTurn === "function") {
+            try {
+              await params.contextEngine.afterTurn({
+                sessionId: sessionIdUsed,
+                sessionFile: params.sessionFile,
+                messages: messagesSnapshot,
+                prePromptMessageCount,
+                autoCompactionSummary,
+                isHeartbeat: params.isHeartbeat === true,
+                tokenBudget: params.contextTokenBudget,
+                legacyCompactionParams: afterTurnLegacyCompactionParams,
+              });
+            } catch (afterTurnErr) {
+              log.warn(`context engine afterTurn failed: ${String(afterTurnErr)}`);
+            }
+          } else {
+            const ingestBatch: AgentMessage[] = [];
+            if (autoCompactionSummary) {
+              ingestBatch.push({
+                role: "user",
+                content: autoCompactionSummary,
+              } as AgentMessage);
+            }
+            ingestBatch.push(...messagesSnapshot.slice(prePromptMessageCount));
+
+            if (ingestBatch.length > 0) {
+              if (typeof params.contextEngine.ingestBatch === "function") {
                 try {
-                  await params.contextEngine.ingest({
+                  await params.contextEngine.ingestBatch({
                     sessionId: sessionIdUsed,
-                    message: msg,
-                    isHeartbeat: isHeartbeatIngest,
+                    messages: ingestBatch,
+                    isHeartbeat: params.isHeartbeat === true,
                   });
                 } catch (ingestErr) {
                   log.warn(`context engine ingest failed: ${String(ingestErr)}`);
                 }
-              }
-            }
-
-            if (
-              params.contextEngine.info.id === "lcm" &&
-              typeof params.contextTokenBudget === "number" &&
-              Number.isFinite(params.contextTokenBudget) &&
-              params.contextTokenBudget > 0
-            ) {
-              const liveContextTokens = estimateSessionTokenCount(messagesSnapshot);
-              const proactiveCompactLegacyParams = {
-                sessionKey: params.sessionKey,
-                messageChannel: params.messageChannel,
-                messageProvider: params.messageProvider,
-                agentAccountId: params.agentAccountId,
-                workspaceDir: effectiveWorkspace,
-                agentDir,
-                config: params.config,
-                skillsSnapshot: params.skillsSnapshot,
-                senderIsOwner: params.senderIsOwner,
-                provider: params.provider,
-                model: params.modelId,
-                tokenBudget: params.contextTokenBudget,
-                thinkLevel: params.thinkLevel,
-                reasoningLevel: params.reasoningLevel,
-                bashElevated: params.bashElevated,
-                extraSystemPrompt: params.extraSystemPrompt,
-                ownerNumbers: params.ownerNumbers,
-              } satisfies Partial<CompactEmbeddedPiSessionParams>;
-              const lcmCompaction = params.contextEngine as typeof params.contextEngine &
-                Partial<LcmCompactionHooks>;
-
-              if (
-                typeof lcmCompaction.evaluateLeafTrigger === "function" &&
-                typeof lcmCompaction.compactLeafAsync === "function"
-              ) {
-                try {
-                  const leafTrigger = await lcmCompaction.evaluateLeafTrigger(sessionIdUsed);
-                  if (leafTrigger.shouldCompact) {
-                    lcmCompaction
-                      .compactLeafAsync({
-                        sessionId: sessionIdUsed,
-                        sessionFile: params.sessionFile,
-                        tokenBudget: params.contextTokenBudget,
-                        currentTokenCount: liveContextTokens,
-                        legacyParams: proactiveCompactLegacyParams,
-                      })
-                      .catch((compactErr) => {
-                        log.warn(`context engine leaf compact failed: ${String(compactErr)}`);
-                      });
+              } else {
+                for (const msg of ingestBatch) {
+                  try {
+                    await params.contextEngine.ingest({
+                      sessionId: sessionIdUsed,
+                      message: msg,
+                      isHeartbeat: params.isHeartbeat === true,
+                    });
+                  } catch (ingestErr) {
+                    log.warn(`context engine ingest failed: ${String(ingestErr)}`);
                   }
-                } catch (leafTriggerErr) {
-                  log.warn(
-                    `context engine leaf trigger evaluation failed: ${String(leafTriggerErr)}`,
-                  );
                 }
-              }
-
-              try {
-                await params.contextEngine.compact({
-                  sessionId: sessionIdUsed,
-                  sessionFile: params.sessionFile,
-                  tokenBudget: params.contextTokenBudget,
-                  currentTokenCount: liveContextTokens,
-                  compactionTarget: "threshold",
-                  legacyParams: proactiveCompactLegacyParams,
-                });
-              } catch (compactErr) {
-                log.warn(`context engine proactive compact failed: ${String(compactErr)}`);
               }
             }
           }

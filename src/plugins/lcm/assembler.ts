@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import { sanitizeToolUseResultPairing } from "../../agents/session-transcript-repair.js";
 import type {
   ConversationStore,
   MessagePartRecord,
@@ -332,7 +333,7 @@ export class ContextAssembler {
     const estimatedTokens = evictableTokens + tailTokens;
 
     return {
-      messages: selected.map((item) => item.message),
+      messages: sanitizeToolUseResultPairing(selected.map((item) => item.message)),
       estimatedTokens,
       stats: {
         rawMessageCount,

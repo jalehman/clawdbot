@@ -45,6 +45,8 @@ export type ContextEngineInfo = {
   id: string;
   name: string;
   version?: string;
+  /** True when the engine manages its own compaction lifecycle. */
+  ownsCompaction?: boolean;
 };
 
 /**
@@ -84,6 +86,27 @@ export interface ContextEngine {
     /** True when the batch belongs to a heartbeat run and should not be persisted by LCM. */
     isHeartbeat?: boolean;
   }): Promise<IngestBatchResult>;
+
+  /**
+   * Execute optional post-turn lifecycle work after a run attempt completes.
+   * Engines can use this to persist canonical context and trigger background
+   * compaction decisions.
+   */
+  afterTurn?(params: {
+    sessionId: string;
+    sessionFile: string;
+    messages: AgentMessage[];
+    /** Number of messages that existed before the prompt was sent. */
+    prePromptMessageCount: number;
+    /** Optional auto-compaction summary emitted by the runtime. */
+    autoCompactionSummary?: string;
+    /** True when this turn belongs to a heartbeat run. */
+    isHeartbeat?: boolean;
+    /** Optional model context token budget for proactive compaction. */
+    tokenBudget?: number;
+    /** Optional runtime params used by legacy-backed summarization plumbing. */
+    legacyCompactionParams?: Record<string, unknown>;
+  }): Promise<void>;
 
   /**
    * Assemble model context under a token budget.

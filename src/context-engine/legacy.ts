@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import { registerContextEngine } from "./registry.js";
 import type {
   ContextEngine,
   ContextEngineInfo,
@@ -6,7 +7,6 @@ import type {
   CompactResult,
   IngestResult,
 } from "./types.js";
-import { registerContextEngine } from "./registry.js";
 
 /**
  * LegacyContextEngine wraps the existing compaction behavior behind the
@@ -44,6 +44,19 @@ export class LegacyContextEngine implements ContextEngine {
       messages: params.messages,
       estimatedTokens: 0, // Caller handles estimation
     };
+  }
+
+  async afterTurn(_params: {
+    sessionId: string;
+    sessionFile: string;
+    messages: AgentMessage[];
+    prePromptMessageCount: number;
+    autoCompactionSummary?: string;
+    isHeartbeat?: boolean;
+    tokenBudget?: number;
+    legacyCompactionParams?: Record<string, unknown>;
+  }): Promise<void> {
+    // No-op: legacy flow persists context directly in SessionManager.
   }
 
   async compact(params: {
