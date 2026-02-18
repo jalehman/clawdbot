@@ -332,8 +332,21 @@ export class ContextAssembler {
 
     const estimatedTokens = evictableTokens + tailTokens;
 
+    // Normalize assistant string content to array blocks (some providers return
+    // content as a plain string; Anthropic expects content block arrays).
+    const rawMessages = selected.map((item) => item.message);
+    for (let i = 0; i < rawMessages.length; i++) {
+      const msg = rawMessages[i];
+      if (msg?.role === "assistant" && typeof msg.content === "string") {
+        rawMessages[i] = {
+          ...msg,
+          content: [{ type: "text", text: msg.content }] as unknown as typeof msg.content,
+        } as typeof msg;
+      }
+    }
+
     return {
-      messages: sanitizeToolUseResultPairing(selected.map((item) => item.message)),
+      messages: sanitizeToolUseResultPairing(rawMessages),
       estimatedTokens,
       stats: {
         rawMessageCount,
