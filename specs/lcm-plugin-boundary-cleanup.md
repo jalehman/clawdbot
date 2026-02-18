@@ -2,7 +2,7 @@
 
 **Status:** Draft  
 **Branch:** josh/lcm  
-**Issue:** TBD  
+**Issue:** openclaw-d20  
 **Date:** 2026-02-17
 
 ## Problem
@@ -175,26 +175,60 @@ These are things that should not be in core at all.
 - On subagent cleanup/sweep, revokes grants.
 - Directly imports from `src/plugins/lcm/expansion-auth.ts`.
 - **This is the most problematic coupling.** Core subagent lifecycle directly calls LCM internals.
-- **Proposal:** Use the existing plugin hook system:
-  - New hook: `subagent_spawned` (void hook, fire-and-forget)
-    ```typescript
-    type PluginHookSubagentSpawnedEvent = {
-      parentSessionKey: string;
-      childSessionKey: string;
-      runTimeoutMs?: number;
-    };
-    ```
-  - New hook: `subagent_ended` (void hook, fire-and-forget)
-    ```typescript
-    type PluginHookSubagentEndedEvent = {
-      childSessionKey: string;
-      cleanup: "delete" | "keep";
-    };
-    ```
-  - LCM plugin registers handlers for these hooks. On `subagent_spawned`, creates the expansion grant. On `subagent_ended`, revokes it.
-  - Core subagent-registry emits these hooks at the right lifecycle points. No LCM imports needed.
-  - The `resolveRequesterConversationScopeId` helper in `sessions-spawn-tool.ts` moves entirely into the LCM plugin's hook handler.
-- **Impact:** Removes all 90 lines of LCM code from `subagent-registry.ts` and `sessions-spawn-tool.ts`. Adds ~10 lines of hook emission in their place.
+
+#### Why not hooks?
+
+The initial instinct is to use the existing plugin hook system (`subagent_spawned` / `subagent_ended` void hooks). However, the expansion grant lifecycle has requirements that void hooks can't satisfy:
+
+1. **Synchronous pre-spawn guarantee.** The grant MUST exist before the child session starts — the child might call `lcm_expand` on its first turn. Void hooks are fire-and-forget; even though `runVoidHook` awaits `Promise.all`, there's no return value to confirm the grant was created.
+
+2. **Error rollback requires caller-side knowledge.** The spawn tool currently holds `delegatedGrantId` and revokes the grant specifically in its catch block if the gateway call fails. With a void hook, the spawn tool has no handle to roll back. We'd need either a return value from the hook (not supported) or a separate failure hook plus TTL-based expiry for the gap — sloppy.
+
+3. **Cleanup semantics vary by call site.** There are 5 distinct call patterns across sweep/finalize/release, using two different functions (`revoke` vs `remove`) with different options (`removeBinding: true/false`):
+   - **sweep** (archive expired): `removeDelegatedExpansionGrantForSession()` — unbinds without revoking (grant may have expired naturally)
+   - **finalize (delete)**: `revokeDelegatedExpansionGrantForSession(removeBinding: true)` — revoke + remove binding
+   - **finalize (keep)**: `revokeDelegatedExpansionGrantForSession()` — revoke only, keep binding for inspection
+   - **release**: `removeDelegatedExpansionGrantForSession()` — unbind only
+   - **spawn failure**: `revokeDelegatedExpansionGrantForSession(removeBinding: true)` — revoke + unbind
+
+   A single void hook event would need to convey all these distinctions and trust the plugin to handle each correctly, with no way for the caller to verify.
+
+#### Chosen approach: ContextEngine interface methods
+
+We extend the `ContextEngine` interface with optional subagent lifecycle methods:
+
+```typescript
+interface ContextEngine {
+  // ...existing...
+
+  /** Called before spawning a subagent. Returns an opaque rollback handle. */
+  prepareSubagentSpawn?(params: {
+    parentSessionKey: string;
+    childSessionKey: string;
+    ttlMs?: number;
+  }): Promise<{ rollback: () => void } | undefined>;
+
+  /** Called when a subagent lifecycle event occurs. */
+  onSubagentEnded?(params: {
+    childSessionKey: string;
+    reason: "deleted" | "completed" | "swept" | "released";
+  }): Promise<void>;
+}
+```
+
+Core calls `contextEngine.prepareSubagentSpawn()` before the gateway call and gets back a rollback handle. On spawn failure, calls `rollback()`. On lifecycle events, calls `onSubagentEnded()` with the reason.
+
+**Rationale:** LCM is the first non-legacy context engine, and delegated expansion across subagent boundaries is currently unique to it. We considered hooks (generic, zero ContextEngine coupling) but they can't support the synchronous-creation + error-rollback + varied-cleanup semantics without introducing fragile patterns (return closures from void hooks, TTL-based failure cleanup, complex reason enums). The ContextEngine interface is the right place because expansion grants are fundamentally a context management feature — a context engine that manages a persistent store across sessions needs to know about session boundaries. If a future context engine doesn't need subagent awareness, these methods are optional and default to no-op. The interface methods are named generically (`prepareSubagentSpawn`, `onSubagentEnded`) rather than LCM-specifically (`createExpansionGrant`), leaving room for other engines to participate.
+
+LCM maps the `reason` to its internal grant operations:
+
+- `"deleted"` → revoke + remove binding
+- `"completed"` → revoke, keep binding
+- `"swept"` → remove binding only (no revoke)
+- `"released"` → remove binding only
+
+- **Impact:** Removes all 90 lines of direct LCM imports from `subagent-registry.ts` and `sessions-spawn-tool.ts`. Adds ~15 lines of ContextEngine method calls. Grant management logic moves into `LcmContextEngine.prepareSubagentSpawn()` and `onSubagentEnded()` (~50 lines).
+- **Zero core imports from `src/plugins/lcm/`.**
 
 ## Implementation Plan
 
@@ -225,13 +259,15 @@ These are things that should not be in core at all.
 - Remove from `attempt.ts`
 - **Net effect:** ~15 lines removed from `attempt.ts`
 
-### Phase 4: Subagent lifecycle hooks
+### Phase 4: Subagent lifecycle via ContextEngine interface
 
-- Add `subagent_spawned` and `subagent_ended` hook types
-- Emit hooks from `subagent-registry.ts` and `sessions-spawn-tool.ts`
-- LCM registers hook handlers for expansion grant management
-- Remove direct imports of `expansion-auth.ts` from core
-- **Net effect:** ~90 lines removed from core, replaced by ~10 lines of hook emissions + ~40 lines of LCM hook handlers
+- Add `prepareSubagentSpawn()` and `onSubagentEnded()` to `ContextEngine` interface
+- `sessions-spawn-tool.ts`: call `prepareSubagentSpawn()` before gateway call, store rollback handle, call `rollback()` on failure
+- `subagent-registry.ts`: call `onSubagentEnded()` at sweep/finalize/release points with appropriate reason
+- Implement both methods in `LcmContextEngine` (grant create/revoke/remove logic moves here)
+- `LegacyContextEngine`: no-op (methods are optional)
+- Remove all imports of `expansion-auth.ts` from core files
+- **Net effect:** ~90 lines removed from core, replaced by ~15 lines of interface calls + ~50 lines of LCM implementation
 
 ### Phase 5: Cleanup
 
@@ -255,8 +291,8 @@ After cleanup, the core files touched by LCM should be:
 | `pi-settings.ts`                               | Check `ownsCompaction` flag — generic                                                                   |
 | `agent-runner-execution.ts`                    | Pass `isHeartbeat` — one line, generic                                                                  |
 | `agent-runner-memory.ts`                       | Pass `isHeartbeat` — one line, generic                                                                  |
-| `subagent-registry.ts`                         | Emit `subagent_ended` hook — generic                                                                    |
-| `sessions-spawn-tool.ts`                       | Emit `subagent_spawned` hook — generic                                                                  |
+| `subagent-registry.ts`                         | Call `onSubagentEnded()` — via ContextEngine interface                                                  |
+| `sessions-spawn-tool.ts`                       | Call `prepareSubagentSpawn()` + rollback — via ContextEngine interface                                  |
 | `pi-embedded-subscribe.ts`                     | **No LCM changes** (compaction tracking removed)                                                        |
 | `pi-embedded-subscribe.handlers.compaction.ts` | **No LCM changes** (result extraction removed)                                                          |
 
@@ -264,10 +300,9 @@ After cleanup, the core files touched by LCM should be:
 
 Every core change is either:
 
-- A call to a method on the `ContextEngine` interface (which any engine can implement)
-- Emission of a generic lifecycle hook (which any plugin can subscribe to)
-- A capability flag check (which any engine can set)
-- A generic improvement (compaction count as number, isHeartbeat threading)
+- A call to a method on the `ContextEngine` interface (which any engine can implement or ignore via optional methods)
+- A capability flag check on `ContextEngineInfo` (which any engine can set)
+- A generic improvement to existing core code (compaction count as number, isHeartbeat threading)
 
 ## Conflict Reduction Estimate
 
