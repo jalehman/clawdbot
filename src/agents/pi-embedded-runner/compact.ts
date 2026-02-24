@@ -268,6 +268,23 @@ function classifyCompactionReason(reason?: string): string {
   return "unknown";
 }
 
+function resolvePostCompactionIndexSyncMode(config?: OpenClawConfig): "off" | "async" | "await" {
+  const mode = config?.agents?.defaults?.compaction?.postIndexSync;
+  if (mode === "off" || mode === "async" || mode === "await") {
+    return mode;
+  }
+  return "async";
+}
+
+async function syncPostCompactionSessionMemory(params: {
+  config?: OpenClawConfig;
+  mode: "off" | "async" | "await";
+}): Promise<void> {
+  if (params.mode === "off" || !params.config) {
+    return;
+  }
+}
+
 /**
  * Core compaction logic without lane queueing.
  * Use this when already inside a session/global lane to avoid deadlocks.
@@ -810,6 +827,10 @@ export async function compactEmbeddedPiSessionDirect(
           session.compact(params.customInstructions),
         );
         emitSessionTranscriptUpdate(params.sessionFile);
+        await syncPostCompactionSessionMemory({
+          config: params.config,
+          mode: resolvePostCompactionIndexSyncMode(params.config),
+        });
         // Estimate tokens after compaction by summing token estimates for remaining messages
         let tokensAfter: number | undefined;
         try {
