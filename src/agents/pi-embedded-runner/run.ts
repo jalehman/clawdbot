@@ -610,6 +610,8 @@ export async function runEmbeddedPiAgent(
             provider,
             modelId,
             model,
+            authProfileId: lastProfileId,
+            authProfileIdSource: lockedProfileId ? "user" : "auto",
             authStorage,
             modelRegistry,
             agentId: workspaceResolution.agentId,
