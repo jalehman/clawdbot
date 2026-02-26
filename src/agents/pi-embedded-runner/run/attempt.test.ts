@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "../../../config/config.js";
 import {
   buildAfterTurnLegacyCompactionParams,
   isOllamaCompatProvider,
+  prependSystemPromptAddition,
   resolveAttemptFsWorkspaceOnly,
   resolveOllamaCompatNumCtxEnabled,
   resolvePromptBuildHookResult,
@@ -334,6 +335,26 @@ describe("shouldInjectOllamaCompatNumCtx", () => {
     ).toBe(false);
   });
 });
+
+describe("prependSystemPromptAddition", () => {
+  it("prepends context-engine addition to the system prompt", () => {
+    const result = prependSystemPromptAddition({
+      systemPrompt: "base system",
+      systemPromptAddition: "extra behavior",
+    });
+
+    expect(result).toBe("extra behavior\n\nbase system");
+  });
+
+  it("returns the original system prompt when no addition is provided", () => {
+    const result = prependSystemPromptAddition({
+      systemPrompt: "base system",
+    });
+
+    expect(result).toBe("base system");
+  });
+});
+
 
 describe("buildAfterTurnLegacyCompactionParams", () => {
   it("includes resolved auth profile fields for context-engine afterTurn compaction", () => {
