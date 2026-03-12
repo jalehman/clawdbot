@@ -498,16 +498,19 @@ describe("memory index", () => {
       const manager = requireManager(result);
       await manager.sync?.({ reason: "test" });
 
-      const db = (manager as unknown as {
-        db: {
-          prepare: (
-            sql: string,
-          ) => { get: (path: string, source: string) => { hash: string } | undefined };
-        };
-      }).db;
+      const db = (
+        manager as unknown as {
+          db: {
+            prepare: (sql: string) => {
+              get: (path: string, source: string) => { hash: string } | undefined;
+            };
+          };
+        }
+      ).db;
       const getSessionHash = (sessionPath: string) =>
-        db.prepare(`SELECT hash FROM files WHERE path = ? AND source = ?`).get(sessionPath, "sessions")
-          ?.hash;
+        db
+          .prepare(`SELECT hash FROM files WHERE path = ? AND source = ?`)
+          .get(sessionPath, "sessions")?.hash;
 
       const firstOriginalHash = getSessionHash("sessions/targeted-first.jsonl");
       const secondOriginalHash = getSessionHash("sessions/targeted-second.jsonl");
