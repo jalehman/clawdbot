@@ -536,6 +536,67 @@ describe("compactEmbeddedPiSessionDirect hooks", () => {
     });
   });
 
+  it("skips post-compaction memory sync when the mode is off", async () => {
+    const sync = vi.fn(async () => {});
+    getMemorySearchManagerMock.mockResolvedValue({ manager: { sync } });
+
+    const result = await compactEmbeddedPiSessionDirect({
+      sessionId: "session-1",
+      sessionKey: "agent:main:session-1",
+      sessionFile: "/tmp/session.jsonl",
+      workspaceDir: "/tmp",
+      customInstructions: "focus on decisions",
+      config: {
+        agents: {
+          defaults: {
+            compaction: {
+              postIndexSync: "off",
+            },
+          },
+        },
+      } as never,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(resolveSessionAgentIdMock).not.toHaveBeenCalled();
+    expect(getMemorySearchManagerMock).not.toHaveBeenCalled();
+    expect(sync).not.toHaveBeenCalled();
+  });
+
+  it("fires post-compaction memory sync without awaiting it in async mode", async () => {
+    let resolveSync: (() => void) | undefined;
+    const syncGate = new Promise<void>((resolve) => {
+      resolveSync = resolve;
+    });
+    const sync = vi.fn(() => syncGate);
+    getMemorySearchManagerMock.mockResolvedValue({ manager: { sync } });
+
+    const result = await compactEmbeddedPiSessionDirect({
+      sessionId: "session-1",
+      sessionKey: "agent:main:session-1",
+      sessionFile: "/tmp/session.jsonl",
+      workspaceDir: "/tmp",
+      customInstructions: "focus on decisions",
+      config: {
+        agents: {
+          defaults: {
+            compaction: {
+              postIndexSync: "async",
+            },
+          },
+        },
+      } as never,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(sync).toHaveBeenCalledWith({
+      reason: "post-compaction",
+      force: true,
+    });
+    resolveSync?.();
+    await syncGate;
+  });
+
   it("registers the Ollama api provider before compaction", async () => {
     resolveModelMock.mockReturnValue({
       model: {
