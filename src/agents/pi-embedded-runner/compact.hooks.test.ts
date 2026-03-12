@@ -501,7 +501,7 @@ describe("compactEmbeddedPiSessionDirect hooks", () => {
     }
   });
 
-  it("awaits post-compaction memory sync with the resolved force flag", async () => {
+  it("skips sync in await mode when postCompactionForce is false", async () => {
     const sync = vi.fn(async () => {});
     getMemorySearchManagerMock.mockResolvedValue({ manager: { sync } });
     resolveMemorySearchConfigMock.mockReturnValue({
@@ -535,11 +535,50 @@ describe("compactEmbeddedPiSessionDirect hooks", () => {
       sessionKey: "agent:main:session-1",
       config: expect.any(Object),
     });
-    expect(sync).toHaveBeenCalledWith({
-      reason: "post-compaction",
-      force: false,
-      sessionFiles: ["/tmp/session.jsonl"],
+    expect(getMemorySearchManagerMock).not.toHaveBeenCalled();
+    expect(sync).not.toHaveBeenCalled();
+  });
+
+  it("awaits post-compaction memory sync in await mode when postCompactionForce is true", async () => {
+    let releaseSync: (() => void) | undefined;
+    const syncGate = new Promise<void>((resolve) => {
+      releaseSync = resolve;
     });
+    const sync = vi.fn(() => syncGate);
+    getMemorySearchManagerMock.mockResolvedValue({ manager: { sync } });
+    let settled = false;
+
+    const resultPromise = compactEmbeddedPiSessionDirect({
+      sessionId: "session-1",
+      sessionKey: "agent:main:session-1",
+      sessionFile: "/tmp/session.jsonl",
+      workspaceDir: "/tmp",
+      customInstructions: "focus on decisions",
+      config: {
+        agents: {
+          defaults: {
+            compaction: {
+              postIndexSync: "await",
+            },
+          },
+        },
+      } as never,
+    });
+
+    void resultPromise.then(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => {
+      expect(sync).toHaveBeenCalledWith({
+        reason: "post-compaction",
+        sessionFiles: ["/tmp/session.jsonl"],
+      });
+    });
+    expect(settled).toBe(false);
+    releaseSync?.();
+    const result = await resultPromise;
+    expect(result.ok).toBe(true);
+    expect(settled).toBe(true);
   });
 
   it("skips post-compaction memory sync when the mode is off", async () => {
@@ -610,7 +649,6 @@ describe("compactEmbeddedPiSessionDirect hooks", () => {
     await vi.waitFor(() => {
       expect(sync).toHaveBeenCalledWith({
         reason: "post-compaction",
-        force: true,
         sessionFiles: ["/tmp/session.jsonl"],
       });
     });
@@ -747,7 +785,6 @@ describe("compactEmbeddedPiSession hooks (ownsCompaction engine)", () => {
       expect(listener).toHaveBeenCalledWith({ sessionFile: "/tmp/session.jsonl" });
       expect(sync).toHaveBeenCalledWith({
         reason: "post-compaction",
-        force: true,
         sessionFiles: ["/tmp/session.jsonl"],
       });
     } finally {

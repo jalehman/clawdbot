@@ -151,7 +151,8 @@ export abstract class MemoryManagerSyncOps {
   protected abstract sync(params?: {
     reason?: string;
     force?: boolean;
-    sessionFiles?: string[];
+    forceSessions?: boolean;
+    sessionFile?: string;
     progress?: (update: MemorySyncProgressUpdate) => void;
   }): Promise<void>;
   protected abstract withTimeout<T>(
@@ -612,22 +613,18 @@ export abstract class MemoryManagerSyncOps {
     return resolvedFile.startsWith(`${resolvedDir}${path.sep}`);
   }
 
-  private normalizeTargetSessionFiles(sessionFiles?: string[]): Set<string> | null {
-    if (!sessionFiles || sessionFiles.length === 0) {
-      return null;
+  private normalizeTargetSessionFile(sessionFile?: string): string | undefined {
+    const trimmed = sessionFile?.trim();
+    if (!trimmed) {
+      return undefined;
     }
-    const normalized = new Set<string>();
-    for (const sessionFile of sessionFiles) {
-      const trimmed = sessionFile.trim();
-      if (!trimmed) {
-        continue;
-      }
-      const resolved = path.resolve(trimmed);
-      if (this.isSessionFileForAgent(resolved)) {
-        normalized.add(resolved);
-      }
-    }
-    return normalized.size > 0 ? normalized : null;
+    const resolved = path.resolve(trimmed);
+    return this.isSessionFileForAgent(resolved) ? resolved : undefined;
+  }
+
+  private clearSyncedSessionFile(targetSessionFile: string) {
+    this.sessionsDirtyFiles.delete(targetSessionFile);
+    this.sessionsDirty = this.sessionsDirtyFiles.size > 0;
   }
 
   protected ensureIntervalSync() {
@@ -659,13 +656,13 @@ export abstract class MemoryManagerSyncOps {
   }
 
   private shouldSyncSessions(
-    params?: { reason?: string; force?: boolean; sessionFiles?: string[] },
+    params?: { reason?: string; force?: boolean; forceSessions?: boolean },
     needsFullReindex = false,
   ) {
     if (!this.sources.has("sessions")) {
       return false;
     }
-    if (params?.sessionFiles?.some((sessionFile) => sessionFile.trim().length > 0)) {
+    if (params?.forceSessions) {
       return true;
     }
     if (params?.force) {
@@ -774,7 +771,7 @@ export abstract class MemoryManagerSyncOps {
 
   private async syncSessionFiles(params: {
     needsFullReindex: boolean;
-    targetSessionFiles?: string[];
+    targetSessionFile?: string;
     progress?: MemorySyncProgressState;
   }) {
     // FTS-only mode: skip embedding sync (no provider)
@@ -783,22 +780,22 @@ export abstract class MemoryManagerSyncOps {
       return;
     }
 
-    const targetSessionFiles = params.needsFullReindex
-      ? null
-      : this.normalizeTargetSessionFiles(params.targetSessionFiles);
-    const files = targetSessionFiles
-      ? Array.from(targetSessionFiles)
+    const targetSessionFile = params.needsFullReindex
+      ? undefined
+      : this.normalizeTargetSessionFile(params.targetSessionFile);
+    const files = targetSessionFile
+      ? [targetSessionFile]
       : await listSessionFilesForAgent(this.agentId);
-    const activePaths = targetSessionFiles
+    const activePaths = targetSessionFile
       ? null
       : new Set(files.map((file) => sessionPathForFile(file)));
     const indexAll =
-      params.needsFullReindex || targetSessionFiles !== null || this.sessionsDirtyFiles.size === 0;
+      params.needsFullReindex || Boolean(targetSessionFile) || this.sessionsDirtyFiles.size === 0;
     log.debug("memory sync: indexing session files", {
       files: files.length,
       indexAll,
       dirtyFiles: this.sessionsDirtyFiles.size,
-      targetedFiles: targetSessionFiles?.size ?? 0,
+      targetedFiles: targetSessionFile ? 1 : 0,
       batch: this.batch.enabled,
       concurrency: this.getIndexConcurrency(),
     });
@@ -940,6 +937,33 @@ export abstract class MemoryManagerSyncOps {
     const configuredScopeHash = this.resolveConfiguredScopeHash();
     const targetSessionFiles = this.normalizeTargetSessionFiles(params?.sessionFiles);
     const hasTargetSessionFiles = targetSessionFiles !== null;
+    if (hasTargetSessionFiles && targetSessionFiles && this.sources.has("sessions")) {
+      // Post-compaction refreshes should only update the explicit transcript files and
+      // leave broader reindex/dirty-work decisions to the regular sync path.
+      try {
+        await this.syncSessionFiles({
+          needsFullReindex: false,
+          targetSessionFiles: Array.from(targetSessionFiles),
+          progress: progress ?? undefined,
+        });
+        this.clearSyncedSessionFiles(targetSessionFiles);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        const activated =
+          this.shouldFallbackOnError(reason) && (await this.activateFallbackProvider(reason));
+        if (activated) {
+          await this.syncSessionFiles({
+            needsFullReindex: false,
+            targetSessionFiles: Array.from(targetSessionFiles),
+            progress: progress ?? undefined,
+          });
+          this.clearSyncedSessionFiles(targetSessionFiles);
+          return;
+        }
+        throw err;
+      }
+      return;
+    }
     const needsFullReindex =
       (params?.force && !hasTargetSessionFiles) ||
       !meta ||

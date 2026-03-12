@@ -287,12 +287,19 @@ async function runPostCompactionSessionMemorySync(params: {
     return;
   }
   try {
+    const sessionFile = params.sessionFile.trim();
+    if (!sessionFile) {
+      return;
+    }
     const agentId = resolveSessionAgentId({
       sessionKey: params.sessionKey,
       config: params.config,
     });
     const resolvedMemory = resolveMemorySearchConfig(params.config, agentId);
     if (!resolvedMemory || !resolvedMemory.sources.includes("sessions")) {
+      return;
+    }
+    if (!resolvedMemory.sync.sessions.postCompactionForce) {
       return;
     }
     const { manager } = await getMemorySearchManager({
@@ -304,8 +311,7 @@ async function runPostCompactionSessionMemorySync(params: {
     }
     const syncTask = manager.sync({
       reason: "post-compaction",
-      force: resolvedMemory.sync.sessions.postCompactionForce,
-      sessionFiles: [params.sessionFile.trim()],
+      sessionFiles: [sessionFile],
     });
     await syncTask;
   } catch (err) {
@@ -340,11 +346,15 @@ async function runPostCompactionSideEffects(params: {
   sessionKey?: string;
   sessionFile: string;
 }): Promise<void> {
-  emitSessionTranscriptUpdate(params.sessionFile);
+  const sessionFile = params.sessionFile.trim();
+  if (!sessionFile) {
+    return;
+  }
+  emitSessionTranscriptUpdate(sessionFile);
   await syncPostCompactionSessionMemory({
     config: params.config,
     sessionKey: params.sessionKey,
-    sessionFile: params.sessionFile,
+    sessionFile,
     mode: resolvePostCompactionIndexSyncMode(params.config),
   });
 }

@@ -461,7 +461,7 @@ describe("memory index", () => {
     }
   });
 
-  it("targets explicit session files during forced sync", async () => {
+  it("targets explicit session files during post-compaction sync", async () => {
     const stateDir = path.join(fixtureRoot, `state-targeted-${randomUUID()}`);
     const sessionDir = path.join(stateDir, "agents", "main", "sessions");
     const firstSessionPath = path.join(sessionDir, "targeted-first.jsonl");
@@ -538,7 +538,6 @@ describe("memory index", () => {
 
       await manager.sync?.({
         reason: "post-compaction",
-        force: true,
         sessionFiles: [firstSessionPath],
       });
 
@@ -552,6 +551,114 @@ describe("memory index", () => {
         process.env.OPENCLAW_STATE_DIR = previousStateDir;
       }
       await fs.rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves unrelated dirty sessions after targeted post-compaction sync", async () => {
+    const stateDir = path.join(fixtureRoot, `state-targeted-dirty-${randomUUID()}`);
+    const sessionDir = path.join(stateDir, "agents", "main", "sessions");
+    const firstSessionPath = path.join(sessionDir, "targeted-dirty-first.jsonl");
+    const secondSessionPath = path.join(sessionDir, "targeted-dirty-second.jsonl");
+    const storePath = path.join(workspaceDir, `index-targeted-dirty-${randomUUID()}.sqlite`);
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+
+    await fs.mkdir(sessionDir, { recursive: true });
+    await fs.writeFile(
+      firstSessionPath,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: [{ type: "text", text: "first transcript v1" }] },
+      })}\n`,
+    );
+    await fs.writeFile(
+      secondSessionPath,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: [{ type: "text", text: "second transcript v1" }] },
+      })}\n`,
+    );
+
+    try {
+      const manager = requireManager(
+        await getMemorySearchManager({
+          cfg: createCfg({
+            storePath,
+            sources: ["sessions"],
+            sessionMemory: true,
+          }),
+          agentId: "main",
+        }),
+      );
+      await manager.sync({ reason: "test" });
+
+      const db = (
+        manager as unknown as {
+          db: {
+            prepare: (sql: string) => {
+              get: (path: string, source: string) => { hash: string } | undefined;
+            };
+          };
+        }
+      ).db;
+      const getSessionHash = (sessionPath: string) =>
+        db
+          .prepare(`SELECT hash FROM files WHERE path = ? AND source = ?`)
+          .get(sessionPath, "sessions")?.hash;
+
+      const firstOriginalHash = getSessionHash("sessions/targeted-dirty-first.jsonl");
+      const secondOriginalHash = getSessionHash("sessions/targeted-dirty-second.jsonl");
+
+      await fs.writeFile(
+        firstSessionPath,
+        `${JSON.stringify({
+          type: "message",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "first transcript v2 after compaction" }],
+          },
+        })}\n`,
+      );
+      await fs.writeFile(
+        secondSessionPath,
+        `${JSON.stringify({
+          type: "message",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "second transcript v2 still pending" }],
+          },
+        })}\n`,
+      );
+
+      const internal = manager as unknown as {
+        sessionsDirty: boolean;
+        sessionsDirtyFiles: Set<string>;
+      };
+      internal.sessionsDirty = true;
+      internal.sessionsDirtyFiles.add(secondSessionPath);
+
+      await manager.sync({
+        reason: "post-compaction",
+        sessionFiles: [firstSessionPath],
+      });
+
+      expect(getSessionHash("sessions/targeted-dirty-first.jsonl")).not.toBe(firstOriginalHash);
+      expect(getSessionHash("sessions/targeted-dirty-second.jsonl")).toBe(secondOriginalHash);
+      expect(internal.sessionsDirtyFiles.has(secondSessionPath)).toBe(true);
+      expect(internal.sessionsDirty).toBe(true);
+
+      await manager.sync({ reason: "test" });
+
+      expect(getSessionHash("sessions/targeted-dirty-second.jsonl")).not.toBe(secondOriginalHash);
+      await manager.close?.();
+    } finally {
+      if (previousStateDir === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
+      } else {
+        process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      }
+      await fs.rm(stateDir, { recursive: true, force: true });
+      await fs.rm(storePath, { force: true });
     }
   });
 
