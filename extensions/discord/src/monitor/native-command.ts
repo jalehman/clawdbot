@@ -64,6 +64,7 @@ import {
   normalizeDiscordSlug,
   resolveDiscordChannelConfigWithFallback,
   resolveDiscordGuildEntry,
+  resolveDiscordUserAllowed,
   resolveDiscordMemberAccessState,
   resolveDiscordOwnerAccess,
 } from "./allow-list.js";
@@ -103,6 +104,7 @@ function resolveDiscordNativeCommandAllowlistAccess(params: {
   sender: { id: string; name?: string; tag?: string };
   chatType: "direct" | "group" | "thread" | "channel";
   conversationId?: string;
+  allowNameMatching?: boolean;
 }) {
   const commandsAllowFrom = params.cfg.commands?.allowFrom;
   if (!commandsAllowFrom || typeof commandsAllowFrom !== "object") {
@@ -114,27 +116,19 @@ function resolveDiscordNativeCommandAllowlistAccess(params: {
     return { configured: false, allowed: false } as const;
   }
 
-  const from =
-    params.chatType === "direct"
-      ? `discord:${params.sender.id}`
-      : `discord:${params.chatType}:${params.conversationId ?? "unknown"}`;
-  const auth = resolveCommandAuthorization({
-    ctx: {
-      Provider: "discord",
-      Surface: "discord",
-      OriginatingChannel: "discord",
-      AccountId: params.accountId ?? undefined,
-      ChatType: params.chatType,
-      From: from,
-      SenderId: params.sender.id,
-      SenderUsername: params.sender.name,
-      SenderTag: params.sender.tag,
-    },
-    cfg: params.cfg,
-    // We only want explicit commands.allowFrom authorization here.
-    commandAuthorized: false,
-  });
-  return { configured: true, allowed: auth.isAuthorizedSender } as const;
+  const allowList = (
+    Array.isArray(commandsAllowFrom.discord) ? commandsAllowFrom.discord : commandsAllowFrom["*"]
+  )?.map((entry) => String(entry));
+  return {
+    configured: true,
+    allowed: resolveDiscordUserAllowed({
+      allowList,
+      userId: params.sender.id,
+      userName: params.sender.name,
+      userTag: params.sender.tag,
+      allowNameMatching: params.allowNameMatching,
+    }),
+  } as const;
 }
 
 function buildDiscordCommandOptions(params: {
@@ -1359,6 +1353,7 @@ async function dispatchDiscordCommandInteraction(params: {
           ? "channel"
           : "group",
     conversationId: rawChannelId || undefined,
+    allowNameMatching,
   });
   const guildInfo = resolveDiscordGuildEntry({
     guild: interaction.guild ?? undefined,
