@@ -63,8 +63,8 @@ function installGatewayRuntime(params?: { probeOk?: boolean; botUsername?: strin
     .spyOn(probeModule, "probeTelegram")
     .mockImplementation(async () =>
       params?.probeOk
-        ? { ok: true, bot: { username: params.botUsername ?? "bot" } }
-        : { ok: false },
+        ? { ok: true, elapsedMs: 1, bot: { username: params.botUsername ?? "bot" } }
+        : { ok: false, elapsedMs: 1 },
     );
   const collectUnmentionedGroupIds = vi
     .spyOn(auditModule, "collectTelegramUnmentionedGroupIds")

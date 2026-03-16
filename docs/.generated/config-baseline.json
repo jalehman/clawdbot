@@ -32141,6 +32141,16 @@
       "hasChildren": false
     },
     {
+      "path": "channels.telegram.accounts.*.silentErrorReplies",
+      "kind": "channel",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "hasChildren": false
+    },
+    {
       "path": "channels.telegram.accounts.*.streaming",
       "kind": "channel",
       "type": [
@@ -34135,6 +34145,21 @@
       ],
       "label": "Telegram Retry Min Delay (ms)",
       "help": "Minimum retry delay in ms for Telegram outbound calls.",
+      "hasChildren": false
+    },
+    {
+      "path": "channels.telegram.silentErrorReplies",
+      "kind": "channel",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "channels",
+        "network"
+      ],
+      "label": "Telegram Silent Error Replies",
+      "help": "When true, Telegram bot replies marked as errors are sent silently (no notification sound). Default: false.",
       "hasChildren": false
     },
     {
