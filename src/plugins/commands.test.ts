@@ -393,6 +393,30 @@ describe("executePluginCommand", () => {
     });
   });
 
+  it("allows admin-scoped internal callers to bypass narrower scope requirements", async () => {
+    const handler = vi.fn(async () => ({ text: "ok" }));
+
+    const result = await executePluginCommand({
+      command: {
+        name: "pairing",
+        description: "Pairing command",
+        requiredGatewayScopes: ["operator.pairing"],
+        handler,
+        pluginId: "demo-plugin",
+      },
+      surface: "webchat",
+      channel: "webchat",
+      senderId: "admin-1",
+      isAuthorizedSender: true,
+      gatewayClientScopes: ["operator.admin"],
+      commandBody: "/pairing",
+      config: {} as never,
+    });
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ text: "ok" });
+  });
+
   it("allows external callers to bypass gateway scope requirements", async () => {
     const handler = vi.fn(async () => ({ text: "ok" }));
 
@@ -458,5 +482,31 @@ describe("executePluginCommand", () => {
       text: "⚠️ This command requires operator.pairing for internal gateway callers.",
     });
     expect(allowed).toEqual({ text: "ok" });
+  });
+
+  it("returns a safe error reply when dynamic scope resolution throws", async () => {
+    const handler = vi.fn(async () => ({ text: "ok" }));
+
+    const result = await executePluginCommand({
+      command: {
+        name: "pair",
+        description: "Pair command",
+        resolveRequiredGatewayScopes: () => {
+          throw new Error("resolver exploded");
+        },
+        handler,
+        pluginId: "demo-plugin",
+      },
+      surface: "webchat",
+      channel: "webchat",
+      senderId: "writer-1",
+      isAuthorizedSender: true,
+      gatewayClientScopes: ["operator.write"],
+      commandBody: "/pair",
+      config: {} as never,
+    });
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(result).toEqual({ text: "⚠️ Command failed. Please try again later." });
   });
 });

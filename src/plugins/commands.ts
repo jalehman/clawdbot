@@ -7,7 +7,7 @@
 
 import { parseExplicitTargetForChannel } from "../channels/plugins/target-parsing.js";
 import type { OpenClawConfig } from "../config/config.js";
-import { ADMIN_SCOPE } from "../gateway/method-scopes.js";
+import { ADMIN_SCOPE, isOperatorScope, type OperatorScope } from "../gateway/method-scopes.js";
 import { logVerbose } from "../globals.js";
 import { parseTelegramTarget } from "../plugin-sdk/telegram-runtime.js";
 import { isInternalMessageChannel } from "../utils/message-channel.js";
@@ -287,11 +287,29 @@ export async function executePluginCommand(params: {
     accountId: params.accountId,
     messageThreadId: params.messageThreadId,
   };
+  let dynamicRequiredGatewayScopes: OperatorScope[] = [];
+  if (command.resolveRequiredGatewayScopes) {
+    try {
+      const resolvedScopes = command.resolveRequiredGatewayScopes(authContext) as
+        | readonly string[]
+        | undefined;
+      dynamicRequiredGatewayScopes = (resolvedScopes ?? []).filter(
+        (scope): scope is OperatorScope => {
+          if (isOperatorScope(scope)) {
+            return true;
+          }
+          logVerbose(`Plugin command /${command.name} ignored unknown dynamic scope "${scope}"`);
+          return false;
+        },
+      );
+    } catch (err) {
+      const error = err as Error;
+      logVerbose(`Plugin command /${command.name} scope resolver error: ${error.message}`);
+      return { text: "⚠️ Command failed. Please try again later." };
+    }
+  }
   const requiredGatewayScopes = Array.from(
-    new Set([
-      ...(command.requiredGatewayScopes ?? []),
-      ...(command.resolveRequiredGatewayScopes?.(authContext) ?? []),
-    ]),
+    new Set([...(command.requiredGatewayScopes ?? []), ...dynamicRequiredGatewayScopes]),
   );
   if (
     requiredGatewayScopes.length > 0 &&

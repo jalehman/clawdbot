@@ -5,8 +5,23 @@
  * This handler is called before built-in command handlers.
  */
 
+import { isOperatorScope, type OperatorScope } from "../../gateway/method-scopes.js";
+import { logVerbose } from "../../globals.js";
 import { matchPluginCommand, executePluginCommand } from "../../plugins/commands.js";
 import type { CommandHandler, CommandHandlerResult } from "./commands-types.js";
+
+function narrowGatewayClientScopes(
+  scopes: readonly string[] | undefined,
+): OperatorScope[] | undefined {
+  if (!scopes) {
+    return undefined;
+  }
+  const narrowed = scopes.filter((scope) => isOperatorScope(scope));
+  if (narrowed.length !== scopes.length) {
+    logVerbose("Plugin command handler ignored unknown gateway scope values");
+  }
+  return narrowed.length > 0 ? narrowed : undefined;
+}
 
 /**
  * Handle plugin-registered commands.
@@ -39,9 +54,7 @@ export const handlePluginCommand: CommandHandler = async (
     channelId: command.channelId,
     isAuthorizedSender: command.isAuthorizedSender,
     senderIsOwner: command.senderIsOwner,
-    gatewayClientScopes: params.ctx.GatewayClientScopes as
-      | import("../../plugins/types.js").PluginCommandContext["gatewayClientScopes"]
-      | undefined,
+    gatewayClientScopes: narrowGatewayClientScopes(params.ctx.GatewayClientScopes),
     commandBody: command.commandBodyNormalized,
     config: cfg,
     from: command.from,
