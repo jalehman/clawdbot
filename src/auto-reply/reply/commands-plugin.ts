@@ -34,10 +34,14 @@ export const handlePluginCommand: CommandHandler = async (
     command: match.command,
     args: match.args,
     senderId: command.senderId,
+    surface: command.surface,
     channel: command.channel,
     channelId: command.channelId,
     isAuthorizedSender: command.isAuthorizedSender,
-    gatewayClientScopes: params.ctx.GatewayClientScopes,
+    senderIsOwner: command.senderIsOwner,
+    gatewayClientScopes: params.ctx.GatewayClientScopes as
+      | import("../../plugins/types.js").PluginCommandContext["gatewayClientScopes"]
+      | undefined,
     commandBody: command.commandBodyNormalized,
     config: cfg,
     from: command.from,
