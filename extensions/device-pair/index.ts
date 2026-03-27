@@ -554,6 +554,9 @@ export default definePluginEntry({
         const args = ctx.args?.trim() ?? "";
         const tokens = args.split(/\s+/).filter(Boolean);
         const action = tokens[0]?.toLowerCase() ?? "";
+        const gatewayClientScopes = Array.isArray(ctx.gatewayClientScopes)
+          ? ctx.gatewayClientScopes
+          : undefined;
         api.logger.info?.(
           `device-pair: /pair invoked channel=${ctx.channel} sender=${ctx.senderId ?? "unknown"} action=${
             action || "new"
