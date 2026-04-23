@@ -15,6 +15,7 @@ import {
   withTempHome,
 } from "../../test/helpers/auto-reply/trigger-handling-test-harness.js";
 import { loadSessionStore, resolveSessionKey } from "../config/sessions.js";
+import { stripHeartbeatToken } from "./heartbeat.js";
 import { registerGroupIntroPromptCases } from "./reply.triggers.group-intro-prompts.cases.js";
 import { registerTriggerHandlingUsageSummaryCases } from "./reply.triggers.trigger-handling.filters-usage-summary-current-model-provider.cases.js";
 import { enqueueFollowupRun, getFollowupQueueDepth, type FollowupRun } from "./reply/queue.js";
@@ -32,6 +33,16 @@ const TELEGRAM_DIRECT_MESSAGE = {
   ChatType: "direct",
   Provider: "telegram",
   Surface: "telegram",
+} as const;
+const TELEGRAM_GROUP_TOPIC_MESSAGE = {
+  From: "telegram:-1003774691294",
+  To: "telegram:-1003774691294",
+  ChatType: "group",
+  Provider: "telegram",
+  Surface: "telegram",
+  IsForum: true,
+  MessageThreadId: "3731",
+  SessionKey: "agent:main:telegram:group:-1003774691294:topic:3731",
 } as const;
 
 vi.mock("./reply/agent-runner.runtime.js", () => ({
@@ -60,16 +71,19 @@ vi.mock("./reply/agent-runner.runtime.js", () => ({
       const trimmed = message.replace(/\.\s*$/, "");
       return `⚠️ Agent failed before reply: ${trimmed}.\nLogs: openclaw logs --follow`;
     };
-    const stripHeartbeat = (text?: string) => {
+    const normalizeMockReplyText = (text: string | undefined) => {
       const trimmed = text?.trim();
-      if (!trimmed || trimmed === HEARTBEAT_TOKEN) {
+      if (!trimmed) {
         return undefined;
       }
-      return trimmed.startsWith(`${HEARTBEAT_TOKEN} `)
-        ? trimmed.slice(HEARTBEAT_TOKEN.length).trimStart()
-        : trimmed;
+      const looksLikeHeartbeatTurn =
+        params.commandBody.includes("If nothing needs attention, reply HEARTBEAT_OK.");
+      if (looksLikeHeartbeatTurn) {
+        return trimmed;
+      }
+      const stripped = stripHeartbeatToken(trimmed, { mode: "message" });
+      return stripped.shouldSkip ? undefined : stripped.text;
     };
-
     try {
       const result = await runEmbeddedPiAgentMock({
         prompt: params.commandBody,
@@ -84,7 +98,7 @@ vi.mock("./reply/agent-runner.runtime.js", () => ({
         config: params.followupRun.run.config,
         extraSystemPrompt: params.followupRun.run.extraSystemPrompt,
       });
-      return { text: stripHeartbeat(result?.payloads?.[0]?.text) };
+      return { text: normalizeMockReplyText(result?.payloads?.[0]?.text) };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return { text: normalizeErrorText(message) };
@@ -372,6 +386,75 @@ describe("trigger handling", () => {
         expect(maybeReplyText(res)).toBe(testCase.expected);
         expect(runEmbeddedPiAgentMock).toHaveBeenCalledOnce();
       }
+    });
+  });
+
+  it("suppresses heartbeat ack replies in telegram topic sessions when showOk is false", async () => {
+    await withTempHome(async (home) => {
+      const runEmbeddedPiAgentMock = getRunEmbeddedPiAgentMock();
+      runEmbeddedPiAgentMock.mockReset();
+      runEmbeddedPiAgentMock.mockResolvedValue({
+        payloads: [{ text: HEARTBEAT_TOKEN }],
+        meta: {
+          durationMs: 1,
+          agentMeta: { sessionId: "s", provider: "telegram", model: "m" },
+        },
+      });
+
+      const cfg = makeCfg(home);
+      cfg.channels = {
+        ...cfg.channels,
+        telegram: {
+          ...(cfg.channels?.telegram ?? {}),
+          heartbeat: { showOk: false },
+        },
+      };
+
+      const res = await getReplyFromConfig(
+        {
+          Body: "Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.",
+          ...TELEGRAM_GROUP_TOPIC_MESSAGE,
+        },
+        { isHeartbeat: true },
+        cfg,
+      );
+
+      expect(res).toBeUndefined();
+      expect(runEmbeddedPiAgentMock).toHaveBeenCalledOnce();
+    });
+  });
+
+  it("preserves substantive heartbeat alerts after stripping the ack token", async () => {
+    await withTempHome(async (home) => {
+      const runEmbeddedPiAgentMock = getRunEmbeddedPiAgentMock();
+      runEmbeddedPiAgentMock.mockReset();
+      runEmbeddedPiAgentMock.mockResolvedValue({
+        payloads: [{ text: `${HEARTBEAT_TOKEN} Disk usage crossed 95 percent on /data.` }],
+        meta: {
+          durationMs: 1,
+          agentMeta: { sessionId: "s", provider: "telegram", model: "m" },
+        },
+      });
+
+      const cfg = makeCfg(home);
+      cfg.agents ??= {};
+      cfg.agents.defaults ??= {};
+      cfg.agents.defaults.heartbeat = {
+        ...(cfg.agents.defaults.heartbeat ?? {}),
+        ackMaxChars: 10,
+      };
+
+      const res = await getReplyFromConfig(
+        {
+          Body: "Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.",
+          ...TELEGRAM_GROUP_TOPIC_MESSAGE,
+        },
+        { isHeartbeat: true },
+        cfg,
+      );
+
+      expect(maybeReplyText(res)).toBe("Disk usage crossed 95 percent on /data.");
+      expect(runEmbeddedPiAgentMock).toHaveBeenCalledOnce();
     });
   });
 

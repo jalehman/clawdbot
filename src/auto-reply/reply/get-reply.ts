@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
 import {
   resolveAgentDir,
   resolveAgentWorkspaceDir,
@@ -14,10 +15,12 @@ import { defaultRuntime } from "../../runtime.js";
 import { normalizeOptionalString } from "../../shared/string-coerce.js";
 import { normalizeStringEntries } from "../../shared/string-normalization.js";
 import type { GetReplyOptions } from "../get-reply-options.types.js";
+import { stripHeartbeatToken } from "../heartbeat.js";
 import type { ReplyPayload } from "../reply-payload.js";
 import type { MsgContext } from "../templating.js";
 import { normalizeVerboseLevel } from "../thinking.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
+import { resolveHeartbeatSummaryForAgent } from "../../infra/heartbeat-summary.js";
 import { resolveDefaultModel } from "./directive-handling.defaults.js";
 import { clearInlineDirectives } from "./get-reply-directives-utils.js";
 import { resolveReplyDirectives } from "./get-reply-directives.js";
@@ -128,6 +131,50 @@ function hasLinkCandidate(ctx: MsgContext): boolean {
   return /\bhttps?:\/\/\S+/i.test(message);
 }
 
+function normalizeHeartbeatOriginReplyPayloads(params: {
+  payloads: ReplyPayload[];
+  cfg: OpenClawConfig;
+  agentId?: string;
+}): ReplyPayload[] {
+  const heartbeatSummary = resolveHeartbeatSummaryForAgent(params.cfg, params.agentId);
+  return params.payloads.flatMap((payload) => {
+    const text = payload.text;
+    if (!text || !text.includes("HEARTBEAT_OK")) {
+      return [payload];
+    }
+    const stripped = stripHeartbeatToken(text, {
+      mode: "heartbeat",
+      maxAckChars: heartbeatSummary.ackMaxChars,
+    });
+    const hasMedia = resolveSendableOutboundReplyParts(payload).hasMedia;
+    if (stripped.shouldSkip && !hasMedia) {
+      return [];
+    }
+    return [{ ...payload, text: stripped.text }];
+  });
+}
+
+function normalizeHeartbeatOriginReplyResult(params: {
+  reply: ReplyPayload | ReplyPayload[] | undefined;
+  cfg: OpenClawConfig;
+  agentId?: string;
+  isHeartbeat: boolean;
+}): ReplyPayload | ReplyPayload[] | undefined {
+  if (!params.isHeartbeat || !params.reply) {
+    return params.reply;
+  }
+  const payloads = Array.isArray(params.reply) ? params.reply : [params.reply];
+  const normalized = normalizeHeartbeatOriginReplyPayloads({
+    payloads,
+    cfg: params.cfg,
+    agentId: params.agentId,
+  });
+  if (normalized.length === 0) {
+    return undefined;
+  }
+  return Array.isArray(params.reply) ? normalized : normalized[0];
+}
+
 async function applyMediaUnderstandingIfNeeded(params: {
   ctx: MsgContext;
   cfg: OpenClawConfig;
@@ -189,6 +236,7 @@ export async function getReplyFromConfig(
   const resolvedOpts =
     mergedSkillFilter !== undefined ? { ...opts, skillFilter: mergedSkillFilter } : opts;
   const agentCfg = cfg.agents?.defaults;
+  const isHeartbeat = opts?.isHeartbeat === true;
   const sessionCfg = cfg.session;
   const { defaultProvider, defaultModel, aliasIndex } = resolveDefaultModel({
     cfg,
@@ -197,7 +245,7 @@ export async function getReplyFromConfig(
   let provider = defaultProvider;
   let model = defaultModel;
   let hasResolvedHeartbeatModelOverride = false;
-  if (opts?.isHeartbeat) {
+  if (isHeartbeat) {
     // Prefer the resolved per-agent heartbeat model passed from the heartbeat runner,
     // fall back to the global defaults heartbeat model for backward compatibility.
     const heartbeatRaw =
@@ -460,7 +508,12 @@ export async function getReplyFromConfig(
     skillFilter: mergedSkillFilter,
   });
   if (directiveResult.kind === "reply") {
-    return directiveResult.reply;
+    return normalizeHeartbeatOriginReplyResult({
+      reply: directiveResult.reply,
+      cfg,
+      agentId,
+      isHeartbeat,
+    });
   }
 
   let {
@@ -558,7 +611,12 @@ export async function getReplyFromConfig(
   });
   if (inlineActionResult.kind === "reply") {
     await maybeEmitMissingResetHooks();
-    return inlineActionResult.reply;
+    return normalizeHeartbeatOriginReplyResult({
+      reply: inlineActionResult.reply,
+      cfg,
+      agentId,
+      isHeartbeat,
+    });
   }
   await maybeEmitMissingResetHooks();
   directives = inlineActionResult.directives;
@@ -587,7 +645,12 @@ export async function getReplyFromConfig(
         },
       );
       if (hookResult?.handled) {
-        return hookResult.reply ?? { text: SILENT_REPLY_TOKEN };
+        return normalizeHeartbeatOriginReplyResult({
+          reply: hookResult.reply ?? { text: SILENT_REPLY_TOKEN },
+          cfg,
+          agentId,
+          isHeartbeat,
+        });
       }
     }
   }
@@ -603,49 +666,54 @@ export async function getReplyFromConfig(
     });
   }
 
-  return runPreparedReply({
-    ctx,
-    sessionCtx,
+  return normalizeHeartbeatOriginReplyResult({
+    reply: await runPreparedReply({
+      ctx,
+      sessionCtx,
+      cfg,
+      agentId,
+      agentDir,
+      agentCfg,
+      sessionCfg,
+      commandAuthorized,
+      command,
+      commandSource,
+      allowTextCommands,
+      directives,
+      defaultActivation,
+      resolvedThinkLevel,
+      resolvedVerboseLevel,
+      resolvedReasoningLevel,
+      resolvedElevatedLevel,
+      execOverrides,
+      elevatedEnabled,
+      elevatedAllowed,
+      blockStreamingEnabled,
+      blockReplyChunking,
+      resolvedBlockStreamingBreak,
+      modelState,
+      provider,
+      model,
+      perMessageQueueMode,
+      perMessageQueueOptions,
+      typing,
+      opts: resolvedOpts,
+      defaultProvider,
+      defaultModel,
+      timeoutMs,
+      isNewSession,
+      resetTriggered,
+      systemSent,
+      sessionEntry,
+      sessionStore,
+      sessionKey,
+      sessionId,
+      storePath,
+      workspaceDir,
+      abortedLastRun,
+    }),
     cfg,
     agentId,
-    agentDir,
-    agentCfg,
-    sessionCfg,
-    commandAuthorized,
-    command,
-    commandSource,
-    allowTextCommands,
-    directives,
-    defaultActivation,
-    resolvedThinkLevel,
-    resolvedVerboseLevel,
-    resolvedReasoningLevel,
-    resolvedElevatedLevel,
-    execOverrides,
-    elevatedEnabled,
-    elevatedAllowed,
-    blockStreamingEnabled,
-    blockReplyChunking,
-    resolvedBlockStreamingBreak,
-    modelState,
-    provider,
-    model,
-    perMessageQueueMode,
-    perMessageQueueOptions,
-    typing,
-    opts: resolvedOpts,
-    defaultProvider,
-    defaultModel,
-    timeoutMs,
-    isNewSession,
-    resetTriggered,
-    systemSent,
-    sessionEntry,
-    sessionStore,
-    sessionKey,
-    sessionId,
-    storePath,
-    workspaceDir,
-    abortedLastRun,
+    isHeartbeat,
   });
 }
