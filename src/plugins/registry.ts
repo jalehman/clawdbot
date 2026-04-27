@@ -1702,6 +1702,16 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
       });
       return;
     }
+    const streams = normalizeHostHookStringList(subscription.streams);
+    if (streams === null) {
+      pushDiagnostic({
+        level: "error",
+        pluginId: record.id,
+        source: record.source,
+        message: `agent event subscription streams must be an array of strings: ${id}`,
+      });
+      return;
+    }
     const existing = (registry.agentEventSubscriptions ?? []).find(
       (entry) => entry.pluginId === record.id && entry.subscription.id === id,
     );
@@ -1717,7 +1727,7 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
     (registry.agentEventSubscriptions ??= []).push({
       pluginId: record.id,
       pluginName: record.name,
-      subscription: { ...subscription, id },
+      subscription: { ...subscription, id, ...(streams !== undefined ? { streams } : {}) },
       source: record.source,
       rootDir: record.rootDir,
     });
