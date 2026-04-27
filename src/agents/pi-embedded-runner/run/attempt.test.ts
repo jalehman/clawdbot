@@ -152,6 +152,7 @@ describe("resolvePromptBuildHookResult", () => {
   it("reuses precomputed legacy before_agent_start result without invoking hook again", async () => {
     const hookRunner = createLegacyOnlyHookRunner();
     const result = await resolvePromptBuildHookResult({
+      config: {},
       prompt: "hello",
       messages: [],
       hookCtx: {},
@@ -173,6 +174,7 @@ describe("resolvePromptBuildHookResult", () => {
     const hookRunner = createLegacyOnlyHookRunner();
     const messages = [{ role: "user", content: "ctx" }];
     const result = await resolvePromptBuildHookResult({
+      config: {},
       prompt: "hello",
       messages,
       hookCtx: {},
@@ -202,6 +204,7 @@ describe("resolvePromptBuildHookResult", () => {
     };
 
     const result = await resolvePromptBuildHookResult({
+      config: {},
       prompt: "hello",
       messages: [],
       hookCtx: {},
@@ -226,6 +229,7 @@ describe("resolvePromptBuildHookResult", () => {
     };
 
     const heartbeatResult = await resolvePromptBuildHookResult({
+      config: {},
       prompt: "hello",
       messages: [],
       hookCtx: { trigger: "heartbeat", sessionKey: "agent:main:main" },
@@ -238,6 +242,7 @@ describe("resolvePromptBuildHookResult", () => {
 
     hookRunner.runHeartbeatPromptContribution.mockClear();
     const userResult = await resolvePromptBuildHookResult({
+      config: {},
       prompt: "hello",
       messages: [],
       hookCtx: { trigger: "user", sessionKey: "agent:main:main" },
