@@ -46,13 +46,24 @@ function resolvePositiveInteger(value: number | undefined): number | undefined {
   return Math.floor(value);
 }
 
-function removeLifecycleStateFromMetadataPatch(entry: SessionEntry): SessionEntry {
-  const next = { ...entry };
-  delete next.status;
-  delete next.startedAt;
-  delete next.endedAt;
-  delete next.runtimeMs;
-  return next;
+const TRANSIENT_LIFECYCLE_SESSION_FIELDS = new Set(["status", "startedAt", "endedAt", "runtimeMs"]);
+
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function deriveRunMetadataPatch(previous: SessionEntry, next: SessionEntry): Partial<SessionEntry> {
+  const patch: Record<string, unknown> = {};
+  const keys = new Set([...Object.keys(previous), ...Object.keys(next)]);
+  for (const key of keys) {
+    if (TRANSIENT_LIFECYCLE_SESSION_FIELDS.has(key)) {
+      continue;
+    }
+    if (!sameJsonValue(previous[key as keyof SessionEntry], next[key as keyof SessionEntry])) {
+      patch[key] = next[key as keyof SessionEntry];
+    }
+  }
+  return patch as Partial<SessionEntry>;
 }
 
 /** Applies run result metadata, usage, and CLI bindings to a session entry. */
@@ -291,7 +302,7 @@ export async function updateSessionStoreAfterAgentRun(params: {
         updatedAt: next.updatedAt,
         ...(touchInteraction ? { lastInteractionAt: next.lastInteractionAt } : {}),
       }
-    : removeLifecycleStateFromMetadataPatch(next);
+    : deriveRunMetadataPatch(entry, next);
   const maintenanceConfig = resolveMaintenanceConfigFromInput(cfg.session?.maintenance);
   const persisted = await updateSessionStore(
     storePath,
@@ -307,7 +318,7 @@ export async function updateSessionStoreAfterAgentRun(params: {
       takeCacheOwnership: true,
       maintenanceConfig,
       resolveSingleEntryPersistence: (entryLocal) =>
-        entryLocal ? { sessionKey, entry: entryLocal } : undefined,
+        entryLocal ? { sessionKey, entry: entryLocal, patch: metadataPatch } : undefined,
     },
   );
   if (persisted) {

@@ -24,7 +24,7 @@ export async function persistSessionEntry(params: CommandParams): Promise<boolea
       },
       {
         resolveSingleEntryPersistence: (entry) =>
-          entry ? { sessionKey: params.sessionKey, entry } : null,
+          entry ? { sessionKey: params.sessionKey, entry, patch: params.sessionEntry } : null,
         skipMaintenance: true,
       },
     );
@@ -50,6 +50,12 @@ export async function persistAbortTargetEntry(params: {
   sessionStore[key] = entry;
 
   if (storePath) {
+    const patch: Partial<SessionEntry> = {
+      abortedLastRun: true,
+      abortCutoffMessageSid: abortCutoff?.messageSid,
+      abortCutoffTimestamp: abortCutoff?.timestamp,
+      updatedAt: entry.updatedAt,
+    };
     await updateSessionStore(
       storePath,
       (store) => {
@@ -65,7 +71,7 @@ export async function persistAbortTargetEntry(params: {
       },
       {
         resolveSingleEntryPersistence: (updated) =>
-          updated ? { sessionKey: key, entry: updated } : null,
+          updated ? { sessionKey: key, entry: updated, patch } : null,
       },
     );
   }

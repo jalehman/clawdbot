@@ -1048,6 +1048,41 @@ describe("sessions", () => {
     expect(store[mainSessionKey]?.thinkingLevel).toBe("high");
   });
 
+  it("updateSessionStoreEntry preserves external SQLite writes made while callback runs", async () => {
+    const mainSessionKey = "agent:main:main";
+    const { storePath } = await createSessionStoreFixture({
+      prefix: "updateSessionStoreEntry-atomic-reread",
+      entries: {
+        [mainSessionKey]: {
+          sessionId: "sess-1",
+          updatedAt: 123,
+          thinkingLevel: "low",
+        },
+      },
+    });
+
+    await updateSessionStoreEntry({
+      storePath,
+      sessionKey: mainSessionKey,
+      update: async (entry) => {
+        expect(entry.providerOverride).toBeUndefined();
+        replaceSqliteSessionStoreBehindCache(storePath, {
+          [mainSessionKey]: {
+            sessionId: "sess-1",
+            updatedAt: 124,
+            thinkingLevel: "low",
+            providerOverride: "anthropic",
+          },
+        });
+        return { thinkingLevel: "high" };
+      },
+    });
+
+    const store = loadSessionStore(storePath, { skipCache: true });
+    expect(store[mainSessionKey]?.providerOverride).toBe("anthropic");
+    expect(store[mainSessionKey]?.thinkingLevel).toBe("high");
+  });
+
   it("updateSessionStoreEntry can skip maintenance for existing-entry metadata writes", async () => {
     const mainSessionKey = "agent:main:main";
     const staleSessionKey = "agent:main:stale";

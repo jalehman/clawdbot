@@ -227,11 +227,15 @@ describe("updateSessionStoreAfterAgentRun", () => {
           sessionId,
           updatedAt: 2,
         } as SessionEntry),
-      ).toEqual({
+      ).toMatchObject({
         sessionKey,
         entry: {
           sessionId,
           updatedAt: 2,
+        },
+        patch: {
+          model: "gpt-5.5",
+          modelProvider: "openai",
         },
       });
     });

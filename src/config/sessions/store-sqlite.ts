@@ -22,7 +22,11 @@ import {
   resolveAgentIdFromSessionStorePath,
   resolveStateDirFromSessionStorePath,
 } from "./paths.js";
-import type { SessionEntry } from "./types.js";
+import {
+  mergeSessionEntry,
+  mergeSessionEntryPreserveActivity,
+  type SessionEntry,
+} from "./types.js";
 
 const SESSION_STORE_SCOPE = "session_entries";
 
@@ -174,6 +178,69 @@ export function replaceSqliteSessionStore(
     database.db.exec("VACUUM;");
   }
   database.walMaintenance.checkpoint();
+}
+
+export type PatchSqliteSessionEntryMode = "merge" | "preserve-activity" | "replace";
+
+export function patchSqliteSessionEntry(params: {
+  storePath: string;
+  sessionKey: string;
+  fallbackEntry: SessionEntry;
+  patch: Partial<SessionEntry>;
+  mode?: PatchSqliteSessionEntryMode;
+}): SessionEntry {
+  const databaseOptions = resolveSessionStoreDatabaseOptions(params.storePath);
+  let persisted = params.fallbackEntry;
+  runOpenClawAgentWriteTransaction((database) => {
+    const db = getNodeSqliteKysely<SessionStoreDatabase>(database.db);
+    const row =
+      executeSqliteQueryTakeFirstSync(
+        database.db,
+        db
+          .selectFrom("cache_entries")
+          .select(["value_json"])
+          .where("scope", "=", SESSION_STORE_SCOPE)
+          .where("key", "=", params.sessionKey),
+      ) ?? null;
+    const current = row ? parseSessionEntryValue(row.value_json) : undefined;
+    persisted =
+      params.mode === "replace"
+        ? params.fallbackEntry
+        : current
+          ? params.mode === "preserve-activity"
+            ? mergeSessionEntryPreserveActivity(current, params.patch)
+            : mergeSessionEntry(current, params.patch)
+          : params.fallbackEntry;
+    const valueJson = JSON.stringify(persisted);
+    persisted = parseSessionEntryValue(valueJson) ?? persisted;
+    const updatedAt =
+      typeof persisted.updatedAt === "number" && Number.isFinite(persisted.updatedAt)
+        ? persisted.updatedAt
+        : Date.now();
+    executeSqliteQuerySync(
+      database.db,
+      db
+        .insertInto("cache_entries")
+        .values({
+          scope: SESSION_STORE_SCOPE,
+          key: params.sessionKey,
+          value_json: valueJson,
+          blob: null,
+          expires_at: null,
+          updated_at: updatedAt,
+        })
+        .onConflict((conflict) =>
+          conflict.columns(["scope", "key"]).doUpdateSet({
+            value_json: valueJson,
+            blob: null,
+            expires_at: null,
+            updated_at: updatedAt,
+          }),
+        ),
+    );
+  }, databaseOptions);
+  openOpenClawAgentDatabase(databaseOptions).walMaintenance.checkpoint();
+  return persisted;
 }
 
 export function clearExistingSqliteSessionStore(

@@ -52,7 +52,9 @@ async function persistSessionEntryUpdate(params: {
     },
     {
       resolveSingleEntryPersistence: (entry) =>
-        entry && params.sessionKey ? { sessionKey: params.sessionKey, entry } : null,
+        entry && params.sessionKey
+          ? { sessionKey: params.sessionKey, entry, patch: params.nextEntry }
+          : null,
     },
   );
 }

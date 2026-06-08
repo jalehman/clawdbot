@@ -2000,6 +2000,7 @@ export const agentHandlers: GatewayRequestHandlers = {
             | {
                 sessionKey: string;
                 entry: SessionEntry;
+                patch: Partial<SessionEntry>;
               }
             | undefined;
           const persisted = await updateSessionStore(
@@ -2054,6 +2055,7 @@ export const agentHandlers: GatewayRequestHandlers = {
                   ? {
                       sessionKey: primaryKey,
                       entry: merged,
+                      patch: effectivePatch,
                     }
                   : undefined;
               return merged;

@@ -48,7 +48,7 @@ import {
   type ResolvedSessionMaintenanceConfig,
   type SessionMaintenanceWarning,
 } from "./store-maintenance.js";
-import { replaceSqliteSessionStore } from "./store-sqlite.js";
+import { patchSqliteSessionEntry, replaceSqliteSessionStore } from "./store-sqlite.js";
 import { runExclusiveSessionStoreWrite } from "./store-writer.js";
 import {
   mergeSessionEntry,
@@ -174,6 +174,8 @@ type UpdateSessionStoreOptions<T> = SaveSessionStoreOptions & {
 type SingleEntryPersistencePatch = {
   sessionKey: string;
   entry: SessionEntry;
+  patch: Partial<SessionEntry>;
+  mode?: "merge" | "preserve-activity" | "replace";
 };
 
 type SessionEntryWorkflowOptions = {
@@ -305,6 +307,21 @@ function sessionEntriesHaveSameSerializedForm(
   next: SessionEntry,
 ): boolean {
   return previous !== undefined && JSON.stringify(previous) === JSON.stringify(next);
+}
+
+function reconcileFreshSessionStoreForCache(params: {
+  writerStore: Record<string, SessionEntry>;
+  freshStore: Record<string, SessionEntry>;
+}): Record<string, SessionEntry> {
+  const reconciled: Record<string, SessionEntry> = {};
+  for (const [key, freshEntry] of Object.entries(params.freshStore)) {
+    const writerEntry = params.writerStore[key];
+    reconciled[key] =
+      writerEntry && sessionEntriesHaveSameSerializedForm(writerEntry, freshEntry)
+        ? writerEntry
+        : freshEntry;
+  }
+  return reconciled;
 }
 
 async function saveSessionStoreUnlocked(
@@ -460,6 +477,30 @@ async function saveSessionStoreUnlocked(
     return;
   }
 
+  if (opts?.singleEntryPersistence && !maintenanceChangedStore) {
+    const persisted = patchSqliteSessionEntry({
+      storePath,
+      sessionKey: opts.singleEntryPersistence.sessionKey,
+      fallbackEntry: opts.singleEntryPersistence.entry,
+      patch: opts.singleEntryPersistence.patch,
+      mode: opts.singleEntryPersistence.mode,
+    });
+    store[opts.singleEntryPersistence.sessionKey] = persisted;
+    const freshStore = loadSessionStore(storePath, { skipCache: true, clone: false });
+    const cacheStore = reconcileFreshSessionStoreForCache({
+      writerStore: store,
+      freshStore,
+    });
+    store[opts.singleEntryPersistence.sessionKey] =
+      cacheStore[opts.singleEntryPersistence.sessionKey] ?? persisted;
+    updateSessionStoreWriteCache({
+      storePath,
+      store: cacheStore,
+      takeOwnership: true,
+    });
+    return;
+  }
+
   replaceSqliteSessionStore(storePath, store, { compact: maintenanceChangedStore });
   updateSessionStoreWriteCache({
     storePath,
@@ -558,6 +599,8 @@ async function persistResolvedSessionEntry(params: {
   store: Record<string, SessionEntry>;
   resolved: ReturnType<typeof resolveSessionStoreEntry>;
   next: SessionEntry;
+  patch?: Partial<SessionEntry>;
+  persistenceMode?: "merge" | "preserve-activity" | "replace";
   skipMaintenance?: boolean;
   takeCacheOwnership?: boolean;
   returnDetached?: boolean;
@@ -576,11 +619,17 @@ async function persistResolvedSessionEntry(params: {
     skipSerializeForUnchangedStore: entryUnchanged,
     singleEntryPersistence:
       params.resolved.legacyKeys.length === 0 && params.resolved.existing
-        ? { sessionKey: params.resolved.normalizedKey, entry: next }
+        ? {
+            sessionKey: params.resolved.normalizedKey,
+            entry: next,
+            patch: params.patch ?? next,
+            mode: params.persistenceMode,
+          }
         : undefined,
     takeCacheOwnership: params.takeCacheOwnership,
   });
-  return entryUnchanged || params.returnDetached ? cloneSessionEntry(next) : next;
+  const persisted = params.store[params.resolved.normalizedKey] ?? next;
+  return entryUnchanged || params.returnDetached ? cloneSessionEntry(persisted) : persisted;
 }
 
 export async function updateSessionStoreEntry(params: {
@@ -610,6 +659,7 @@ export async function updateSessionStoreEntry(params: {
       store,
       resolved,
       next,
+      patch,
       skipMaintenance: params.skipMaintenance,
       takeCacheOwnership: params.takeCacheOwnership ?? true,
       returnDetached: params.takeCacheOwnership !== true,
@@ -638,6 +688,7 @@ export async function applySessionStoreEntryPatch(params: {
       store,
       resolved,
       next,
+      patch,
       skipMaintenance: params.skipMaintenance,
       takeCacheOwnership: params.takeCacheOwnership ?? true,
       returnDetached: params.takeCacheOwnership !== true,
@@ -678,6 +729,12 @@ export async function patchSessionEntry(
       store,
       resolved,
       next,
+      patch,
+      persistenceMode: params.replaceEntry
+        ? "replace"
+        : params.preserveActivity
+          ? "preserve-activity"
+          : "merge",
       takeCacheOwnership: true,
       returnDetached: true,
     });
@@ -700,6 +757,8 @@ export async function upsertSessionEntry(
       store,
       resolved,
       next,
+      patch: next,
+      persistenceMode: "replace",
       takeCacheOwnership: true,
     });
   });
@@ -758,6 +817,8 @@ export async function recordSessionMetaFromInbound(params: {
       store,
       resolved,
       next,
+      patch,
+      persistenceMode: existing ? "preserve-activity" : "merge",
       takeCacheOwnership: true,
       returnDetached: true,
     });
@@ -855,6 +916,8 @@ export async function updateLastRoute(params: {
       store,
       resolved,
       next,
+      patch: metaPatch ? { ...basePatch, ...metaPatch } : basePatch,
+      persistenceMode: "preserve-activity",
       takeCacheOwnership: true,
       returnDetached: true,
     });

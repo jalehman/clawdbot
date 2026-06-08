@@ -61,7 +61,9 @@ export async function persistSessionEntry(
     },
     {
       resolveSingleEntryPersistence: (entry) =>
-        entry ? { sessionKey: params.sessionKey, entry } : null,
+        entry && !params.shouldPersist && (params.clearedFields?.length ?? 0) === 0
+          ? { sessionKey: params.sessionKey, entry, patch: params.entry }
+          : null,
       takeCacheOwnership: true,
     },
   );
