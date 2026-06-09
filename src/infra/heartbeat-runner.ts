@@ -73,7 +73,11 @@ import {
 } from "../config/sessions/main-session.js";
 import { resolveStorePath } from "../config/sessions/paths.js";
 import { loadSessionStore } from "../config/sessions/store-load.js";
-import { archiveRemovedSessionTranscripts, updateSessionStore } from "../config/sessions/store.js";
+import {
+  archiveRemovedSessionTranscripts,
+  patchSessionEntry,
+  updateSessionStore,
+} from "../config/sessions/store.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { AgentDefaultsConfig } from "../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -1636,27 +1640,27 @@ export async function runHeartbeatOnce(opts: {
     }
     const tasks = preflight.tasks;
 
-    await updateSessionStore(storePath, (store) => {
-      const current = store[sessionKey];
-      // Initialize stub entry on first run when current doesn't exist.
-      const base = current ?? {
-        // Generate valid sessionId - derive from sessionKey without colons.
-        sessionId: sessionKey.replace(/:/g, "_"),
-        updatedAt: startedAt,
-        createdAt: startedAt,
-        messageCount: 0,
-        lastMessageAt: startedAt,
-        heartbeatTaskState: {},
-      };
-      const taskState = { ...base.heartbeatTaskState };
-
-      for (const task of tasks) {
-        if (isTaskDue(taskState[task.name], task.interval, startedAt)) {
-          taskState[task.name] = startedAt;
+    // Initialize stub entry on first run when current doesn't exist.
+    const fallbackEntry: SessionEntry = {
+      // Generate valid sessionId - derive from sessionKey without colons.
+      sessionId: sessionKey.replace(/:/g, "_"),
+      updatedAt: startedAt,
+      heartbeatTaskState: {},
+    };
+    await patchSessionEntry({
+      storePath,
+      sessionKey,
+      fallbackEntry,
+      preserveActivity: true,
+      update: (entry) => {
+        const taskState = { ...entry.heartbeatTaskState };
+        for (const task of tasks) {
+          if (isTaskDue(taskState[task.name], task.interval, startedAt)) {
+            taskState[task.name] = startedAt;
+          }
         }
-      }
-
-      store[sessionKey] = { ...base, heartbeatTaskState: taskState };
+        return { heartbeatTaskState: taskState };
+      },
     });
   };
 
@@ -2066,16 +2070,14 @@ export async function runHeartbeatOnce(opts: {
 
     // Record last delivered heartbeat payload for dedupe.
     if (!shouldSkipMain && normalized.text.trim()) {
-      await updateSessionStore(storePath, (store) => {
-        const current = store[sessionKey];
-        if (!current) {
-          return;
-        }
-        store[sessionKey] = {
-          ...current,
+      await patchSessionEntry({
+        storePath,
+        sessionKey,
+        preserveActivity: true,
+        update: () => ({
           lastHeartbeatText: normalized.text,
           lastHeartbeatSentAt: startedAt,
-        };
+        }),
       });
     }
 
