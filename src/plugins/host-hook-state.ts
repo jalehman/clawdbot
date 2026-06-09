@@ -4,7 +4,11 @@ import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
-import { loadSessionStore, updateSessionStore, type SessionEntry } from "../config/sessions.js";
+import {
+  loadSessionStore,
+  patchSessionEntryWithRowOptions,
+  type SessionEntry,
+} from "../config/sessions.js";
 import { resolveAgentMainSessionKey } from "../config/sessions/main-session.js";
 import { resolveStorePath } from "../config/sessions/paths.js";
 import {
@@ -292,36 +296,42 @@ export async function enqueuePluginNextTurnInjection(params: {
   });
   let enqueued = false;
   let resultId = record.id;
-  await updateSessionStore(loaded.storePath, (store) => {
-    const entry = store[loaded.storeKey];
-    if (!entry) {
-      return;
-    }
-    const injections = { ...entry.pluginNextTurnInjections };
-    // Guard against malformed/hand-edited persisted state — a non-array value
-    // here would crash the spread/filter and break the whole session's enqueue.
-    const rawExisting = injections[params.pluginId];
-    const existing = (Array.isArray(rawExisting) ? [...rawExisting] : []).filter(
-      (candidate): candidate is PluginNextTurnInjectionRecord => !isExpired(candidate, now),
-    );
-    const duplicate = record.idempotencyKey
-      ? existing.find((candidate) => candidate.idempotencyKey === record.idempotencyKey)
-      : undefined;
-    if (duplicate) {
-      resultId = duplicate.id;
-      injections[params.pluginId] = existing;
-      entry.pluginNextTurnInjections = injections;
-      return;
-    }
-    if (existing.length >= MAX_PLUGIN_NEXT_TURN_INJECTIONS_PER_SESSION) {
-      injections[params.pluginId] = existing;
-      entry.pluginNextTurnInjections = injections;
-      return;
-    }
-    injections[params.pluginId] = [...existing, record];
-    entry.pluginNextTurnInjections = injections;
-    entry.updatedAt = now;
-    enqueued = true;
+  await patchSessionEntryWithRowOptions({
+    storePath: loaded.storePath,
+    sessionKey: loaded.storeKey,
+    update: (entry) => {
+      const patch: Partial<SessionEntry> = {};
+      const injections = { ...entry.pluginNextTurnInjections };
+      // Guard against malformed/hand-edited persisted state — a non-array value
+      // here would crash the spread/filter and break the whole session's enqueue.
+      const rawExisting = injections[params.pluginId];
+      const existing = (Array.isArray(rawExisting) ? [...rawExisting] : []).filter(
+        (candidate): candidate is PluginNextTurnInjectionRecord => !isExpired(candidate, now),
+      );
+      const duplicate = record.idempotencyKey
+        ? existing.find((candidate) => candidate.idempotencyKey === record.idempotencyKey)
+        : undefined;
+      if (duplicate) {
+        resultId = duplicate.id;
+        injections[params.pluginId] = existing;
+        patch.pluginNextTurnInjections = injections;
+        patch.updatedAt = entry.updatedAt;
+        return patch;
+      }
+      if (existing.length >= MAX_PLUGIN_NEXT_TURN_INJECTIONS_PER_SESSION) {
+        injections[params.pluginId] = existing;
+        patch.pluginNextTurnInjections = injections;
+        patch.updatedAt = entry.updatedAt;
+        return patch;
+      }
+      injections[params.pluginId] = [...existing, record];
+      patch.pluginNextTurnInjections = injections;
+      patch.updatedAt = now;
+      enqueued = true;
+      return patch;
+    },
+    preservePatchActivity: true,
+    takeCacheOwnership: true,
   });
   return { enqueued, id: resultId, sessionKey: canonicalKey };
 }
@@ -339,7 +349,7 @@ export async function drainPluginNextTurnInjections(params: {
   if (!loaded.entry) {
     return [];
   }
-  // Avoid the locked re-save in updateSessionStore when there is nothing queued.
+  // Avoid the locked row write when there is nothing queued.
   // Drain runs once per prompt build; the common case is no injections, so a
   // pre-flight read keeps prompt-build off the session-store write path.
   // (Concurrently-enqueued injections during this gap land on the next turn.)
@@ -350,40 +360,50 @@ export async function drainPluginNextTurnInjections(params: {
     return [];
   }
   const now = params.now ?? Date.now();
-  return await updateSessionStore(loaded.storePath, (store) => {
-    const entry = store[loaded.storeKey];
-    if (!entry?.pluginNextTurnInjections) {
-      return [];
-    }
-    const activePluginIds = new Set(
-      (getActivePluginRegistry()?.plugins ?? [])
-        .filter((plugin) => plugin.status === "loaded")
-        .map((plugin) => plugin.id),
-    );
-    const drained: PluginNextTurnInjectionRecord[] = [];
-    for (const [pluginId, entries] of Object.entries(entry.pluginNextTurnInjections)) {
-      if (!activePluginIds.has(pluginId) || !isPluginPromptInjectionEnabled(params.cfg, pluginId)) {
-        continue;
+  let drained: PluginNextTurnInjectionRecord[] = [];
+  await patchSessionEntryWithRowOptions({
+    storePath: loaded.storePath,
+    sessionKey: loaded.storeKey,
+    update: (entry) => {
+      if (!entry?.pluginNextTurnInjections) {
+        return null;
       }
-      // Guard against malformed/hand-edited persisted state — a non-array value
-      // here would crash .filter and break prompt-building for the session.
-      if (!Array.isArray(entries)) {
-        continue;
-      }
-      const liveEntries = entries.filter(
-        (candidate): candidate is PluginNextTurnInjectionRecord => !isExpired(candidate, now),
+      const activePluginIds = new Set(
+        (getActivePluginRegistry()?.plugins ?? [])
+          .filter((plugin) => plugin.status === "loaded")
+          .map((plugin) => plugin.id),
       );
-      drained.push(...liveEntries);
-    }
-    drained.sort((left, right) => left.createdAt - right.createdAt);
-    // A drain is the consume boundary for this session queue. Inactive plugin
-    // records are stale owner state and are discarded with expired records.
-    delete entry.pluginNextTurnInjections;
-    if (drained.length > 0) {
-      entry.updatedAt = now;
-    }
-    return drained;
+      const nextDrained: PluginNextTurnInjectionRecord[] = [];
+      for (const [pluginId, entries] of Object.entries(entry.pluginNextTurnInjections)) {
+        if (
+          !activePluginIds.has(pluginId) ||
+          !isPluginPromptInjectionEnabled(params.cfg, pluginId)
+        ) {
+          continue;
+        }
+        // Guard against malformed/hand-edited persisted state — a non-array value
+        // here would crash .filter and break prompt-building for the session.
+        if (!Array.isArray(entries)) {
+          continue;
+        }
+        const liveEntries = entries.filter(
+          (candidate): candidate is PluginNextTurnInjectionRecord => !isExpired(candidate, now),
+        );
+        nextDrained.push(...liveEntries);
+      }
+      nextDrained.sort((left, right) => left.createdAt - right.createdAt);
+      drained = nextDrained;
+      // A drain is the consume boundary for this session queue. Inactive plugin
+      // records are stale owner state and are discarded with expired records.
+      return {
+        pluginNextTurnInjections: undefined,
+        updatedAt: nextDrained.length > 0 ? now : entry.updatedAt,
+      };
+    },
+    preservePatchActivity: true,
+    takeCacheOwnership: true,
   });
+  return drained;
 }
 
 export async function drainPluginNextTurnInjectionContext(params: {
@@ -482,67 +502,70 @@ export async function patchPluginSessionExtension(params: {
     );
   }
   const slotKey = normalizedSlotKey?.ok === true ? normalizedSlotKey.key : undefined;
-  const nextValue = await updateSessionStore(loaded.storePath, (store) => {
-    const entry = store[loaded.storeKey];
-    if (!entry) {
-      return undefined;
-    }
-    const entryRecord = entry as Record<string, unknown>;
-    const pluginExtensions = { ...entry.pluginExtensions };
-    const pluginState = { ...pluginExtensions[pluginId] };
-    if (params.unset === true) {
-      delete pluginState[namespace];
-    } else {
-      pluginState[namespace] = copyJsonValue(nextPluginValue);
-    }
-    if (Object.keys(pluginState).length > 0) {
-      pluginExtensions[pluginId] = pluginState;
-    } else {
-      delete pluginExtensions[pluginId];
-    }
-    if (Object.keys(pluginExtensions).length > 0) {
-      entry.pluginExtensions = pluginExtensions;
-    } else {
-      delete entry.pluginExtensions;
-    }
-    const storedSlotKeys = { ...entry.pluginExtensionSlotKeys };
-    const pluginSlotKeys = { ...storedSlotKeys[pluginId] };
-    const previousSlotKey = normalizeSessionEntrySlotKey(pluginSlotKeys[namespace]);
-    if (previousSlotKey.ok && previousSlotKey.key !== slotKey) {
-      delete entryRecord[previousSlotKey.key];
-    }
-    if (slotKey && params.unset !== true) {
-      pluginSlotKeys[namespace] = slotKey;
-    } else {
-      delete pluginSlotKeys[namespace];
-    }
-    if (Object.keys(pluginSlotKeys).length > 0) {
-      storedSlotKeys[pluginId] = pluginSlotKeys;
-    } else {
-      delete storedSlotKeys[pluginId];
-    }
-    if (Object.keys(storedSlotKeys).length > 0) {
-      entry.pluginExtensionSlotKeys = storedSlotKeys;
-    } else {
-      delete entry.pluginExtensionSlotKeys;
-    }
-    if (slotKey) {
-      const projected = projectSessionExtensionValueForSlot({
-        registration,
-        sessionKey: canonicalKey,
-        sessionId: entry.sessionId,
-        nextValue: params.unset === true ? undefined : nextPluginValue,
-      });
-      if (projected === undefined) {
-        delete entryRecord[slotKey];
+  let patchedValue: PluginJsonValue | undefined;
+  await patchSessionEntryWithRowOptions({
+    storePath: loaded.storePath,
+    sessionKey: loaded.storeKey,
+    update: (entry) => {
+      const patch = {} as Partial<SessionEntry> & Record<string, unknown>;
+      const pluginExtensions = { ...entry.pluginExtensions };
+      const pluginState = { ...pluginExtensions[pluginId] };
+      if (params.unset === true) {
+        delete pluginState[namespace];
       } else {
-        entryRecord[slotKey] = projected;
+        pluginState[namespace] = copyJsonValue(nextPluginValue);
       }
-    }
-    entry.updatedAt = Date.now();
-    return pluginState[namespace] as PluginJsonValue | undefined;
+      if (Object.keys(pluginState).length > 0) {
+        pluginExtensions[pluginId] = pluginState;
+      } else {
+        delete pluginExtensions[pluginId];
+      }
+      if (Object.keys(pluginExtensions).length > 0) {
+        patch.pluginExtensions = pluginExtensions;
+      } else {
+        patch.pluginExtensions = undefined;
+      }
+      const storedSlotKeys = { ...entry.pluginExtensionSlotKeys };
+      const pluginSlotKeys = { ...storedSlotKeys[pluginId] };
+      const previousSlotKey = normalizeSessionEntrySlotKey(pluginSlotKeys[namespace]);
+      if (previousSlotKey.ok && previousSlotKey.key !== slotKey) {
+        patch[previousSlotKey.key] = undefined;
+      }
+      if (slotKey && params.unset !== true) {
+        pluginSlotKeys[namespace] = slotKey;
+      } else {
+        delete pluginSlotKeys[namespace];
+      }
+      if (Object.keys(pluginSlotKeys).length > 0) {
+        storedSlotKeys[pluginId] = pluginSlotKeys;
+      } else {
+        delete storedSlotKeys[pluginId];
+      }
+      if (Object.keys(storedSlotKeys).length > 0) {
+        patch.pluginExtensionSlotKeys = storedSlotKeys;
+      } else {
+        patch.pluginExtensionSlotKeys = undefined;
+      }
+      if (slotKey) {
+        const projected = projectSessionExtensionValueForSlot({
+          registration,
+          sessionKey: canonicalKey,
+          sessionId: entry.sessionId,
+          nextValue: params.unset === true ? undefined : nextPluginValue,
+        });
+        if (projected === undefined) {
+          patch[slotKey] = undefined;
+        } else {
+          patch[slotKey] = projected;
+        }
+      }
+      patch.updatedAt = Date.now();
+      patchedValue = pluginState[namespace] as PluginJsonValue | undefined;
+      return patch;
+    },
+    takeCacheOwnership: true,
   });
-  return { ok: true, key: canonicalKey, value: nextValue };
+  return { ok: true, key: canonicalKey, value: patchedValue };
 }
 
 /**

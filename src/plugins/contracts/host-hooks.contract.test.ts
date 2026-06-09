@@ -1385,14 +1385,14 @@ describe("host-hook fixture plugin contract", () => {
 
   it("reports duplicate next-turn injections as not newly enqueued", async () => {
     await withHostHookState("openclaw-host-hooks-injection-", async ({ storePath, tempConfig }) => {
+      const now = Date.now();
       await updateSessionStore(storePath, (store) => {
         store["agent:main:main"] = {
           sessionId: "session-1",
-          updatedAt: Date.now(),
+          updatedAt: now - 100,
         };
         return undefined;
       });
-      const now = Date.now();
 
       const first = await enqueuePluginNextTurnInjection({
         cfg: tempConfig,
@@ -1424,6 +1424,7 @@ describe("host-hook fixture plugin contract", () => {
         sessionKey: "agent:main:main",
       });
       const stored = loadSessionStore(storePath, { skipCache: true });
+      expect(stored["agent:main:main"]?.updatedAt).toBe(now);
       expect(
         stored["agent:main:main"]?.pluginNextTurnInjections?.["approval-fixture"],
       ).toHaveLength(1);
@@ -1514,6 +1515,53 @@ describe("host-hook fixture plugin contract", () => {
           },
         },
       }),
+    );
+  });
+
+  it("does not refresh session activity when drain only discards stale next-turn injections", async () => {
+    const registry = createEmptyPluginRegistry();
+    registry.plugins.push(
+      createPluginRecord({
+        id: "disabled-injector",
+        name: "Disabled Injector",
+        status: "disabled",
+      }),
+    );
+    setActivePluginRegistry(registry);
+    await withHostHookState(
+      "openclaw-host-hooks-stale-only-",
+      async ({ storePath, tempConfig }) => {
+        const staleQueueUpdatedAt = Date.now() - 100;
+        await updateSessionStore(storePath, (store) => {
+          store["agent:main:main"] = {
+            sessionId: "session-1",
+            updatedAt: staleQueueUpdatedAt,
+            pluginNextTurnInjections: {
+              "disabled-injector": [
+                {
+                  id: "stale",
+                  pluginId: "disabled-injector",
+                  text: "stale prompt contribution",
+                  placement: "prepend_context",
+                  createdAt: 1,
+                },
+              ],
+            },
+          };
+          return undefined;
+        });
+
+        const drained = await drainPluginNextTurnInjections({
+          cfg: tempConfig,
+          sessionKey: "agent:main:main",
+          now: 2,
+        });
+
+        expect(drained).toEqual([]);
+        const stored = loadSessionStore(storePath, { skipCache: true });
+        expect(stored["agent:main:main"]?.pluginNextTurnInjections).toBeUndefined();
+        expect(stored["agent:main:main"]?.updatedAt).toBe(staleQueueUpdatedAt);
+      },
     );
   });
 
