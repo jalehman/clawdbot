@@ -20,7 +20,11 @@ import {
   buildAgentRuntimeDeliveryPlan,
   buildAgentRuntimeOutcomePlan,
 } from "../../agents/runtime-plan/build.js";
-import { updateSessionStore, type SessionEntry } from "../../config/sessions.js";
+import {
+  deriveSessionEntryPatch,
+  patchSessionEntryWithRowOptions,
+  type SessionEntry,
+} from "../../config/sessions.js";
 import { readSessionEntry } from "../../config/sessions/store-load.js";
 import type { TypingMode } from "../../config/types.js";
 import { logVerbose } from "../../globals.js";
@@ -75,6 +79,16 @@ import type { TypingController } from "./typing.js";
 type EmbeddedAgentRunResult = Awaited<ReturnType<typeof runEmbeddedAgent>>;
 
 type FollowupAgentEvent = { stream: string; data: Record<string, unknown> };
+
+function deriveSessionEntryMutationPatch(
+  entry: SessionEntry,
+  mutate: (next: SessionEntry) => void,
+): Partial<SessionEntry> | null {
+  const next = { ...entry };
+  mutate(next);
+  const patch = deriveSessionEntryPatch(entry, next);
+  return Object.keys(patch).length > 0 ? patch : null;
+}
 
 function readApprovalScopeValue(value: unknown): "turn" | "session" | undefined {
   return value === "turn" || value === "session" ? value : undefined;
@@ -758,16 +772,18 @@ export function createFollowupRunner(params: {
         if (!storePath) {
           return;
         }
-        await updateSessionStore(storePath, (store) => {
-          const persistedEntry = store[replySessionKey];
-          if (!persistedEntry) {
-            return;
-          }
-          if (!entryMatchesAutoFallbackPrimaryProbe(persistedEntry, probe)) {
-            return;
-          }
-          clearAutoFallbackPrimaryProbeSelection(persistedEntry);
-          store[replySessionKey] = persistedEntry;
+        await patchSessionEntryWithRowOptions({
+          storePath,
+          sessionKey: replySessionKey,
+          update: (persistedEntry) => {
+            if (!entryMatchesAutoFallbackPrimaryProbe(persistedEntry, probe)) {
+              return null;
+            }
+            return deriveSessionEntryMutationPatch(
+              persistedEntry,
+              clearAutoFallbackPrimaryProbeSelection,
+            );
+          },
         });
       };
       fallbackProvider = run.provider;

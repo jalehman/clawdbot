@@ -8,7 +8,11 @@ import { runCliAgent } from "../../agents/cli-runner.js";
 import type { RunCliAgentParams } from "../../agents/cli-runner/types.js";
 import { clearCliSession } from "../../agents/cli-session.js";
 import type { EmbeddedAgentRunResult } from "../../agents/embedded-agent.js";
-import { updateSessionStore, type SessionEntry } from "../../config/sessions.js";
+import {
+  deriveSessionEntryPatch,
+  patchSessionEntryWithRowOptions,
+  type SessionEntry,
+} from "../../config/sessions.js";
 import type { AgentEventPayload } from "../../infra/agent-events.js";
 import { emitAgentEvent, onAgentEvent } from "../../infra/agent-events.js";
 
@@ -18,6 +22,18 @@ function isClaudeCliProvider(provider: string): boolean {
 
 function shouldBridgeCliAssistantTextToReasoning(provider: string): boolean {
   return isClaudeCliProvider(provider);
+}
+
+function deriveClearedCliSessionPatch(
+  entry: SessionEntry,
+  provider: string,
+  updatedAt: number,
+): Partial<SessionEntry> | null {
+  const next = { ...entry };
+  clearCliSession(next, provider);
+  next.updatedAt = updatedAt;
+  const patch = deriveSessionEntryPatch(entry, next);
+  return Object.keys(patch).length > 0 ? patch : null;
 }
 
 function createAgentEventBridge<T>(params: {
@@ -175,8 +191,10 @@ export async function clearDroppedCliSessionBinding(params: {
   if (!params.storePath || !params.sessionKey) {
     return;
   }
-  await updateSessionStore(params.storePath, (store) => {
-    clearEntry(store[params.sessionKey!]);
+  await patchSessionEntryWithRowOptions({
+    storePath: params.storePath,
+    sessionKey: params.sessionKey,
+    update: (entry) => deriveClearedCliSessionPatch(entry, params.provider, updatedAt),
   });
 }
 
