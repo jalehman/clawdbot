@@ -196,7 +196,8 @@ export function patchSqliteSessionEntry(params: {
   storePath: string;
   sessionKey: string;
   fallbackEntry: SessionEntry;
-  patch: Partial<SessionEntry>;
+  patch?: Partial<SessionEntry>;
+  update?: (entry: SessionEntry) => Partial<SessionEntry> | null;
   mode?: PatchSqliteSessionEntryMode;
   deleteFields?: readonly string[];
   shouldPersist?: (entry: SessionEntry | undefined) => boolean;
@@ -219,20 +220,30 @@ export function patchSqliteSessionEntry(params: {
       persisted = current;
       return;
     }
+    const baseEntry = current ?? params.fallbackEntry;
+    const patch = params.update
+      ? params.update(parseSessionEntryValue(JSON.stringify(baseEntry)) ?? baseEntry)
+      : params.patch;
+    if (!patch) {
+      persisted = current;
+      return;
+    }
     persisted =
       params.mode === "replace"
-        ? params.fallbackEntry
+        ? params.update
+          ? (patch as SessionEntry)
+          : params.fallbackEntry
         : current
           ? params.mode === "preserve-activity"
-            ? mergeSessionEntryPreserveActivity(current, params.patch)
-            : mergeSessionEntry(current, params.patch)
-          : params.fallbackEntry;
+            ? mergeSessionEntryPreserveActivity(current, patch)
+            : mergeSessionEntry(current, patch)
+          : mergeSessionEntry(params.fallbackEntry, patch);
     if (params.mode === "preserve-patch-activity") {
-      preservePatchUpdatedAtActivity(persisted, current, params.patch);
+      preservePatchUpdatedAtActivity(persisted, current, patch);
     } else if (params.mode === "force-patch-activity") {
-      forcePatchUpdatedAtActivity(persisted, params.patch);
+      forcePatchUpdatedAtActivity(persisted, patch);
     }
-    deleteUntouchedSessionEntryFields(persisted, params.patch, params.deleteFields);
+    deleteUntouchedSessionEntryFields(persisted, patch, params.deleteFields);
     const valueJson = JSON.stringify(persisted);
     persisted = parseSessionEntryValue(valueJson) ?? persisted;
     const updatedAt =

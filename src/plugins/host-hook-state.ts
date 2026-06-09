@@ -296,41 +296,44 @@ export async function enqueuePluginNextTurnInjection(params: {
   });
   let enqueued = false;
   let resultId = record.id;
+  const updateInjectionState = (entry: SessionEntry): Partial<SessionEntry> | null => {
+    const patch: Partial<SessionEntry> = {};
+    const injections = { ...entry.pluginNextTurnInjections };
+    // Guard against malformed/hand-edited persisted state — a non-array value
+    // here would crash the spread/filter and break the whole session's enqueue.
+    const rawExisting = injections[params.pluginId];
+    const existing = (Array.isArray(rawExisting) ? [...rawExisting] : []).filter(
+      (candidate): candidate is PluginNextTurnInjectionRecord => !isExpired(candidate, now),
+    );
+    const duplicate = record.idempotencyKey
+      ? existing.find((candidate) => candidate.idempotencyKey === record.idempotencyKey)
+      : undefined;
+    if (duplicate) {
+      resultId = duplicate.id;
+      injections[params.pluginId] = existing;
+      patch.pluginNextTurnInjections = injections;
+      patch.updatedAt = entry.updatedAt;
+      return patch;
+    }
+    if (existing.length >= MAX_PLUGIN_NEXT_TURN_INJECTIONS_PER_SESSION) {
+      injections[params.pluginId] = existing;
+      patch.pluginNextTurnInjections = injections;
+      patch.updatedAt = entry.updatedAt;
+      return patch;
+    }
+    injections[params.pluginId] = [...existing, record];
+    patch.pluginNextTurnInjections = injections;
+    patch.updatedAt = now;
+    enqueued = true;
+    return patch;
+  };
   await patchSessionEntryWithRowOptions({
     storePath: loaded.storePath,
     sessionKey: loaded.storeKey,
-    update: (entry) => {
-      const patch: Partial<SessionEntry> = {};
-      const injections = { ...entry.pluginNextTurnInjections };
-      // Guard against malformed/hand-edited persisted state — a non-array value
-      // here would crash the spread/filter and break the whole session's enqueue.
-      const rawExisting = injections[params.pluginId];
-      const existing = (Array.isArray(rawExisting) ? [...rawExisting] : []).filter(
-        (candidate): candidate is PluginNextTurnInjectionRecord => !isExpired(candidate, now),
-      );
-      const duplicate = record.idempotencyKey
-        ? existing.find((candidate) => candidate.idempotencyKey === record.idempotencyKey)
-        : undefined;
-      if (duplicate) {
-        resultId = duplicate.id;
-        injections[params.pluginId] = existing;
-        patch.pluginNextTurnInjections = injections;
-        patch.updatedAt = entry.updatedAt;
-        return patch;
-      }
-      if (existing.length >= MAX_PLUGIN_NEXT_TURN_INJECTIONS_PER_SESSION) {
-        injections[params.pluginId] = existing;
-        patch.pluginNextTurnInjections = injections;
-        patch.updatedAt = entry.updatedAt;
-        return patch;
-      }
-      injections[params.pluginId] = [...existing, record];
-      patch.pluginNextTurnInjections = injections;
-      patch.updatedAt = now;
-      enqueued = true;
-      return patch;
-    },
+    update: updateInjectionState,
+    updateFromFreshRow: updateInjectionState,
     preservePatchActivity: true,
+    skipMaintenance: true,
     takeCacheOwnership: true,
   });
   return { enqueued, id: resultId, sessionKey: canonicalKey };
@@ -361,46 +364,46 @@ export async function drainPluginNextTurnInjections(params: {
   }
   const now = params.now ?? Date.now();
   let drained: PluginNextTurnInjectionRecord[] = [];
+  const updateDrainedInjections = (entry: SessionEntry): Partial<SessionEntry> | null => {
+    if (!entry?.pluginNextTurnInjections) {
+      return null;
+    }
+    const activePluginIds = new Set(
+      (getActivePluginRegistry()?.plugins ?? [])
+        .filter((plugin) => plugin.status === "loaded")
+        .map((plugin) => plugin.id),
+    );
+    const nextDrained: PluginNextTurnInjectionRecord[] = [];
+    for (const [pluginId, entries] of Object.entries(entry.pluginNextTurnInjections)) {
+      if (!activePluginIds.has(pluginId) || !isPluginPromptInjectionEnabled(params.cfg, pluginId)) {
+        continue;
+      }
+      // Guard against malformed/hand-edited persisted state — a non-array value
+      // here would crash .filter and break prompt-building for the session.
+      if (!Array.isArray(entries)) {
+        continue;
+      }
+      const liveEntries = entries.filter(
+        (candidate): candidate is PluginNextTurnInjectionRecord => !isExpired(candidate, now),
+      );
+      nextDrained.push(...liveEntries);
+    }
+    nextDrained.sort((left, right) => left.createdAt - right.createdAt);
+    drained = nextDrained;
+    // A drain is the consume boundary for this session queue. Inactive plugin
+    // records are stale owner state and are discarded with expired records.
+    return {
+      pluginNextTurnInjections: undefined,
+      updatedAt: nextDrained.length > 0 ? now : entry.updatedAt,
+    };
+  };
   await patchSessionEntryWithRowOptions({
     storePath: loaded.storePath,
     sessionKey: loaded.storeKey,
-    update: (entry) => {
-      if (!entry?.pluginNextTurnInjections) {
-        return null;
-      }
-      const activePluginIds = new Set(
-        (getActivePluginRegistry()?.plugins ?? [])
-          .filter((plugin) => plugin.status === "loaded")
-          .map((plugin) => plugin.id),
-      );
-      const nextDrained: PluginNextTurnInjectionRecord[] = [];
-      for (const [pluginId, entries] of Object.entries(entry.pluginNextTurnInjections)) {
-        if (
-          !activePluginIds.has(pluginId) ||
-          !isPluginPromptInjectionEnabled(params.cfg, pluginId)
-        ) {
-          continue;
-        }
-        // Guard against malformed/hand-edited persisted state — a non-array value
-        // here would crash .filter and break prompt-building for the session.
-        if (!Array.isArray(entries)) {
-          continue;
-        }
-        const liveEntries = entries.filter(
-          (candidate): candidate is PluginNextTurnInjectionRecord => !isExpired(candidate, now),
-        );
-        nextDrained.push(...liveEntries);
-      }
-      nextDrained.sort((left, right) => left.createdAt - right.createdAt);
-      drained = nextDrained;
-      // A drain is the consume boundary for this session queue. Inactive plugin
-      // records are stale owner state and are discarded with expired records.
-      return {
-        pluginNextTurnInjections: undefined,
-        updatedAt: nextDrained.length > 0 ? now : entry.updatedAt,
-      };
-    },
+    update: updateDrainedInjections,
+    updateFromFreshRow: updateDrainedInjections,
     preservePatchActivity: true,
+    skipMaintenance: true,
     takeCacheOwnership: true,
   });
   return drained;

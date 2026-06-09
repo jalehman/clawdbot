@@ -11,6 +11,7 @@ import {
   deriveSessionKey,
   loadSessionStore,
   patchSessionEntry,
+  patchSessionEntryWithRowOptions,
   recordSessionMetaFromInbound,
   resolveSessionFilePath,
   resolveSessionFilePathOptions,
@@ -1081,6 +1082,82 @@ describe("sessions", () => {
     const store = loadSessionStore(storePath, { skipCache: true });
     expect(store[mainSessionKey]?.providerOverride).toBe("anthropic");
     expect(store[mainSessionKey]?.thinkingLevel).toBe("high");
+  });
+
+  it("patchSessionEntryWithRowOptions computes synchronous patches from the fresh SQLite row", async () => {
+    const mainSessionKey = "agent:main:main";
+    const { storePath } = await createSessionStoreFixture({
+      prefix: "patchSessionEntryWithRowOptions-fresh-row",
+      entries: {
+        [mainSessionKey]: {
+          sessionId: "sess-1",
+          updatedAt: 123,
+          pluginNextTurnInjections: {
+            local: [
+              {
+                id: "local-injection",
+                pluginId: "local",
+                text: "local",
+                placement: "prepend_context",
+                createdAt: 123,
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(
+      loadSessionStore(storePath)[mainSessionKey]?.pluginNextTurnInjections?.local,
+    ).toHaveLength(1);
+    replaceSqliteSessionStoreBehindCache(storePath, {
+      [mainSessionKey]: {
+        sessionId: "sess-1",
+        updatedAt: 124,
+        pluginNextTurnInjections: {
+          external: [
+            {
+              id: "external-injection",
+              pluginId: "external",
+              text: "external",
+              placement: "append_context",
+              createdAt: 124,
+            },
+          ],
+        },
+      },
+    });
+
+    const updateInjections = (entry: SessionEntry): Partial<SessionEntry> => ({
+      updatedAt: 125,
+      pluginNextTurnInjections: {
+        ...entry.pluginNextTurnInjections,
+        local: [
+          ...(entry.pluginNextTurnInjections?.local ?? []),
+          {
+            id: "local-injection-2",
+            pluginId: "local",
+            text: "local-2",
+            placement: "prepend_context",
+            createdAt: 125,
+          },
+        ],
+      },
+    });
+    await patchSessionEntryWithRowOptions({
+      storePath,
+      sessionKey: mainSessionKey,
+      update: updateInjections,
+      updateFromFreshRow: updateInjections,
+      skipMaintenance: true,
+    });
+
+    const store = loadSessionStore(storePath, { skipCache: true });
+    expect(store[mainSessionKey]?.pluginNextTurnInjections?.external).toHaveLength(1);
+    expect(store[mainSessionKey]?.pluginNextTurnInjections?.local).toHaveLength(1);
+    expect(store[mainSessionKey]?.pluginNextTurnInjections?.local?.[0]?.id).toBe(
+      "local-injection-2",
+    );
   });
 
   it("updateSessionStoreEntry can skip maintenance for existing-entry metadata writes", async () => {

@@ -179,6 +179,7 @@ type SingleEntryPersistencePatch = {
   sessionKey: string;
   entry: SessionEntry;
   patch?: Partial<SessionEntry>;
+  updateFromFreshRow?: (entry: SessionEntry) => Partial<SessionEntry> | null;
   mode?: SingleEntryPersistenceMode;
   deleteFields?: readonly string[];
   shouldPersist?: SingleEntryPersistencePredicate;
@@ -484,12 +485,15 @@ async function saveSessionStoreUnlocked(
   }
 
   if (opts?.singleEntryPersistence && !maintenanceChangedStore) {
-    const singleEntryPatch = opts.singleEntryPersistence.patch ?? opts.singleEntryPersistence.entry;
+    const singleEntryPatch = opts.singleEntryPersistence.updateFromFreshRow
+      ? undefined
+      : (opts.singleEntryPersistence.patch ?? opts.singleEntryPersistence.entry);
     const persisted = patchSqliteSessionEntry({
       storePath,
       sessionKey: opts.singleEntryPersistence.sessionKey,
       fallbackEntry: opts.singleEntryPersistence.entry,
       patch: singleEntryPatch,
+      update: opts.singleEntryPersistence.updateFromFreshRow,
       mode: opts.singleEntryPersistence.mode,
       deleteFields: opts.singleEntryPersistence.deleteFields,
       shouldPersist: opts.singleEntryPersistence.shouldPersist,
@@ -744,6 +748,7 @@ export async function patchSessionEntry(
     update: (
       entry: SessionEntry,
     ) => Promise<Partial<SessionEntry> | null> | Partial<SessionEntry> | null;
+    updateFromFreshRow?: (entry: SessionEntry) => Partial<SessionEntry> | null;
   },
 ): Promise<SessionEntry | null> {
   return await patchSessionEntryWithRowOptions(params);
@@ -971,6 +976,7 @@ export async function patchSessionEntryWithRowOptions(
     update: (
       entry: SessionEntry,
     ) => Promise<Partial<SessionEntry> | null> | Partial<SessionEntry> | null;
+    updateFromFreshRow?: (entry: SessionEntry) => Partial<SessionEntry> | null;
   },
 ): Promise<SessionEntry | null> {
   const storePath = resolveSessionWorkflowStorePath(params);
@@ -980,6 +986,38 @@ export async function patchSessionEntryWithRowOptions(
     const existing = resolved.existing ?? params.fallbackEntry;
     if (!existing) {
       return null;
+    }
+    const persistenceMode: SingleEntryPersistenceMode = params.replaceEntry
+      ? "replace"
+      : params.preserveActivity
+        ? "preserve-activity"
+        : params.forcePatchActivity
+          ? "force-patch-activity"
+          : params.preservePatchActivity
+            ? "preserve-patch-activity"
+            : "merge";
+    if (
+      params.updateFromFreshRow &&
+      params.skipMaintenance === true &&
+      resolved.legacyKeys.length === 0
+    ) {
+      store[resolved.normalizedKey] = existing;
+      await saveSessionStoreUnlocked(storePath, store, {
+        activeSessionKey: resolved.normalizedKey,
+        skipMaintenance: true,
+        singleEntryPersistence: {
+          sessionKey: resolved.normalizedKey,
+          entry: existing,
+          updateFromFreshRow: (entry) =>
+            params.updateFromFreshRow?.(cloneSessionEntry(entry)) ?? null,
+          mode: persistenceMode,
+          deleteFields: params.deleteFields,
+          shouldPersist: params.shouldPersist,
+        },
+        takeCacheOwnership: params.takeCacheOwnership ?? true,
+      });
+      const persisted = store[resolved.normalizedKey] ?? null;
+      return persisted ? cloneSessionEntry(persisted) : null;
     }
     const patch = await params.update(cloneSessionEntry(existing));
     if (!patch) {
@@ -1003,15 +1041,7 @@ export async function patchSessionEntryWithRowOptions(
       resolved,
       next,
       patch,
-      persistenceMode: params.replaceEntry
-        ? "replace"
-        : params.preserveActivity
-          ? "preserve-activity"
-          : params.forcePatchActivity
-            ? "force-patch-activity"
-            : params.preservePatchActivity
-              ? "preserve-patch-activity"
-              : "merge",
+      persistenceMode,
       deleteFields: params.deleteFields,
       maintenanceConfig: params.maintenanceConfig,
       skipMaintenance: params.skipMaintenance,
