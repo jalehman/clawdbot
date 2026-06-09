@@ -249,6 +249,7 @@ export async function clearLiveModelSwitchPending(params: {
   await patchSessionEntry({
     storePath,
     sessionKey,
+    preserveActivity: true,
     update: (entry) => {
       if (!entry.liveModelSwitchPending) {
         return null;

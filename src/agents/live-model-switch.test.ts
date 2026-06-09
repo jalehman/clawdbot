@@ -589,6 +589,7 @@ describe("live model switch", () => {
       expect(state.patchSessionEntryMock.mock.calls.at(-1)?.[0]).toMatchObject({
         storePath: "/tmp/session-store.json",
         sessionKey: "main",
+        preserveActivity: true,
       });
       expect(state.resolveStorePathMock).toHaveBeenCalledWith("/tmp/custom-store.json", {
         agentId: "reply",
