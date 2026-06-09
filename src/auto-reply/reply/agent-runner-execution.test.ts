@@ -41,6 +41,7 @@ const state = vi.hoisted(() => ({
   isCompactionFailureErrorMock: vi.fn((_: string | undefined) => false),
   isContextOverflowErrorMock: vi.fn((_: string | undefined) => false),
   isLikelyContextOverflowErrorMock: vi.fn((_: string | undefined) => false),
+  patchSessionEntryWithRowOptionsMock: vi.fn(),
   updateSessionStoreMock: vi.fn(),
 }));
 
@@ -133,6 +134,16 @@ vi.mock("../../agents/embedded-agent-helpers.js", async () => {
 });
 
 vi.mock("../../config/sessions.js", () => ({
+  deriveSessionEntryPatch: (previous: Record<string, unknown>, next: Record<string, unknown>) => {
+    const patch: Record<string, unknown> = {};
+    for (const key of new Set([...Object.keys(previous), ...Object.keys(next)])) {
+      if (JSON.stringify(previous[key]) !== JSON.stringify(next[key])) {
+        patch[key] = next[key];
+      }
+    }
+    return patch;
+  },
+  patchSessionEntryWithRowOptions: state.patchSessionEntryWithRowOptionsMock,
   resolveGroupSessionKey: vi.fn(() => null),
   resolveSessionTranscriptPath: vi.fn(),
   updateSessionStore: state.updateSessionStoreMock,
@@ -1152,6 +1163,7 @@ describe("runAgentTurnWithFallback", () => {
     state.isContextOverflowErrorMock.mockReturnValue(false);
     state.isLikelyContextOverflowErrorMock.mockReset();
     state.isLikelyContextOverflowErrorMock.mockReturnValue(false);
+    state.patchSessionEntryWithRowOptionsMock.mockReset();
     state.updateSessionStoreMock.mockReset();
     state.runWithModelFallbackMock.mockImplementation(async (params: FallbackRunnerParams) => ({
       result: await params.run("anthropic", "claude"),

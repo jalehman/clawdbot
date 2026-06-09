@@ -56,9 +56,10 @@ import {
 import { resolveOpenAIRuntimeProvider } from "../../agents/openai-routing.js";
 import { buildAgentRuntimeOutcomePlan } from "../../agents/runtime-plan/build.js";
 import {
+  deriveSessionEntryPatch,
   resolveGroupSessionKey,
   type SessionEntry,
-  updateSessionStore,
+  patchSessionEntryWithRowOptions,
 } from "../../config/sessions.js";
 import { resolveSilentReplyPolicy } from "../../config/silent-reply.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -532,6 +533,16 @@ function rollbackFallbackSelectionStateIfUnchanged(
     entry.updatedAt = now;
   }
   return updated;
+}
+
+function deriveSessionEntryMutationPatch(
+  entry: SessionEntry,
+  mutate: (next: SessionEntry) => void,
+): Partial<SessionEntry> | null {
+  const next = { ...entry };
+  mutate(next);
+  const patch = deriveSessionEntryPatch(entry, next);
+  return Object.keys(patch).length > 0 ? patch : null;
 }
 
 /**
@@ -1777,13 +1788,13 @@ export async function runAgentTurnWithFallback(params: {
 
     try {
       if (params.storePath) {
-        await updateSessionStore(params.storePath, (store) => {
-          const persistedEntry = store[params.sessionKey!];
-          if (!persistedEntry) {
-            return;
-          }
-          applyFallbackSelectionState(persistedEntry, nextState);
-          store[params.sessionKey!] = persistedEntry;
+        await patchSessionEntryWithRowOptions({
+          storePath: params.storePath,
+          sessionKey: params.sessionKey,
+          update: (entry) =>
+            deriveSessionEntryMutationPatch(entry, (next) => {
+              applyFallbackSelectionState(next, nextState);
+            }),
         });
       }
     } catch (error) {
@@ -1804,14 +1815,13 @@ export async function runAgentTurnWithFallback(params: {
       if (!params.storePath) {
         return;
       }
-      await updateSessionStore(params.storePath, (store) => {
-        const persistedEntry = store[params.sessionKey!];
-        if (!persistedEntry) {
-          return;
-        }
-        if (rollbackFallbackSelectionStateIfUnchanged(persistedEntry, nextState, previousState)) {
-          store[params.sessionKey!] = persistedEntry;
-        }
+      await patchSessionEntryWithRowOptions({
+        storePath: params.storePath,
+        sessionKey: params.sessionKey!,
+        update: (entry) =>
+          deriveSessionEntryMutationPatch(entry, (next) => {
+            rollbackFallbackSelectionStateIfUnchanged(next, nextState, previousState);
+          }),
       });
     };
   };
@@ -1845,16 +1855,15 @@ export async function runAgentTurnWithFallback(params: {
     if (!params.storePath) {
       return;
     }
-    await updateSessionStore(params.storePath, (store) => {
-      const persistedEntry = store[params.sessionKey!];
-      if (!persistedEntry) {
-        return;
-      }
-      if (!entryMatchesAutoFallbackPrimaryProbe(persistedEntry, probe)) {
-        return;
-      }
-      clearAutoFallbackPrimaryProbeSelection(persistedEntry);
-      store[params.sessionKey!] = persistedEntry;
+    await patchSessionEntryWithRowOptions({
+      storePath: params.storePath,
+      sessionKey: params.sessionKey,
+      update: (entry) => {
+        if (!entryMatchesAutoFallbackPrimaryProbe(entry, probe)) {
+          return null;
+        }
+        return deriveSessionEntryMutationPatch(entry, clearAutoFallbackPrimaryProbeSelection);
+      },
     });
   };
 
