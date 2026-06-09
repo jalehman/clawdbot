@@ -81,13 +81,54 @@ export async function ensureExplicitSessionStoreMigratedForCommand(
   }
   const merged = mergeExplicitLegacySessionStore({ storePath, store: parsed.store });
   importLegacySessionStoreIntoSqlite({ storePath, store: merged });
+  archiveExplicitLegacySessionStore(storePath, opts);
+}
+
+function archiveExplicitLegacySessionStore(
+  storePath: string,
+  opts?: { onWarning?: (warning: string) => void },
+): void {
+  const archivedPath = resolveExplicitMigratedArchivePath(storePath);
   try {
-    fs.rmSync(storePath, { force: true });
+    fs.chmodSync(storePath, 0o600);
   } catch (error) {
     opts?.onWarning?.(
-      `Imported legacy session store into SQLite, but failed removing ${storePath}: ${String(
+      `Imported legacy session store into SQLite, but failed securing ${storePath}: ${String(
+        error,
+      )}`,
+    );
+    return;
+  }
+  try {
+    fs.renameSync(storePath, archivedPath);
+    try {
+      fs.chmodSync(archivedPath, 0o600);
+    } catch (error) {
+      opts?.onWarning?.(
+        `Imported legacy session store into SQLite, but failed securing ${archivedPath}: ${String(
+          error,
+        )}`,
+      );
+    }
+  } catch (error) {
+    opts?.onWarning?.(
+      `Imported legacy session store into SQLite, but failed archiving ${storePath}: ${String(
         error,
       )}`,
     );
   }
+}
+
+function resolveExplicitMigratedArchivePath(storePath: string): string {
+  const basePath = `${storePath}.migrated`;
+  if (!fs.existsSync(basePath)) {
+    return basePath;
+  }
+  for (let index = 2; index < 1_000; index += 1) {
+    const candidate = `${basePath}.${index}`;
+    if (!fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return `${basePath}.${Date.now()}`;
 }

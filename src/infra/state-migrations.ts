@@ -576,6 +576,42 @@ function archiveLegacyImportSource(params: {
   }
 }
 
+function resolveMigratedArchivePath(sourcePath: string): string {
+  const basePath = `${sourcePath}.migrated`;
+  if (!fileExists(basePath)) {
+    return basePath;
+  }
+  for (let index = 2; index < 1_000; index += 1) {
+    const candidate = `${basePath}.${index}`;
+    if (!fileExists(candidate)) {
+      return candidate;
+    }
+  }
+  return `${basePath}.${Date.now()}`;
+}
+
+function archiveMigratedSessionStoreSource(params: {
+  sourcePath: string;
+  changes: string[];
+  warnings: string[];
+}): void {
+  if (!hardenLegacyImportSource({ ...params, label: "sessions" })) {
+    return;
+  }
+  const archivedPath = resolveMigratedArchivePath(params.sourcePath);
+  try {
+    fs.renameSync(params.sourcePath, archivedPath);
+    try {
+      fs.chmodSync(archivedPath, 0o600);
+    } catch (err) {
+      params.warnings.push(`Failed securing archived sessions legacy source: ${String(err)}`);
+    }
+    params.changes.push(`Archived sessions legacy source → ${archivedPath}`);
+  } catch (err) {
+    params.warnings.push(`Failed archiving sessions legacy source: ${String(err)}`);
+  }
+}
+
 function listSqliteColumns(db: DatabaseSync, table: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>;
   return new Set(rows.flatMap((row) => (row.name ? [row.name] : [])));
@@ -2984,14 +3020,12 @@ async function migrateLegacySessions(
     if (canonicalizedTarget.legacyKeys.length > 0) {
       changes.push(`Canonicalized ${canonicalizedTarget.legacyKeys.length} legacy session key(s)`);
     }
-    try {
-      if (fileExists(detected.sessions.targetStorePath)) {
-        fs.rmSync(detected.sessions.targetStorePath, { force: true });
-      }
-    } catch (err) {
-      warnings.push(
-        `Imported sessions into SQLite, but failed removing ${detected.sessions.targetStorePath}: ${String(err)}`,
-      );
+    if (fileExists(detected.sessions.targetStorePath)) {
+      archiveMigratedSessionStoreSource({
+        sourcePath: detected.sessions.targetStorePath,
+        changes,
+        warnings,
+      });
     }
   }
 
@@ -3021,17 +3055,19 @@ async function migrateLegacySessions(
   }
 
   if (legacyParsed.ok && targetReadable) {
-    try {
-      if (fileExists(detected.sessions.legacyStorePath)) {
-        fs.rmSync(detected.sessions.legacyStorePath, { force: true });
-      }
-    } catch {
-      // ignore
+    if (fileExists(detected.sessions.legacyStorePath)) {
+      archiveMigratedSessionStoreSource({
+        sourcePath: detected.sessions.legacyStorePath,
+        changes,
+        warnings,
+      });
     }
   }
 
   removeDirIfEmpty(detected.sessions.legacyDir);
-  const legacyLeft = safeReadDir(detected.sessions.legacyDir).filter((e) => e.isFile());
+  const legacyLeft = safeReadDir(detected.sessions.legacyDir).filter(
+    (e) => e.isFile() && !/\.migrated(?:\.\d+)?$/.test(e.name),
+  );
   if (legacyLeft.length > 0) {
     const backupDir = `${detected.sessions.legacyDir}.legacy-${now()}`;
     try {
@@ -3165,13 +3201,11 @@ async function migrateAdditionalSessionStoreTargets(params: {
         `Migrated ${acpMigrated} ACP session metadata ${acpMigrated === 1 ? "row" : "rows"} from ${storePath} → shared SQLite state`,
       );
     }
-    try {
-      fs.rmSync(storePath, { force: true });
-    } catch (err) {
-      warnings.push(
-        `Imported sessions into SQLite, but failed removing ${storePath}: ${String(err)}`,
-      );
-    }
+    archiveMigratedSessionStoreSource({
+      sourcePath: storePath,
+      changes,
+      warnings,
+    });
   }
   return { changes, warnings };
 }
@@ -3499,7 +3533,11 @@ export async function migrateOrphanedSessionKeys(params: {
           `Migrated ${acpMigrated} ACP session metadata ${acpMigrated === 1 ? "row" : "rows"} from ${storePath} → shared SQLite state`,
         );
       }
-      fs.rmSync(storePath, { force: true });
+      archiveMigratedSessionStoreSource({
+        sourcePath: storePath,
+        changes,
+        warnings,
+      });
     } catch (err) {
       warnings.push(`Failed to import legacy session store ${storePath}: ${String(err)}`);
     }
@@ -3576,7 +3614,11 @@ async function migrateLegacyAcpSessionMetadata(params: {
         stateDir: resolveStateDir(env),
         now,
       });
-      fs.rmSync(storePath, { force: true });
+      archiveMigratedSessionStoreSource({
+        sourcePath: storePath,
+        changes,
+        warnings,
+      });
       changes.push(
         `Migrated ${migrated} ACP session metadata ${migrated === 1 ? "row" : "rows"} → shared SQLite state`,
       );

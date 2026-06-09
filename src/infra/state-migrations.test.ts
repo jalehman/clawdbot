@@ -227,20 +227,22 @@ describe("state migrations", () => {
       detected,
       now: () => 1234,
     });
+    const targetStorePath = path.join(stateDir, "agents", "worker-1", "sessions", "sessions.json");
 
     expect(result.warnings).toStrictEqual([]);
     expect(result.changes).toEqual([
       `Migrated latest direct-chat session → agent:worker-1:desk`,
       "Imported 4 session metadata row(s) → agent SQLite state",
       "Canonicalized 2 legacy session key(s)",
+      `Archived sessions legacy source → ${targetStorePath}.migrated`,
       "Moved trace.jsonl → agents/worker-1/sessions",
+      `Archived sessions legacy source → ${path.join(stateDir, "sessions", "sessions.json")}.migrated`,
       "Moved agent file settings.json → agents/worker-1/agent",
       `Moved MobileAuth auth creds.json → ${path.join(stateDir, "credentials", "mobileauth", "default", "creds.json")}`,
       `Moved MobileAuth auth pre-key-1.json → ${path.join(stateDir, "credentials", "mobileauth", "default", "pre-key-1.json")}`,
       `Copied ChatApp pairing allowFrom → ${resolveChannelAllowFromPath("chatapp", env, "alpha")}`,
     ]);
 
-    const targetStorePath = path.join(stateDir, "agents", "worker-1", "sessions", "sessions.json");
     const mergedStore = loadSessionStore(targetStorePath, { skipCache: true }) as Record<
       string,
       { sessionId: string }
@@ -257,7 +259,13 @@ describe("state migrations", () => {
       fs.readFile(path.join(stateDir, "agents", "worker-1", "sessions", "trace.jsonl"), "utf8"),
     ).resolves.toBe("{}\n");
     await expectMissingPath(path.join(stateDir, "sessions", "sessions.json"));
+    await expect(
+      fs.readFile(path.join(stateDir, "sessions", "sessions.json.migrated"), "utf8"),
+    ).resolves.toContain("legacy-direct");
     await expectMissingPath(targetStorePath);
+    await expect(fs.readFile(`${targetStorePath}.migrated`, "utf8")).resolves.toContain(
+      "group-session",
+    );
     await expectMissingPath(path.join(stateDir, "sessions", "trace.jsonl"));
 
     await expect(
@@ -283,6 +291,38 @@ describe("state migrations", () => {
     ).resolves.toBe('["123","456"]\n');
     await expectMissingPath(resolveChannelAllowFromPath("chatapp", env, "default"));
     await expectMissingPath(resolveChannelAllowFromPath("chatapp", env, "beta"));
+  });
+
+  it("uses the next archive path when migrated session archives already exist", async () => {
+    const { root, stateDir, env, cfg } = await createLegacyStateFixture();
+    const targetStorePath = path.join(stateDir, "agents", "worker-1", "sessions", "sessions.json");
+    await fs.writeFile(`${targetStorePath}.migrated`, "existing archive", "utf8");
+
+    const detected = await detectLegacyStateMigrations({
+      cfg,
+      env,
+      homedir: () => root,
+    });
+    const result = await runLegacyStateMigrations({
+      detected,
+      now: () => 1234,
+    });
+
+    expect(result.warnings).toStrictEqual([]);
+    expect(result.changes).toContain(
+      `Archived sessions legacy source → ${targetStorePath}.migrated.2`,
+    );
+    expect(fsSync.existsSync(targetStorePath)).toBe(false);
+    await expect(fs.readFile(`${targetStorePath}.migrated`, "utf8")).resolves.toBe(
+      "existing archive",
+    );
+    await expect(fs.readFile(`${targetStorePath}.migrated.2`, "utf8")).resolves.toContain(
+      "group-session",
+    );
+    const migratedStore = loadSessionStore(targetStorePath, { skipCache: true });
+    expect(migratedStore["agent:worker-1:mobileauth:group:mobile-room"]?.sessionId).toBe(
+      "group-session",
+    );
   });
 
   it("preserves metadata-only session rows during legacy JSON import", async () => {
@@ -316,6 +356,9 @@ describe("state migrations", () => {
     });
     expect(store["agent:worker-1:metadata"]?.sessionId).toBeUndefined();
     await expectMissingPath(targetStorePath);
+    await expect(fs.readFile(`${targetStorePath}.migrated`, "utf8")).resolves.toContain(
+      "agent:worker-1:metadata",
+    );
   });
 
   it("runs plugin doctor session inspections after importing legacy JSON stores", async () => {
@@ -674,6 +717,9 @@ describe("state migrations", () => {
     ).toBe(true);
     expect(result.warnings).toStrictEqual([]);
     await expectMissingPath(path.join(stateDir, "sessions", "sessions.json"));
+    await expect(
+      fs.readFile(path.join(stateDir, "sessions", "sessions.json.migrated"), "utf8"),
+    ).resolves.toContain("legacy-direct");
     await expectMissingPath(targetStorePath);
   });
 });

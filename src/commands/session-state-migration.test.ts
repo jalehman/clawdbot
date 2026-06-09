@@ -76,7 +76,7 @@ describe("ensureExplicitSessionStoreMigratedForCommand", () => {
       }),
       "utf8",
     );
-    vi.spyOn(fs, "rmSync").mockImplementation(() => {
+    vi.spyOn(fs, "renameSync").mockImplementation(() => {
       throw Object.assign(new Error("locked"), { code: "EPERM" });
     });
     const warnings: string[] = [];
@@ -90,6 +90,56 @@ describe("ensureExplicitSessionStoreMigratedForCommand", () => {
     const migrated = loadSessionStore(storePath, { skipCache: true });
     expect(migrated["agent:main:main"]?.sessionId).toBe("legacy-session");
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain("failed removing");
+    expect(warnings[0]).toContain("failed archiving");
+  });
+
+  it("archives explicit legacy stores after SQLite import", async () => {
+    const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "openclaw-session-migrate-"));
+    tempRoots.push(tempRoot);
+    const storePath = path.join(tempRoot, "sessions.json");
+    await fsp.writeFile(
+      storePath,
+      JSON.stringify({
+        "agent:main:main": { sessionId: "legacy-session", updatedAt: 10 },
+      }),
+      "utf8",
+    );
+    fs.chmodSync(storePath, 0o644);
+
+    await ensureExplicitSessionStoreMigratedForCommand(storePath);
+
+    expect(fs.existsSync(storePath)).toBe(false);
+    await expect(fsp.readFile(`${storePath}.migrated`, "utf8")).resolves.toContain(
+      "legacy-session",
+    );
+    expect(fs.statSync(`${storePath}.migrated`).mode & 0o777).toBe(0o600);
+    const migrated = loadSessionStore(storePath, { skipCache: true });
+    expect(migrated["agent:main:main"]?.sessionId).toBe("legacy-session");
+  });
+
+  it("uses the next archive path when the explicit archive already exists", async () => {
+    const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "openclaw-session-migrate-"));
+    tempRoots.push(tempRoot);
+    const storePath = path.join(tempRoot, "sessions.json");
+    await fsp.writeFile(
+      storePath,
+      JSON.stringify({
+        "agent:main:main": { sessionId: "legacy-session", updatedAt: 10 },
+      }),
+      "utf8",
+    );
+    await fsp.writeFile(`${storePath}.migrated`, "existing archive", "utf8");
+    const warnings: string[] = [];
+
+    await ensureExplicitSessionStoreMigratedForCommand(storePath, {
+      onWarning: (warning) => warnings.push(warning),
+    });
+
+    expect(fs.existsSync(storePath)).toBe(false);
+    await expect(fsp.readFile(`${storePath}.migrated`, "utf8")).resolves.toBe("existing archive");
+    await expect(fsp.readFile(`${storePath}.migrated.2`, "utf8")).resolves.toContain(
+      "legacy-session",
+    );
+    expect(warnings).toStrictEqual([]);
   });
 });
