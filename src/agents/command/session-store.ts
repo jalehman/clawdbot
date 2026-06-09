@@ -5,6 +5,7 @@ import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
   canonicalizeAbsoluteSessionFilePath,
+  deriveSessionEntryPatch,
   mergeSessionEntry,
   resolveSessionFilePath,
   resolveSessionFilePathOptions,
@@ -48,22 +49,10 @@ function resolvePositiveInteger(value: number | undefined): number | undefined {
 
 const TRANSIENT_LIFECYCLE_SESSION_FIELDS = new Set(["status", "startedAt", "endedAt", "runtimeMs"]);
 
-function sameJsonValue(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
 function deriveRunMetadataPatch(previous: SessionEntry, next: SessionEntry): Partial<SessionEntry> {
-  const patch: Record<string, unknown> = {};
-  const keys = new Set([...Object.keys(previous), ...Object.keys(next)]);
-  for (const key of keys) {
-    if (TRANSIENT_LIFECYCLE_SESSION_FIELDS.has(key)) {
-      continue;
-    }
-    if (!sameJsonValue(previous[key as keyof SessionEntry], next[key as keyof SessionEntry])) {
-      patch[key] = next[key as keyof SessionEntry];
-    }
-  }
-  return patch as Partial<SessionEntry>;
+  return deriveSessionEntryPatch(previous, next, {
+    excludeFields: TRANSIENT_LIFECYCLE_SESSION_FIELDS as Set<keyof SessionEntry>,
+  });
 }
 
 /** Applies run result metadata, usage, and CLI bindings to a session entry. */
@@ -342,12 +331,24 @@ export async function clearCliSessionInStore(params: {
   const next = { ...entry };
   clearCliSession(next, provider);
   next.updatedAt = Date.now();
+  const patch: Partial<SessionEntry> = {
+    ...deriveSessionEntryPatch(entry, next),
+    updatedAt: next.updatedAt,
+  };
 
-  const persisted = await updateSessionStore(storePath, (store) => {
-    const merged = mergeSessionEntry(store[sessionKey], next);
-    store[sessionKey] = merged;
-    return merged;
-  });
+  const persisted = await updateSessionStore(
+    storePath,
+    (store) => {
+      const merged = mergeSessionEntry(store[sessionKey] ?? entry, patch);
+      store[sessionKey] = merged;
+      return merged;
+    },
+    {
+      resolveSingleEntryPersistence: (entryLocal) =>
+        entryLocal ? { sessionKey, entry: entryLocal, patch } : undefined,
+      takeCacheOwnership: true,
+    },
+  );
   sessionStore[sessionKey] = persisted;
   return persisted;
 }
@@ -411,12 +412,33 @@ export async function recordCliCompactionInStore(params: {
     next.cacheRead = undefined;
     next.cacheWrite = undefined;
   }
+  const patch: Partial<SessionEntry> = {
+    ...deriveSessionEntryPatch(entry, next),
+    contextBudgetStatus: undefined,
+    totalTokensFresh: next.totalTokensFresh,
+    inputTokens: undefined,
+    outputTokens: undefined,
+    cacheRead: undefined,
+    cacheWrite: undefined,
+    updatedAt: next.updatedAt,
+  };
+  if (tokensAfterCompaction !== undefined) {
+    patch.totalTokens = next.totalTokens;
+  }
 
-  const persisted = await updateSessionStore(storePath, (store) => {
-    const merged = mergeSessionEntry(store[sessionKey], next);
-    store[sessionKey] = merged;
-    return merged;
-  });
+  const persisted = await updateSessionStore(
+    storePath,
+    (store) => {
+      const merged = mergeSessionEntry(store[sessionKey] ?? entry, patch);
+      store[sessionKey] = merged;
+      return merged;
+    },
+    {
+      resolveSingleEntryPersistence: (entryLocal) =>
+        entryLocal ? { sessionKey, entry: entryLocal, patch } : undefined,
+      takeCacheOwnership: true,
+    },
+  );
   sessionStore[sessionKey] = persisted;
   return persisted;
 }

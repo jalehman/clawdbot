@@ -1,4 +1,5 @@
 // Telegram plugin module implements bot handlers behavior.
+import { randomUUID } from "node:crypto";
 import type { Message, ReactionTypeEmoji } from "grammy/types";
 import { parseExecApprovalCommandText } from "openclaw/plugin-sdk/approval-reply-runtime";
 import { resolveChannelConfigWrites } from "openclaw/plugin-sdk/channel-config-helpers";
@@ -37,8 +38,9 @@ import { resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
 import { danger, logVerbose, warn } from "openclaw/plugin-sdk/runtime-env";
 import {
   loadSessionStore,
+  patchSessionEntry,
   resolveSessionStoreEntry,
-  updateSessionStore,
+  type SessionEntry,
 } from "openclaw/plugin-sdk/session-store-runtime";
 import { normalizeStringEntries } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { expandTelegramAllowFromWithAccessGroups } from "./access-groups.js";
@@ -145,6 +147,29 @@ import {
 } from "./model-buttons.js";
 import { parseTelegramOpaqueCallbackData } from "./native-command-callback-data.js";
 import { buildInlineKeyboard } from "./send.js";
+
+// Model callbacks own these top-level fields. Include undefined values so reset
+// selections delete stale fresh-row data without replacing the whole row.
+function buildTelegramModelSelectionSessionPatch(next: SessionEntry): Partial<SessionEntry> {
+  return {
+    providerOverride: next.providerOverride,
+    modelOverride: next.modelOverride,
+    modelOverrideSource: next.modelOverrideSource,
+    modelOverrideFallbackOriginProvider: next.modelOverrideFallbackOriginProvider,
+    modelOverrideFallbackOriginModel: next.modelOverrideFallbackOriginModel,
+    model: next.model,
+    modelProvider: next.modelProvider,
+    contextTokens: next.contextTokens,
+    contextBudgetStatus: next.contextBudgetStatus,
+    authProfileOverride: next.authProfileOverride,
+    authProfileOverrideSource: next.authProfileOverrideSource,
+    authProfileOverrideCompactionCount: next.authProfileOverrideCompactionCount,
+    fallbackNoticeSelectedModel: next.fallbackNoticeSelectedModel,
+    fallbackNoticeActiveModel: next.fallbackNoticeActiveModel,
+    fallbackNoticeReason: next.fallbackNoticeReason,
+    updatedAt: next.updatedAt,
+  };
+}
 
 export const registerTelegramHandlers = ({
   cfg,
@@ -2587,18 +2612,28 @@ export const registerTelegramHandlers = ({
               selection.model === resolvedDefault.model;
 
             try {
-              await updateSessionStore(storePath, (store) => {
-                const sessionKey = sessionState.sessionKey;
-                const entry = store[sessionKey] ?? {};
-                store[sessionKey] = entry;
-                applyModelOverrideToSessionEntry({
-                  entry,
-                  selection: {
-                    provider: selection.provider,
-                    model: selection.model,
-                    isDefault: isDefaultSelection,
-                  },
-                });
+              await patchSessionEntry({
+                storePath,
+                sessionKey: sessionState.sessionKey,
+                fallbackEntry: {
+                  sessionId: randomUUID(),
+                  updatedAt: Date.now(),
+                },
+                update: (entry) => {
+                  const next = { ...entry };
+                  const result = applyModelOverrideToSessionEntry({
+                    entry: next,
+                    selection: {
+                      provider: selection.provider,
+                      model: selection.model,
+                      isDefault: isDefaultSelection,
+                    },
+                  });
+                  if (!result.updated) {
+                    next.updatedAt = Date.now();
+                  }
+                  return buildTelegramModelSelectionSessionPatch(next);
+                },
               });
             } catch (err) {
               throw new TelegramRetryableCallbackError(err);

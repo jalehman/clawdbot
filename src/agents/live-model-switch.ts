@@ -2,7 +2,7 @@
  * Resolves and persists live-session model switch requests.
  */
 import { resolveStorePath } from "../config/sessions/paths.js";
-import { loadSessionStore, updateSessionStore } from "../config/sessions/store.js";
+import { loadSessionStore, patchSessionEntry } from "../config/sessions/store.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import {
   abortEmbeddedAgentRun,
@@ -246,10 +246,14 @@ export async function clearLiveModelSwitchPending(params: {
   if (!storePath) {
     return;
   }
-  await updateSessionStore(storePath, (store) => {
-    const entry = store[sessionKey];
-    if (entry) {
-      delete entry.liveModelSwitchPending;
-    }
+  await patchSessionEntry({
+    storePath,
+    sessionKey,
+    update: (entry) => {
+      if (!entry.liveModelSwitchPending) {
+        return null;
+      }
+      return { liveModelSwitchPending: undefined };
+    },
   });
 }

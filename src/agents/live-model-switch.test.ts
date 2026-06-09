@@ -9,6 +9,7 @@ const state = vi.hoisted(() => ({
   resolvePersistedSelectedModelRefMock: vi.fn(),
   loadSessionStoreMock: vi.fn(),
   resolveStorePathMock: vi.fn(),
+  patchSessionEntryMock: vi.fn(),
   updateSessionStoreMock: vi.fn(),
   embeddedAgentModuleImported: false,
 }));
@@ -40,6 +41,7 @@ vi.mock("./model-selection.js", async () => {
 
 vi.mock("../config/sessions/store.js", () => ({
   loadSessionStore: (...args: unknown[]) => state.loadSessionStoreMock(...args),
+  patchSessionEntry: (...args: unknown[]) => state.patchSessionEntryMock(...args),
   updateSessionStore: (...args: unknown[]) => state.updateSessionStoreMock(...args),
 }));
 
@@ -49,6 +51,7 @@ vi.mock("../config/sessions/paths.js", () => ({
 
 vi.mock("../config/sessions.js", () => ({
   loadSessionStore: (...args: unknown[]) => state.loadSessionStoreMock(...args),
+  patchSessionEntry: (...args: unknown[]) => state.patchSessionEntryMock(...args),
   resolveStorePath: (...args: unknown[]) => state.resolveStorePathMock(...args),
   updateSessionStore: (...args: unknown[]) => state.updateSessionStoreMock(...args),
 }));
@@ -137,6 +140,7 @@ describe("live model switch", () => {
       );
     state.loadSessionStoreMock.mockReset().mockReturnValue({});
     state.resolveStorePathMock.mockReset().mockReturnValue("/tmp/session-store.json");
+    state.patchSessionEntryMock.mockReset().mockResolvedValue(null);
     state.updateSessionStoreMock
       .mockReset()
       .mockImplementation(
@@ -525,20 +529,19 @@ describe("live model switch", () => {
         modelOverride: "claude-opus-4-6",
       };
       state.loadSessionStoreMock.mockReturnValue({ main: sessionEntry });
-      state.updateSessionStoreMock.mockImplementation(
-        async (_path: string, updater: (store: Record<string, unknown>) => void) => {
-          const store: Record<string, typeof sessionEntry> = { main: sessionEntry };
-          updater(store);
-        },
-      );
 
       const { shouldSwitchToLiveModel } = await loadModule();
 
       const result = shouldSwitchToLiveModel(makeShouldSwitchParams());
 
       expect(result).toBeUndefined();
-      await vi.waitFor(() => expect(state.updateSessionStoreMock).toHaveBeenCalledTimes(1));
-      expect(sessionEntry).not.toHaveProperty("liveModelSwitchPending");
+      await vi.waitFor(() => expect(state.patchSessionEntryMock).toHaveBeenCalledTimes(1));
+      const patchParams = state.patchSessionEntryMock.mock.calls.at(-1)?.[0] as {
+        update: (entry: typeof sessionEntry) => unknown;
+      };
+      expect(patchParams.update(sessionEntry)).toEqual({
+        liveModelSwitchPending: undefined,
+      });
     });
 
     it("returns undefined when sessionKey is missing", async () => {
@@ -573,7 +576,7 @@ describe("live model switch", () => {
   });
 
   describe("clearLiveModelSwitchPending", () => {
-    it("calls updateSessionStore to clear the flag", async () => {
+    it("calls patchSessionEntry to clear the flag", async () => {
       const { clearLiveModelSwitchPending } = await loadModule();
 
       await clearLiveModelSwitchPending({
@@ -582,20 +585,18 @@ describe("live model switch", () => {
         agentId: "reply",
       });
 
-      expect(state.updateSessionStoreMock).toHaveBeenCalledTimes(1);
+      expect(state.patchSessionEntryMock).toHaveBeenCalledTimes(1);
+      expect(state.patchSessionEntryMock.mock.calls.at(-1)?.[0]).toMatchObject({
+        storePath: "/tmp/session-store.json",
+        sessionKey: "main",
+      });
       expect(state.resolveStorePathMock).toHaveBeenCalledWith("/tmp/custom-store.json", {
         agentId: "reply",
       });
     });
 
-    it("deletes liveModelSwitchPending from the session entry", async () => {
+    it("returns a deletion patch for liveModelSwitchPending", async () => {
       const sessionEntry = { liveModelSwitchPending: true, sessionId: "s-1" };
-      state.updateSessionStoreMock.mockImplementation(
-        async (_path: string, updater: (store: Record<string, unknown>) => void) => {
-          const store: Record<string, typeof sessionEntry> = { main: sessionEntry };
-          updater(store);
-        },
-      );
 
       const { clearLiveModelSwitchPending } = await loadModule();
 
@@ -605,7 +606,12 @@ describe("live model switch", () => {
         agentId: "reply",
       });
 
-      expect(sessionEntry).not.toHaveProperty("liveModelSwitchPending");
+      const patchParams = state.patchSessionEntryMock.mock.calls.at(-1)?.[0] as {
+        update: (entry: typeof sessionEntry) => unknown;
+      };
+      expect(patchParams.update(sessionEntry)).toEqual({
+        liveModelSwitchPending: undefined,
+      });
     });
 
     it("is a no-op when sessionKey is missing", async () => {
@@ -617,7 +623,7 @@ describe("live model switch", () => {
         agentId: "reply",
       });
 
-      expect(state.updateSessionStoreMock).not.toHaveBeenCalled();
+      expect(state.patchSessionEntryMock).not.toHaveBeenCalled();
     });
   });
 });

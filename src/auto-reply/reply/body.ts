@@ -34,17 +34,15 @@ export async function applySessionHints(params: {
       params.sessionStore[params.sessionKey] = params.sessionEntry;
       if (params.storePath) {
         const sessionKey = params.sessionKey;
-        const { updateSessionStore } = await loadSessionStoreRuntime();
-        await updateSessionStore(params.storePath, (store) => {
-          const entry = store[sessionKey] ?? params.sessionEntry;
-          if (!entry) {
-            return;
-          }
-          store[sessionKey] = {
-            ...entry,
+        const { patchSessionEntry } = await loadSessionStoreRuntime();
+        await patchSessionEntry({
+          storePath: params.storePath,
+          sessionKey,
+          fallbackEntry: params.sessionEntry,
+          update: () => ({
             abortedLastRun: false,
             updatedAt: Date.now(),
-          };
+          }),
         });
       }
     } else if (params.abortKey) {

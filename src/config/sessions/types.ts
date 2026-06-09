@@ -601,6 +601,29 @@ export function mergeSessionEntryPreserveActivity(
   });
 }
 
+/** Builds a minimal patch that converts one session entry into another. */
+export function deriveSessionEntryPatch(
+  previous: SessionEntry,
+  next: SessionEntry,
+  options?: { excludeFields?: Iterable<keyof SessionEntry> },
+): Partial<SessionEntry> {
+  const excluded = new Set(options?.excludeFields ?? []);
+  const patch: Partial<SessionEntry> = {};
+  const keys = new Set<keyof SessionEntry>([
+    ...(Object.keys(previous) as Array<keyof SessionEntry>),
+    ...(Object.keys(next) as Array<keyof SessionEntry>),
+  ]);
+  for (const key of keys) {
+    if (excluded.has(key)) {
+      continue;
+    }
+    if (JSON.stringify(previous[key]) !== JSON.stringify(next[key])) {
+      (patch as Record<keyof SessionEntry, unknown>)[key] = next[key];
+    }
+  }
+  return patch;
+}
+
 export function resolveSessionTotalTokens(
   entry?: Pick<SessionEntry, "totalTokens" | "totalTokensFresh"> | null,
 ): number | undefined {

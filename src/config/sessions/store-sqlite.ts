@@ -143,6 +143,11 @@ export function readSqliteSessionEntry(
   return row ? parseSessionEntryValue(row.value_json) : undefined;
 }
 
+/**
+ * Replaces every session row and is only for maintenance/migration flows that
+ * intentionally own the whole store. Normal session metadata updates must use
+ * row-level helpers so fresh SQLite rows cannot be overwritten by stale stores.
+ */
 export function replaceSqliteSessionStore(
   storePath: string,
   store: Record<string, SessionEntry>,

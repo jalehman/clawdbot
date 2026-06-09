@@ -110,6 +110,19 @@ vi.mock("../../config/sessions.js", async () => {
     },
   );
   return {
+    deriveSessionEntryPatch: (previous: SessionEntry, next: SessionEntry) => {
+      const patch: Partial<SessionEntry> = {};
+      const keys = new Set<keyof SessionEntry>([
+        ...(Object.keys(previous) as Array<keyof SessionEntry>),
+        ...(Object.keys(next) as Array<keyof SessionEntry>),
+      ]);
+      for (const key of keys) {
+        if (JSON.stringify(previous[key]) !== JSON.stringify(next[key])) {
+          (patch as Record<keyof SessionEntry, unknown>)[key] = next[key];
+        }
+      }
+      return patch;
+    },
     mergeSessionEntry: (existing: SessionEntry | undefined, patch: Partial<SessionEntry>) => ({
       ...existing,
       ...patch,
@@ -1979,6 +1992,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
 
 describe("recordCliCompactionInStore", () => {
   it("persists native compaction token counts and clears stale CLI usage breakdown", async () => {
+    sessionStoreMocks.updateSessionStore.mockClear();
     await withTempSessionStore(async ({ storePath }) => {
       const sessionKey = "agent:main:explicit:test-record-cli-compaction";
       const sessionId = "test-record-cli-compaction-session";
@@ -2023,12 +2037,29 @@ describe("recordCliCompactionInStore", () => {
       };
       await writeSessionStoreSeed(storePath, sessionStore);
 
-      await recordCliCompactionInStore({
+      const persistedEntry = await recordCliCompactionInStore({
         provider: "codex",
         sessionKey,
         sessionStore,
         storePath,
         tokensAfter: 0,
+      });
+
+      const updateOptions = sessionStoreMocks.updateSessionStore.mock.calls.at(-1)?.[2];
+      expect(typeof updateOptions?.resolveSingleEntryPersistence).toBe("function");
+      expect(updateOptions?.takeCacheOwnership).toBe(true);
+      expect(updateOptions?.resolveSingleEntryPersistence?.(persistedEntry)).toMatchObject({
+        sessionKey,
+        patch: {
+          compactionCount: 1,
+          contextBudgetStatus: undefined,
+          inputTokens: undefined,
+          outputTokens: undefined,
+          cacheRead: undefined,
+          cacheWrite: undefined,
+          totalTokens: 0,
+          totalTokensFresh: true,
+        },
       });
 
       const persisted = loadSessionStore(storePath);
@@ -2145,6 +2176,7 @@ describe("recordCliCompactionInStore", () => {
 
 describe("clearCliSessionInStore", () => {
   it("persists cleared Claude CLI bindings through session-store merge", async () => {
+    sessionStoreMocks.updateSessionStore.mockClear();
     await withTempSessionStore(async ({ storePath }) => {
       const sessionKey = "agent:main:explicit:test-clear-claude-cli";
       const entry: SessionEntry = {
@@ -2175,6 +2207,16 @@ describe("clearCliSessionInStore", () => {
         storePath,
       });
 
+      const updateOptions = sessionStoreMocks.updateSessionStore.mock.calls.at(-1)?.[2];
+      expect(typeof updateOptions?.resolveSingleEntryPersistence).toBe("function");
+      expect(updateOptions?.takeCacheOwnership).toBe(true);
+      expect(updateOptions?.resolveSingleEntryPersistence?.(cleared)).toMatchObject({
+        sessionKey,
+        entry: cleared,
+        patch: {
+          claudeCliSessionId: undefined,
+        },
+      });
       expect(cleared?.cliSessionBindings?.["claude-cli"]).toBeUndefined();
       expect(cleared?.cliSessionBindings?.["codex-cli"]).toEqual({
         sessionId: "codex-session-1",

@@ -5,7 +5,11 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { applyModelOverrideToSessionEntry } from "openclaw/plugin-sdk/model-session-runtime";
 import type { ResolvedAgentRoute } from "openclaw/plugin-sdk/routing";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
-import { resolveStorePath, updateSessionStore } from "openclaw/plugin-sdk/session-store-runtime";
+import {
+  patchSessionEntry,
+  resolveStorePath,
+  type SessionEntry,
+} from "openclaw/plugin-sdk/session-store-runtime";
 import { withTimeout } from "openclaw/plugin-sdk/text-utility-runtime";
 import type { ButtonInteraction, StringSelectMenuInteraction } from "../internal/discord.js";
 import {
@@ -30,6 +34,32 @@ type DiscordModelPickerApplyResult =
   | { status: "timeout"; noticeMessage: string }
   | { status: "failed"; noticeMessage: string };
 
+// Model picker writes own these top-level fields. Include undefined values so
+// reset selections delete stale fresh-row data without replacing the whole row.
+function buildDiscordModelPickerSessionPatch(next: SessionEntry): Partial<SessionEntry> {
+  return {
+    providerOverride: next.providerOverride,
+    modelOverride: next.modelOverride,
+    modelOverrideSource: next.modelOverrideSource,
+    modelOverrideFallbackOriginProvider: next.modelOverrideFallbackOriginProvider,
+    modelOverrideFallbackOriginModel: next.modelOverrideFallbackOriginModel,
+    model: next.model,
+    modelProvider: next.modelProvider,
+    contextTokens: next.contextTokens,
+    contextBudgetStatus: next.contextBudgetStatus,
+    authProfileOverride: next.authProfileOverride,
+    authProfileOverrideSource: next.authProfileOverrideSource,
+    authProfileOverrideCompactionCount: next.authProfileOverrideCompactionCount,
+    fallbackNoticeSelectedModel: next.fallbackNoticeSelectedModel,
+    fallbackNoticeActiveModel: next.fallbackNoticeActiveModel,
+    fallbackNoticeReason: next.fallbackNoticeReason,
+    liveModelSwitchPending: next.liveModelSwitchPending,
+    agentRuntimeOverride: next.agentRuntimeOverride,
+    agentHarnessId: next.agentHarnessId,
+    updatedAt: next.updatedAt,
+  };
+}
+
 async function persistDiscordModelPickerOverride(params: {
   cfg: OpenClawConfig;
   route: ResolvedAgentRoute;
@@ -42,34 +72,43 @@ async function persistDiscordModelPickerOverride(params: {
     agentId: params.route.agentId,
   });
   let persisted = false;
-  await updateSessionStore(storePath, (store) => {
-    const entry = store[params.route.sessionKey] ?? {
+  await patchSessionEntry({
+    storePath,
+    sessionKey: params.route.sessionKey,
+    fallbackEntry: {
       sessionId: randomUUID(),
       updatedAt: Date.now(),
-    };
-    store[params.route.sessionKey] = entry;
-    persisted =
-      applyModelOverrideToSessionEntry({
-        entry,
+    },
+    update: (entry) => {
+      const next = { ...entry };
+      const modelResult = applyModelOverrideToSessionEntry({
+        entry: next,
         selection: {
           provider: params.provider,
           model: params.model,
           isDefault: params.isDefault,
         },
         markLiveSwitchPending: true,
-      }).updated || persisted;
-    const runtime = params.runtime?.trim();
-    if (runtime && runtime !== "auto" && runtime !== "default") {
-      if (entry.agentRuntimeOverride !== runtime) {
-        entry.agentRuntimeOverride = runtime;
-        delete entry.agentHarnessId;
+      });
+      persisted = modelResult.updated || persisted;
+      const runtime = params.runtime?.trim();
+      if (runtime && runtime !== "auto" && runtime !== "default") {
+        if (next.agentRuntimeOverride !== runtime) {
+          next.agentRuntimeOverride = runtime;
+          delete next.agentHarnessId;
+          persisted = true;
+        }
+      } else if (runtime && next.agentRuntimeOverride) {
+        delete next.agentRuntimeOverride;
+        delete next.agentHarnessId;
         persisted = true;
       }
-    } else if (runtime && entry.agentRuntimeOverride) {
-      delete entry.agentRuntimeOverride;
-      delete entry.agentHarnessId;
-      persisted = true;
-    }
+      if (!persisted) {
+        next.updatedAt = Date.now();
+        persisted = true;
+      }
+      return buildDiscordModelPickerSessionPatch(next);
+    },
   });
   return persisted;
 }
