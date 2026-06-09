@@ -339,7 +339,18 @@ vi.mock("../../agents/sandbox.js", () => ({
 }));
 
 vi.mock("../../config/sessions.js", () => ({
-  updateSessionStore: vi.fn(async () => {}),
+  deriveSessionEntryPatch: (previous: Record<string, unknown>, next: Record<string, unknown>) => {
+    const patch: Record<string, unknown> = {};
+    for (const key of new Set([...Object.keys(previous), ...Object.keys(next)])) {
+      if (JSON.stringify(previous[key]) !== JSON.stringify(next[key])) {
+        patch[key] = next[key];
+      }
+    }
+    return patch;
+  },
+  patchSessionEntryWithRowOptions: vi.fn(
+    async (params: { fallbackEntry?: unknown }) => params.fallbackEntry ?? null,
+  ),
 }));
 
 vi.mock("../../infra/system-events.js", () => ({

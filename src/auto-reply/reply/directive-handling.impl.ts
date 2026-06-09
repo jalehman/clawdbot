@@ -5,7 +5,7 @@ import { renderExecTargetLabel } from "../../agents/bash-tools.exec-runtime.js";
 import { resolveExecDefaults } from "../../agents/exec-defaults.js";
 import { resolveFastModeState } from "../../agents/fast-mode.js";
 import { resolveSandboxRuntimeStatus } from "../../agents/sandbox.js";
-import { updateSessionStore } from "../../config/sessions.js";
+import { deriveSessionEntryPatch, patchSessionEntryWithRowOptions } from "../../config/sessions.js";
 import { triggerSessionPatchHook } from "../../gateway/session-patch-hooks.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { applyTraceOverride, applyVerboseOverride } from "../../sessions/level-overrides.js";
@@ -31,6 +31,11 @@ import {
   enqueueModeSwitchEvents,
   withOptions,
 } from "./directive-handling.shared.js";
+import {
+  copySessionEntryPatchFields,
+  MODEL_OVERRIDE_SESSION_PATCH_FIELDS,
+  QUEUE_SESSION_PATCH_FIELDS,
+} from "./directive-session-patch.js";
 import type { ElevatedLevel, ReasoningLevel, ThinkLevel } from "./directives.js";
 import { refreshQueuedFollowupSession } from "./queue.js";
 import { resolveRuntimePolicySessionKey } from "./runtime-policy-session-key.js";
@@ -386,6 +391,7 @@ export async function handleDirectiveOnly(
   let reasoningChanged =
     directives.hasReasoningDirective && directives.reasoningLevel !== undefined;
   if (shouldPersistSessionEntry) {
+    const previousSessionEntry = { ...sessionEntry };
     if (directives.clearThinkLevel) {
       delete sessionEntry.thinkingLevel;
     } else if (
@@ -476,9 +482,58 @@ export async function handleDirectiveOnly(
     sessionEntry.updatedAt = Date.now();
     sessionStore[sessionKey] = sessionEntry;
     if (storePath) {
-      await updateSessionStore(storePath, (store) => {
-        store[sessionKey] = sessionEntry;
+      const patch = deriveSessionEntryPatch(previousSessionEntry, sessionEntry);
+      if (
+        directives.clearThinkLevel ||
+        directives.hasThinkDirective ||
+        shouldRemapUnsupportedThinkLevel
+      ) {
+        patch.thinkingLevel = sessionEntry.thinkingLevel;
+      }
+      if (directives.hasFastDirective || directives.clearFastMode) {
+        patch.fastMode = sessionEntry.fastMode;
+      }
+      if (
+        directives.hasVerboseDirective &&
+        directives.verboseLevel &&
+        allowInternalVerbosePersistence
+      ) {
+        patch.verboseLevel = sessionEntry.verboseLevel;
+      }
+      if (directives.hasTraceDirective && directives.traceLevel) {
+        patch.traceLevel = sessionEntry.traceLevel;
+      }
+      if (directives.hasReasoningDirective && directives.reasoningLevel) {
+        patch.reasoningLevel = sessionEntry.reasoningLevel;
+      }
+      if (directives.hasElevatedDirective && directives.elevatedLevel) {
+        patch.elevatedLevel = sessionEntry.elevatedLevel;
+      }
+      if (
+        directives.hasExecDirective &&
+        directives.hasExecOptions &&
+        allowInternalExecPersistence
+      ) {
+        patch.execHost = sessionEntry.execHost;
+        patch.execSecurity = sessionEntry.execSecurity;
+        patch.execAsk = sessionEntry.execAsk;
+        patch.execNode = sessionEntry.execNode;
+      }
+      if (modelSelection) {
+        copySessionEntryPatchFields(patch, sessionEntry, MODEL_OVERRIDE_SESSION_PATCH_FIELDS);
+      }
+      if (directives.hasQueueDirective) {
+        copySessionEntryPatchFields(patch, sessionEntry, QUEUE_SESSION_PATCH_FIELDS);
+      }
+      const persisted = await patchSessionEntryWithRowOptions({
+        storePath,
+        sessionKey,
+        fallbackEntry: sessionEntry,
+        update: () => patch,
       });
+      if (persisted) {
+        sessionStore[sessionKey] = persisted;
+      }
     }
     if (modelSelection && modelSelectionUpdated && sessionKey) {
       triggerSessionPatchHook({

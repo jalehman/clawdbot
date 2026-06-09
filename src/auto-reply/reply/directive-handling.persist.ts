@@ -9,7 +9,8 @@ import { resolveAgentHarnessPolicy } from "../../agents/harness/policy.js";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.js";
 import { normalizeProviderId, type ModelAliasIndex } from "../../agents/model-selection.js";
 import { resolveContextConfigProviderForRuntime } from "../../agents/openai-routing.js";
-import { updateSessionStore } from "../../config/sessions/store.js";
+import { deriveSessionEntryPatch } from "../../config/sessions.js";
+import { patchSessionEntryWithRowOptions } from "../../config/sessions/store.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { triggerSessionPatchHook } from "../../gateway/session-patch-hooks.js";
@@ -23,6 +24,11 @@ import {
   canPersistSessionDirectiveDefaults,
   enqueueModeSwitchEvents,
 } from "./directive-handling.shared.js";
+import {
+  copySessionEntryPatchFields,
+  MODEL_OVERRIDE_SESSION_PATCH_FIELDS,
+  QUEUE_SESSION_PATCH_FIELDS,
+} from "./directive-session-patch.js";
 import type { ElevatedLevel, ReasoningLevel, ThinkLevel } from "./directives.js";
 import { resolveContextTokens } from "./model-selection.js";
 
@@ -150,6 +156,7 @@ export async function persistInlineDirectives(params: {
   const agentDir = resolveAgentDir(cfg, activeAgentId) ?? params.agentDir;
 
   if (sessionEntry && sessionStore && sessionKey) {
+    const previousSessionEntry = { ...sessionEntry };
     const prevElevatedLevel =
       (sessionEntry.elevatedLevel as ElevatedLevel | undefined) ??
       (agentCfg?.elevatedDefault as ElevatedLevel | undefined) ??
@@ -359,9 +366,57 @@ export async function persistInlineDirectives(params: {
       sessionEntry.updatedAt = Date.now();
       sessionStore[sessionKey] = sessionEntry;
       if (storePath) {
-        await updateSessionStore(storePath, (store) => {
-          store[sessionKey] = sessionEntry;
+        const patch = deriveSessionEntryPatch(previousSessionEntry, sessionEntry);
+        if (directives.clearThinkLevel || directives.hasThinkDirective) {
+          patch.thinkingLevel = sessionEntry.thinkingLevel;
+        }
+        if (directives.hasFastDirective || directives.clearFastMode) {
+          patch.fastMode = sessionEntry.fastMode;
+        }
+        if (
+          directives.hasVerboseDirective &&
+          directives.verboseLevel &&
+          allowInternalVerbosePersistence
+        ) {
+          patch.verboseLevel = sessionEntry.verboseLevel;
+        }
+        if (directives.hasTraceDirective && directives.traceLevel) {
+          patch.traceLevel = sessionEntry.traceLevel;
+        }
+        if (directives.hasReasoningDirective && directives.reasoningLevel) {
+          patch.reasoningLevel = sessionEntry.reasoningLevel;
+        }
+        if (directives.hasElevatedDirective && directives.elevatedLevel) {
+          patch.elevatedLevel = sessionEntry.elevatedLevel;
+        }
+        if (
+          directives.hasExecDirective &&
+          directives.hasExecOptions &&
+          allowInternalExecPersistence
+        ) {
+          patch.execHost = sessionEntry.execHost;
+          patch.execSecurity = sessionEntry.execSecurity;
+          patch.execAsk = sessionEntry.execAsk;
+          patch.execNode = sessionEntry.execNode;
+        }
+        if (modelDirective) {
+          copySessionEntryPatchFields(patch, sessionEntry, MODEL_OVERRIDE_SESSION_PATCH_FIELDS);
+          if (directives.rawModelRuntime) {
+            patch.agentRuntimeOverride = sessionEntry.agentRuntimeOverride;
+          }
+        }
+        if (directives.hasQueueDirective) {
+          copySessionEntryPatchFields(patch, sessionEntry, QUEUE_SESSION_PATCH_FIELDS);
+        }
+        const persisted = await patchSessionEntryWithRowOptions({
+          storePath,
+          sessionKey,
+          fallbackEntry: sessionEntry,
+          update: () => patch,
         });
+        if (persisted) {
+          sessionStore[sessionKey] = persisted;
+        }
       }
       if (modelDirective && modelUpdated) {
         triggerSessionPatchHook({
