@@ -81,11 +81,11 @@ const mocks = vi.hoisted(() => ({
     session: { mainKey: "main", scope: "per-sender" as const },
   })),
   loadSessionStore: vi.fn(() => ({})),
+  patchSessionEntryWithRowOptions: vi.fn(),
   resolveAgentIdFromSessionKey: vi.fn((sessionKey: string) => {
     return sessionKey.match(/^agent:([^:]+)/)?.[1] ?? "main";
   }),
   resolveStorePath: vi.fn(() => "/tmp/test-session-store.json"),
-  updateSessionStore: vi.fn(),
   emitSessionLifecycleEvent: vi.fn(),
   clearSubagentRunsReadCacheForTest: vi.fn(),
   persistSubagentRunsToDisk: vi.fn(),
@@ -124,9 +124,9 @@ vi.mock("../config/config.js", () => {
 
 vi.mock("../config/sessions.js", () => ({
   loadSessionStore: mocks.loadSessionStore,
+  patchSessionEntryWithRowOptions: mocks.patchSessionEntryWithRowOptions,
   resolveAgentIdFromSessionKey: mocks.resolveAgentIdFromSessionKey,
   resolveStorePath: mocks.resolveStorePath,
-  updateSessionStore: mocks.updateSessionStore,
 }));
 
 vi.mock("../sessions/session-lifecycle-events.js", () => ({
@@ -2358,26 +2358,31 @@ describe("subagent registry seam flow", () => {
       "completion announce params",
     );
 
-    expect(mocks.updateSessionStore).toHaveBeenCalledTimes(1);
-    expect(getMockCallArg(mocks.updateSessionStore, 0, 0, "session store update")).toBe(
-      "/tmp/test-session-store.json",
-    );
-    expect(getMockCallArg(mocks.updateSessionStore, 0, 1, "session store update")).toBeTypeOf(
-      "function",
-    );
-
-    const updateStore = mocks.updateSessionStore.mock.calls.at(0)?.[1] as
-      | ((store: Record<string, Record<string, unknown>>) => void)
-      | undefined;
-    expect(updateStore).toBeTypeOf("function");
-    const store = {
-      "agent:main:subagent:child": {
-        sessionId: "sess-child",
-      },
+    expect(mocks.patchSessionEntryWithRowOptions).toHaveBeenCalledTimes(1);
+    const patchCall = getMockCallArg(
+      mocks.patchSessionEntryWithRowOptions,
+      0,
+      0,
+      "session row patch",
+    ) as {
+      storePath?: string;
+      sessionKey?: string;
+      preserveActivity?: boolean;
+      update?: (entry: Record<string, unknown>) => Partial<Record<string, unknown>>;
     };
-    updateStore?.(store);
     expectRecordFields(
-      store["agent:main:subagent:child"],
+      patchCall,
+      {
+        storePath: "/tmp/test-session-store.json",
+        sessionKey: "agent:main:subagent:child",
+        preserveActivity: true,
+      },
+      "session row patch params",
+    );
+    expect(patchCall.update).toBeTypeOf("function");
+    const patch = patchCall.update?.({ sessionId: "sess-child" }) ?? {};
+    expectRecordFields(
+      patch,
       {
         startedAt: Date.parse("2026-03-24T12:00:00Z"),
         endedAt: 222,

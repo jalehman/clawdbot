@@ -10,9 +10,9 @@ import { DEFAULT_SUBAGENT_ARCHIVE_AFTER_MINUTES } from "../config/agent-limits.j
 import { getRuntimeConfig } from "../config/config.js";
 import {
   loadSessionStore,
+  patchSessionEntryWithRowOptions,
   resolveAgentIdFromSessionKey,
   resolveStorePath,
-  updateSessionStore,
   type SessionEntry,
 } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -129,35 +129,37 @@ export async function persistSubagentSessionTiming(entry: SubagentRunRecord) {
       : getSubagentSessionRuntimeMs(entry);
   const status = resolveSubagentSessionStatus(entry);
 
-  await updateSessionStore(storePath, (store) => {
-    const sessionEntry = findSessionEntryByKey(store, childSessionKey);
-    if (!sessionEntry) {
-      return;
-    }
+  await patchSessionEntryWithRowOptions({
+    storePath,
+    sessionKey: childSessionKey,
+    preserveActivity: true,
+    update: () => {
+      const patch: Partial<SessionEntry> = {};
+      if (typeof startedAt === "number" && Number.isFinite(startedAt)) {
+        patch.startedAt = startedAt;
+      } else {
+        patch.startedAt = undefined;
+      }
 
-    if (typeof startedAt === "number" && Number.isFinite(startedAt)) {
-      sessionEntry.startedAt = startedAt;
-    } else {
-      delete sessionEntry.startedAt;
-    }
+      if (typeof endedAt === "number" && Number.isFinite(endedAt)) {
+        patch.endedAt = endedAt;
+      } else {
+        patch.endedAt = undefined;
+      }
 
-    if (typeof endedAt === "number" && Number.isFinite(endedAt)) {
-      sessionEntry.endedAt = endedAt;
-    } else {
-      delete sessionEntry.endedAt;
-    }
+      if (typeof runtimeMs === "number" && Number.isFinite(runtimeMs)) {
+        patch.runtimeMs = runtimeMs;
+      } else {
+        patch.runtimeMs = undefined;
+      }
 
-    if (typeof runtimeMs === "number" && Number.isFinite(runtimeMs)) {
-      sessionEntry.runtimeMs = runtimeMs;
-    } else {
-      delete sessionEntry.runtimeMs;
-    }
-
-    if (status) {
-      sessionEntry.status = status;
-    } else {
-      delete sessionEntry.status;
-    }
+      if (status) {
+        patch.status = status;
+      } else {
+        patch.status = undefined;
+      }
+      return patch;
+    },
   });
 }
 

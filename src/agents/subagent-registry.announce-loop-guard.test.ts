@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
     session: { store: "/tmp/test-store", mainKey: "main" },
     agents: {},
   })),
-  updateSessionStore: vi.fn(),
+  patchSessionEntryWithRowOptions: vi.fn(),
   callGateway: vi.fn().mockResolvedValue({ status: "ok" }),
   onAgentEventStop: vi.fn(),
   onAgentEvent: vi.fn(),
@@ -36,7 +36,7 @@ vi.mock("../config/sessions.js", () => ({
   },
   resolveMainSessionKey: () => "agent:main:main",
   resolveStorePath: () => "/tmp/test-store",
-  updateSessionStore: mocks.updateSessionStore,
+  patchSessionEntryWithRowOptions: mocks.patchSessionEntryWithRowOptions,
 }));
 
 vi.mock("../gateway/call.js", () => ({
@@ -113,7 +113,7 @@ describe("announce loop guard (#18264)", () => {
     mocks.runSubagentAnnounceFlow.mockResolvedValue(false);
     mocks.scheduleOrphanRecovery.mockClear();
     mocks.saveSubagentRegistryToSqlite.mockClear();
-    mocks.updateSessionStore.mockClear();
+    mocks.patchSessionEntryWithRowOptions.mockClear();
     registry.resetSubagentRegistryForTests({ persist: false });
     registry.testing.setDepsForTest({
       captureSubagentCompletionReply: mocks.captureSubagentCompletionReply,
