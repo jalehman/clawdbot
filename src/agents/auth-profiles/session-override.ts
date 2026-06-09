@@ -24,6 +24,31 @@ function loadSessionStoreRuntime() {
   return sessionStoreRuntimeLoader.load();
 }
 
+async function persistSessionAuthProfileOverridePatch(params: {
+  sessionEntry: SessionEntry;
+  sessionStore: Record<string, SessionEntry>;
+  sessionKey: string;
+  storePath?: string;
+  patch: Partial<SessionEntry>;
+}) {
+  params.sessionStore[params.sessionKey] = params.sessionEntry;
+  if (!params.storePath) {
+    return;
+  }
+  const persisted = await (
+    await loadSessionStoreRuntime()
+  ).patchSessionEntryWithRowOptions({
+    storePath: params.storePath,
+    sessionKey: params.sessionKey,
+    fallbackEntry: params.sessionEntry,
+    update: () => params.patch,
+    takeCacheOwnership: true,
+  });
+  if (persisted) {
+    params.sessionStore[params.sessionKey] = persisted;
+  }
+}
+
 // Current session overrides are only valid when the selected provider can use
 // that profile, including configured aws-sdk profiles without stored secrets.
 function isProfileForProvider(params: {
@@ -80,14 +105,18 @@ export async function clearSessionAuthProfileOverride(params: {
   delete sessionEntry.authProfileOverrideSource;
   delete sessionEntry.authProfileOverrideCompactionCount;
   sessionEntry.updatedAt = Date.now();
-  sessionStore[sessionKey] = sessionEntry;
-  if (storePath) {
-    await (
-      await loadSessionStoreRuntime()
-    ).updateSessionStore(storePath, (store) => {
-      store[sessionKey] = sessionEntry;
-    });
-  }
+  await persistSessionAuthProfileOverridePatch({
+    sessionEntry,
+    sessionStore,
+    sessionKey,
+    storePath,
+    patch: {
+      authProfileOverride: undefined,
+      authProfileOverrideSource: undefined,
+      authProfileOverrideCompactionCount: undefined,
+      updatedAt: sessionEntry.updatedAt,
+    },
+  });
 }
 
 /** Resolves and optionally rotates the session auth-profile override. */
@@ -233,14 +262,18 @@ export async function resolveSessionAuthProfileOverride(params: {
     sessionEntry.authProfileOverrideSource = "auto";
     sessionEntry.authProfileOverrideCompactionCount = compactionCount;
     sessionEntry.updatedAt = Date.now();
-    sessionStore[sessionKey] = sessionEntry;
-    if (storePath) {
-      await (
-        await loadSessionStoreRuntime()
-      ).updateSessionStore(storePath, (storeLocal) => {
-        storeLocal[sessionKey] = sessionEntry;
-      });
-    }
+    await persistSessionAuthProfileOverridePatch({
+      sessionEntry,
+      sessionStore,
+      sessionKey,
+      storePath,
+      patch: {
+        authProfileOverride: next,
+        authProfileOverrideSource: "auto",
+        authProfileOverrideCompactionCount: compactionCount,
+        updatedAt: sessionEntry.updatedAt,
+      },
+    });
   }
 
   return next;
