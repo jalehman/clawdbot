@@ -9,6 +9,7 @@ import {
   resolveStorePath,
   resolveSessionTranscriptsDirForAgent,
 } from "../config/sessions/paths.js";
+import { resolveSqliteSessionStoreDatabasePath } from "../config/sessions/store-sqlite.js";
 import {
   readSessionStoreForTest,
   writeSessionStoreForTest,
@@ -540,6 +541,33 @@ describe("doctor state integrity oauth dir checks", () => {
     );
     expect(text).not.toContain("--active");
     expect(text).not.toContain(" ls ");
+  });
+
+  it("does not create session databases during state integrity previews", async () => {
+    const cfg: OpenClawConfig = {};
+    const storePath = resolveStorePath(cfg.session?.store, { agentId: "main" });
+    const databasePath = resolveSqliteSessionStoreDatabasePath(storePath);
+
+    await runStateIntegrityText(cfg);
+
+    expect(fs.existsSync(databasePath)).toBe(false);
+  });
+
+  it("does not classify transcripts as orphaned when the session store read fails", async () => {
+    const cfg: OpenClawConfig = {};
+    setupSessionState(cfg, process.env, tempHome);
+    const storePath = resolveStorePath(cfg.session?.store, { agentId: "main" });
+    const databasePath = resolveSqliteSessionStoreDatabasePath(storePath);
+    fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+    fs.writeFileSync(databasePath, "not a sqlite database", "utf8");
+    const sessionsDir = resolveSessionTranscriptsDirForAgent("main", process.env, () => tempHome);
+    fs.writeFileSync(path.join(sessionsDir, "orphan-session.jsonl"), '{"type":"session"}\n');
+
+    const text = await runStateIntegrityText(cfg);
+
+    expect(text).toContain("Failed to read session store");
+    expect(text).toContain("Skipping session-store-dependent integrity checks");
+    expect(text).not.toContain("orphan transcript file");
   });
 
   it("moves a heartbeat-poisoned main session and clears stale TUI restore pointers", async () => {

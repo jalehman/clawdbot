@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveStorePath } from "../config/sessions/paths.js";
+import { resolveSqliteSessionStoreDatabasePath } from "../config/sessions/store-sqlite.js";
 import { writeSessionStoreForTest } from "../config/sessions/test-helpers.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { describeHeartbeatSessionTargetIssues } from "./doctor-heartbeat-session-target.js";
@@ -86,6 +87,17 @@ describe("describeHeartbeatSessionTargetIssues", () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain("resolved to agent:ops:slack:channel:c123");
     expect(warnings[0]).toContain('reason="no-target"');
+  });
+
+  it("does not create session databases while checking missing heartbeat sessions", () => {
+    const cfg = cfgWithSession("slack:channel:c123");
+    const storePath = resolveStorePath(cfg.session?.store, { agentId: "ops" });
+    const databasePath = resolveSqliteSessionStoreDatabasePath(storePath);
+
+    const warnings = describeHeartbeatSessionTargetIssues(cfg);
+
+    expect(warnings).toHaveLength(1);
+    expect(fs.existsSync(databasePath)).toBe(false);
   });
 
   it("does not warn when an explicit heartbeat recipient does not need session history", () => {

@@ -25,7 +25,7 @@ import {
   resolveSessionTranscriptsDirForAgent,
   resolveStorePath,
 } from "../config/sessions/paths.js";
-import { loadSessionStore } from "../config/sessions/store-load.js";
+import { readSessionStoreReadOnlyResult } from "../config/sessions/store-read.js";
 import { updateSessionStore } from "../config/sessions/store.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveRequiredHomeDir } from "../infra/home-dir.js";
@@ -861,7 +861,18 @@ export async function noteStateIntegrity(
   // Read-only diagnostic load: skip the cache and the defensive return clone so a
   // very large monolithic sessions.json is materialized once, not several times.
   // Re-cloning a multi-hundred-MB store here is what made `doctor` OOM (#56827).
-  const store = loadSessionStore(storePath, { skipCache: true, clone: false });
+  const storeRead = readSessionStoreReadOnlyResult(storePath, { clone: false });
+  const store = storeRead.store;
+  if (!storeRead.ok) {
+    warnings.push(
+      [
+        `- Failed to read session store ${shortenHomePath(absoluteStorePath)}: ${String(
+          storeRead.error,
+        )}`,
+        "  Skipping session-store-dependent integrity checks so valid transcript history is not treated as orphaned.",
+      ].join("\n"),
+    );
+  }
   const sessionPathOpts = resolveSessionFilePathOptions({ agentId, storePath });
   const entries = Object.entries(store).filter(([, entry]) => entry && typeof entry === "object");
   if (entries.length > 0) {
@@ -992,7 +1003,7 @@ export async function noteStateIntegrity(
     }
   }
 
-  if (existsDir(sessionsDir)) {
+  if (storeRead.ok && existsDir(sessionsDir)) {
     const referencedTranscriptPaths = new Set<string>();
     for (const [, entry] of entries) {
       if (!entry?.sessionId) {

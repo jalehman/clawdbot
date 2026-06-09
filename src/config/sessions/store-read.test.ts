@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { withTempDir } from "../../test-helpers/temp-dir.js";
-import { readSessionStoreReadOnly } from "./store-read.js";
+import { readSessionStoreReadOnly, readSessionStoreReadOnlyResult } from "./store-read.js";
 import { resolveSqliteSessionStoreDatabasePath } from "./store-sqlite.js";
 import { saveSessionStore } from "./store.js";
 
@@ -47,6 +47,10 @@ describe("readSessionStoreReadOnly", () => {
       fs.writeFileSync(databasePath, "not sqlite");
 
       expect(readSessionStoreReadOnly(storePath)).toStrictEqual({});
+      expect(readSessionStoreReadOnlyResult(storePath)).toMatchObject({
+        ok: false,
+        store: {},
+      });
 
       const sqlite = requireNodeSqlite();
       const database = new sqlite.DatabaseSync(databasePath, { readOnly: true });

@@ -3,7 +3,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { listAgentEntries, listAgentIds, resolveAgentConfig } from "../agents/agent-scope.js";
 import { canonicalizeMainSessionAlias } from "../config/sessions/main-session.js";
 import { resolveStorePath } from "../config/sessions/paths.js";
-import { loadSessionStore } from "../config/sessions/store-load.js";
+import { readSessionStoreReadOnly } from "../config/sessions/store-read.js";
 import type { AgentDefaultsConfig } from "../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveHeartbeatIntervalMs } from "../infra/heartbeat-summary.js";
@@ -121,7 +121,7 @@ export function describeHeartbeatSessionTargetIssues(cfg: OpenClawConfig): strin
     }
     const storeAgentId = resolvedAgentId;
     const storePath = resolveStorePath(cfg.session?.store, { agentId: storeAgentId });
-    const store = loadSessionStore(storePath, { skipCache: true, clone: false });
+    const store = readSessionStoreReadOnly(storePath, { clone: false });
     const entry = store[canonicalSession];
     if (entry) {
       continue;
