@@ -20,11 +20,13 @@ import { resolveAndPersistSessionFile } from "./session-file.js";
 import { readSessionStoreCache, writeSessionStoreCache } from "./store-cache.js";
 import {
   clearExistingSqliteSessionStore,
+  deleteSqliteSessionEntry,
   patchSqliteSessionEntry,
   resolveSqliteSessionStoreDatabasePath,
 } from "./store-sqlite.js";
 import {
   clearSessionStoreCacheForTest,
+  deleteSessionEntry,
   loadSessionStore,
   patchSessionEntry,
   patchSessionEntryWithRowOptions,
@@ -880,6 +882,62 @@ describe("session store writer queue", () => {
       sessionId: "s-fresh-row-replaced",
       displayName: "external",
     });
+  });
+
+  it("deletes SQLite session entries without replacing sibling rows", async () => {
+    const deletedKey = "agent:main:fresh-row-delete-entry";
+    const siblingKey = "agent:main:fresh-row-delete-sibling";
+    const { storePath } = await makeTmpStore({
+      [deletedKey]: {
+        sessionId: "s-fresh-row-delete-entry",
+        updatedAt: 10,
+      },
+      [siblingKey]: {
+        sessionId: "s-fresh-row-delete-sibling",
+        updatedAt: 10,
+        displayName: "before",
+      },
+    });
+
+    loadSessionStore(storePath);
+    patchSqliteSessionEntry({
+      storePath,
+      sessionKey: siblingKey,
+      fallbackEntry: {
+        sessionId: "s-fresh-row-delete-sibling",
+        updatedAt: 20,
+        displayName: "external",
+      },
+      patch: {
+        updatedAt: 20,
+        displayName: "external",
+      },
+    });
+
+    const deleted = await deleteSessionEntry({ storePath, sessionKey: deletedKey });
+
+    expect(deleted?.sessionId).toBe("s-fresh-row-delete-entry");
+    const store = loadSessionStore(storePath, { skipCache: true });
+    expect(store[deletedKey]).toBeUndefined();
+    expect(store[siblingKey]).toMatchObject({
+      sessionId: "s-fresh-row-delete-sibling",
+      displayName: "external",
+    });
+  });
+
+  it("does not create missing SQLite stores for missing session entry deletes", async () => {
+    const { dir } = await makeTmpStore();
+    const missingStorePath = path.join(dir, "missing", "sessions.json");
+    const missingDatabasePath = resolveSqliteSessionStoreDatabasePath(missingStorePath);
+
+    expect(deleteSqliteSessionEntry({ storePath: missingStorePath, sessionKey: "missing" })).toBe(
+      undefined,
+    );
+    await expect(
+      deleteSessionEntry({ storePath: missingStorePath, sessionKey: "missing" }),
+    ).resolves.toBeNull();
+
+    expect(fs.existsSync(missingDatabasePath)).toBe(false);
   });
 
   it("clears existing SQLite session stores without creating missing databases", async () => {

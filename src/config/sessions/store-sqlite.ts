@@ -262,6 +262,44 @@ export function patchSqliteSessionEntry(params: {
   return persisted;
 }
 
+export function deleteSqliteSessionEntry(params: {
+  storePath: string;
+  sessionKey: string;
+}): SessionEntry | undefined {
+  if (!fs.existsSync(resolveSqliteSessionStoreDatabasePath(params.storePath))) {
+    return undefined;
+  }
+  const databaseOptions = resolveSessionStoreDatabaseOptions(params.storePath);
+  let deleted: SessionEntry | undefined;
+  runOpenClawAgentWriteTransaction((database) => {
+    const db = getNodeSqliteKysely<SessionStoreDatabase>(database.db);
+    const row =
+      executeSqliteQueryTakeFirstSync(
+        database.db,
+        db
+          .selectFrom("cache_entries")
+          .select(["value_json"])
+          .where("scope", "=", SESSION_STORE_SCOPE)
+          .where("key", "=", params.sessionKey),
+      ) ?? null;
+    deleted = row ? parseSessionEntryValue(row.value_json) : undefined;
+    if (!deleted) {
+      return;
+    }
+    executeSqliteQuerySync(
+      database.db,
+      db
+        .deleteFrom("cache_entries")
+        .where("scope", "=", SESSION_STORE_SCOPE)
+        .where("key", "=", params.sessionKey),
+    );
+  }, databaseOptions);
+  if (deleted) {
+    openOpenClawAgentDatabase(databaseOptions).walMaintenance.checkpoint();
+  }
+  return deleted;
+}
+
 function preservePatchUpdatedAtActivity(
   entry: SessionEntry,
   current: SessionEntry | undefined,

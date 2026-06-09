@@ -48,7 +48,11 @@ import {
   type ResolvedSessionMaintenanceConfig,
   type SessionMaintenanceWarning,
 } from "./store-maintenance.js";
-import { patchSqliteSessionEntry, replaceSqliteSessionStore } from "./store-sqlite.js";
+import {
+  deleteSqliteSessionEntry,
+  patchSqliteSessionEntry,
+  replaceSqliteSessionStore,
+} from "./store-sqlite.js";
 import { runExclusiveSessionStoreWrite } from "./store-writer.js";
 import {
   mergeSessionEntry,
@@ -756,6 +760,29 @@ export async function upsertSessionEntry(
       persistenceMode: "replace",
       takeCacheOwnership: true,
     });
+  });
+}
+
+/** Deletes one session metadata row without replacing the whole SQLite-backed store. */
+export async function deleteSessionEntry(
+  params: SessionEntryWorkflowOptions & {
+    sessionKey: string;
+  },
+): Promise<SessionEntry | null> {
+  const storePath = resolveSessionWorkflowStorePath(params);
+  return await runExclusiveSessionStoreWrite(storePath, async () => {
+    const deleted = deleteSqliteSessionEntry({ storePath, sessionKey: params.sessionKey });
+    if (!deleted) {
+      invalidateSessionStoreCache(storePath);
+      return null;
+    }
+    const freshStore = loadSessionStore(storePath, { skipCache: true, clone: false });
+    updateSessionStoreWriteCache({
+      storePath,
+      store: freshStore,
+      takeOwnership: true,
+    });
+    return cloneSessionEntry(deleted);
   });
 }
 

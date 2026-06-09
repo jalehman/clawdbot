@@ -57,6 +57,8 @@ import {
   resolveSessionFilePathOptions,
   listConfiguredSessionStoreAgentIds,
   type SessionEntry,
+  deleteSessionEntry,
+  patchSessionEntry,
   updateSessionStore,
 } from "../../config/sessions.js";
 import { resolveAgentMainSessionKey } from "../../config/sessions/main-session.js";
@@ -1523,8 +1525,9 @@ export const sessionsHandlers: GatewayRequestHandlers = {
       agentId: targetAgentId,
     });
     if (!ensured.ok) {
-      await updateSessionStore(target.storePath, (store) => {
-        delete store[target.canonicalKey];
+      await deleteSessionEntry({
+        storePath: target.storePath,
+        sessionKey: target.canonicalKey,
       });
       respond(
         false,
@@ -1542,14 +1545,13 @@ export const sessionsHandlers: GatewayRequestHandlers = {
             sessionFile: ensured.transcriptPath,
           };
     if (createdEntry !== created.entry) {
-      await updateSessionStore(target.storePath, (store) => {
-        const existing = store[target.canonicalKey];
-        if (existing) {
-          store[target.canonicalKey] = {
-            ...existing,
-            sessionFile: ensured.transcriptPath,
-          };
-        }
+      await patchSessionEntry({
+        storePath: target.storePath,
+        sessionKey: target.canonicalKey,
+        preserveActivity: true,
+        update: () => ({
+          sessionFile: ensured.transcriptPath,
+        }),
       });
     }
 
