@@ -111,7 +111,9 @@ vi.mock("../../config/sessions.js", async () => {
       if (!patch) {
         return existing;
       }
-      const persisted = mergeEntry(store[params.sessionKey] ?? params.fallbackEntry, patch);
+      const persisted = JSON.parse(
+        JSON.stringify(mergeEntry(store[params.sessionKey] ?? params.fallbackEntry, patch)),
+      ) as SessionEntry;
       store[params.sessionKey] = persisted;
       await writeStore(params.storePath, store);
       return persisted;
@@ -1401,6 +1403,90 @@ describe("updateSessionStoreAfterAgentRun", () => {
       expect(sessionStore[sessionKey]?.cacheRead).toBeUndefined();
       expect(sessionStore[sessionKey]?.cacheWrite).toBeUndefined();
       expect(sessionStore[sessionKey]?.contextBudgetStatus).toBeUndefined();
+    });
+  });
+
+  it("clears stale persisted usage breakdown when compaction snapshot uses a stale session snapshot", async () => {
+    await withTempSessionStore(async ({ storePath }) => {
+      const cfg = {} as OpenClawConfig;
+      const sessionKey = "agent:main:explicit:test-stale-compaction-clear";
+      const sessionId = "test-stale-compaction-clear-session";
+      await writeSessionStoreSeed(storePath, {
+        [sessionKey]: {
+          sessionId,
+          updatedAt: 1,
+          totalTokens: 12_000,
+          totalTokensFresh: true,
+          inputTokens: 20,
+          outputTokens: 10_855,
+          cacheRead: 1_761_324,
+          cacheWrite: 33_047,
+          contextBudgetStatus: {
+            schemaVersion: 1,
+            source: "pre-prompt-estimate",
+            updatedAt: 1,
+            provider: "claude-cli",
+            model: "claude-opus-4-7",
+            route: "compact_only",
+            shouldCompact: true,
+            estimatedPromptTokens: 1_794_391,
+            contextTokenBudget: 1_048_576,
+            promptBudgetBeforeReserve: 1_044_480,
+            reserveTokens: 4_096,
+            effectiveReserveTokens: 4_096,
+            remainingPromptBudgetTokens: 0,
+            overflowTokens: 749_911,
+            toolResultReducibleChars: 0,
+            messageCount: 0,
+            unwindowedMessageCount: 0,
+          },
+        },
+      });
+      const staleInMemory: Record<string, SessionEntry> = {
+        [sessionKey]: {
+          sessionId,
+          updatedAt: 1,
+        },
+      };
+
+      await updateSessionStoreAfterAgentRun({
+        cfg,
+        sessionId,
+        sessionKey,
+        storePath,
+        sessionStore: staleInMemory,
+        defaultProvider: "minimax",
+        defaultModel: "MiniMax-M2.7",
+        result: {
+          meta: {
+            durationMs: 500,
+            agentMeta: {
+              sessionId,
+              provider: "minimax",
+              model: "MiniMax-M2.7",
+              compactionCount: 1,
+              compactionTokensAfter: 0,
+            },
+          },
+        } as EmbeddedAgentRunResult,
+      });
+
+      expect(staleInMemory[sessionKey]?.totalTokens).toBe(0);
+      expect(staleInMemory[sessionKey]?.totalTokensFresh).toBe(true);
+      expect(staleInMemory[sessionKey]?.inputTokens).toBeUndefined();
+      expect(staleInMemory[sessionKey]?.outputTokens).toBeUndefined();
+      expect(staleInMemory[sessionKey]?.cacheRead).toBeUndefined();
+      expect(staleInMemory[sessionKey]?.cacheWrite).toBeUndefined();
+      expect(staleInMemory[sessionKey]?.contextBudgetStatus).toBeUndefined();
+
+      const persisted = loadSessionStore(storePath, { skipCache: true })[sessionKey];
+      expect(persisted?.totalTokens).toBe(0);
+      expect(persisted?.totalTokensFresh).toBe(true);
+      expect(persisted?.inputTokens).toBeUndefined();
+      expect(persisted?.outputTokens).toBeUndefined();
+      expect(persisted?.cacheRead).toBeUndefined();
+      expect(persisted?.cacheWrite).toBeUndefined();
+      expect(persisted?.contextBudgetStatus).toBeUndefined();
     });
   });
 

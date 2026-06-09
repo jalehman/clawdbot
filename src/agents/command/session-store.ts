@@ -47,11 +47,22 @@ function resolvePositiveInteger(value: number | undefined): number | undefined {
 }
 
 const TRANSIENT_LIFECYCLE_SESSION_FIELDS = new Set(["status", "startedAt", "endedAt", "runtimeMs"]);
+const COMPACTION_USAGE_CLEAR_PATCH = {
+  inputTokens: undefined,
+  outputTokens: undefined,
+  cacheRead: undefined,
+  cacheWrite: undefined,
+  contextBudgetStatus: undefined,
+} satisfies Partial<SessionEntry>;
 
 function deriveRunMetadataPatch(previous: SessionEntry, next: SessionEntry): Partial<SessionEntry> {
   return deriveSessionEntryPatch(previous, next, {
     excludeFields: TRANSIENT_LIFECYCLE_SESSION_FIELDS as Set<keyof SessionEntry>,
   });
+}
+
+function includeCompactionUsageClears(patch: Partial<SessionEntry>): void {
+  Object.assign(patch, COMPACTION_USAGE_CLEAR_PATCH);
 }
 
 /** Applies run result metadata, usage, and CLI bindings to a session entry. */
@@ -108,6 +119,7 @@ export async function updateSessionStoreAfterAgentRun(params: {
   const activeSessionFile = normalizeOptionalString(result.meta.agentMeta?.sessionFile);
   const runtimeContextTokens = resolvePositiveInteger(result.meta.agentMeta?.contextTokens);
   const contextBudgetStatus = result.meta.agentMeta?.contextBudgetStatus;
+  let clearsUsageBreakdownForCompaction = false;
   const contextTokens =
     runtimeContextTokens !== undefined
       ? runtimeContextTokens
@@ -241,6 +253,7 @@ export async function updateSessionStoreAfterAgentRun(params: {
       typeof totalTokens === "number" && Number.isFinite(totalTokens) && totalTokens > 0;
     const useCompactionSnapshot = compactionTokensAfter !== undefined && !hasUsageTotalTokens;
     if (useCompactionSnapshot) {
+      clearsUsageBreakdownForCompaction = true;
       next.totalTokens = compactionTokensAfter;
       next.totalTokensFresh = true;
       next.inputTokens = undefined;
@@ -266,6 +279,7 @@ export async function updateSessionStoreAfterAgentRun(params: {
       next.estimatedCostUsd = runEstimatedCostUsd;
     }
   } else if (compactionTokensAfter !== undefined && !preserveUserFacingRunState) {
+    clearsUsageBreakdownForCompaction = true;
     next.totalTokens = compactionTokensAfter;
     next.totalTokensFresh = true;
     next.inputTokens = undefined;
@@ -291,6 +305,9 @@ export async function updateSessionStoreAfterAgentRun(params: {
         ...(touchInteraction ? { lastInteractionAt: next.lastInteractionAt } : {}),
       }
     : deriveRunMetadataPatch(entry, next);
+  if (clearsUsageBreakdownForCompaction) {
+    includeCompactionUsageClears(metadataPatch);
+  }
   const maintenanceConfig = resolveMaintenanceConfigFromInput(cfg.session?.maintenance);
   const persisted = await patchSessionEntryWithRowOptions({
     storePath,
