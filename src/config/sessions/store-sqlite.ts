@@ -188,6 +188,7 @@ export function replaceSqliteSessionStore(
 export type PatchSqliteSessionEntryMode =
   | "merge"
   | "preserve-activity"
+  | "force-patch-activity"
   | "preserve-patch-activity"
   | "replace";
 
@@ -228,6 +229,8 @@ export function patchSqliteSessionEntry(params: {
           : params.fallbackEntry;
     if (params.mode === "preserve-patch-activity") {
       preservePatchUpdatedAtActivity(persisted, current, params.patch);
+    } else if (params.mode === "force-patch-activity") {
+      forcePatchUpdatedAtActivity(persisted, params.patch);
     }
     deleteUntouchedSessionEntryFields(persisted, params.patch, params.deleteFields);
     const valueJson = JSON.stringify(persisted);
@@ -311,6 +314,13 @@ function preservePatchUpdatedAtActivity(
   }
   const currentUpdatedAt = normalizePatchActivityUpdatedAt(current?.updatedAt);
   entry.updatedAt = Math.max(currentUpdatedAt ?? 0, patchUpdatedAt);
+}
+
+function forcePatchUpdatedAtActivity(entry: SessionEntry, patch: Partial<SessionEntry>): void {
+  const patchUpdatedAt = normalizePatchActivityUpdatedAt(patch.updatedAt);
+  if (patchUpdatedAt !== undefined) {
+    entry.updatedAt = patchUpdatedAt;
+  }
 }
 
 function normalizePatchActivityUpdatedAt(value: number | undefined): number | undefined {

@@ -617,7 +617,12 @@ async function persistResolvedSessionEntry(params: {
   resolved: ReturnType<typeof resolveSessionStoreEntry>;
   next: SessionEntry;
   patch?: Partial<SessionEntry>;
-  persistenceMode?: "merge" | "preserve-activity" | "preserve-patch-activity" | "replace";
+  persistenceMode?:
+    | "merge"
+    | "preserve-activity"
+    | "force-patch-activity"
+    | "preserve-patch-activity"
+    | "replace";
   deleteFields?: readonly string[];
   skipMaintenance?: boolean;
   shouldPersist?: (entry: SessionEntry | undefined) => boolean;
@@ -626,6 +631,7 @@ async function persistResolvedSessionEntry(params: {
 }): Promise<SessionEntry | null> {
   const requiresFreshRowOperation =
     params.shouldPersist !== undefined ||
+    params.persistenceMode === "force-patch-activity" ||
     params.persistenceMode === "preserve-patch-activity" ||
     (params.deleteFields?.length ?? 0) > 0;
   const entryUnchanged =
@@ -730,6 +736,7 @@ export async function patchSessionEntry(
   params: SessionEntryWorkflowOptions & {
     sessionKey: string;
     fallbackEntry?: SessionEntry;
+    forcePatchActivity?: boolean;
     preserveActivity?: boolean;
     replaceEntry?: boolean;
     update: (
@@ -951,6 +958,7 @@ export async function patchSessionEntryWithRowOptions(
     sessionKey: string;
     fallbackEntry?: SessionEntry;
     deleteFields?: readonly string[];
+    forcePatchActivity?: boolean;
     preserveActivity?: boolean;
     preservePatchActivity?: boolean;
     replaceEntry?: boolean;
@@ -979,6 +987,9 @@ export async function patchSessionEntryWithRowOptions(
       : params.preserveActivity
         ? mergeSessionEntryPreserveActivity(existing, patch)
         : mergeSessionEntry(existing, patch);
+    if (params.forcePatchActivity) {
+      forcePatchUpdatedAtActivity(next, patch);
+    }
     if (params.preservePatchActivity) {
       preservePatchUpdatedAtActivity(next, resolved.existing, patch);
     }
@@ -993,9 +1004,11 @@ export async function patchSessionEntryWithRowOptions(
         ? "replace"
         : params.preserveActivity
           ? "preserve-activity"
-          : params.preservePatchActivity
-            ? "preserve-patch-activity"
-            : "merge",
+          : params.forcePatchActivity
+            ? "force-patch-activity"
+            : params.preservePatchActivity
+              ? "preserve-patch-activity"
+              : "merge",
       deleteFields: params.deleteFields,
       skipMaintenance: params.skipMaintenance,
       shouldPersist: params.shouldPersist,
@@ -1018,6 +1031,13 @@ function preservePatchUpdatedAtActivity(
   entry.updatedAt = Math.max(currentUpdatedAt ?? 0, patchUpdatedAt);
 }
 
+function forcePatchUpdatedAtActivity(entry: SessionEntry, patch: Partial<SessionEntry>): void {
+  const patchUpdatedAt = normalizePatchActivityUpdatedAt(patch.updatedAt);
+  if (patchUpdatedAt !== undefined) {
+    entry.updatedAt = patchUpdatedAt;
+  }
+}
+
 function normalizePatchActivityUpdatedAt(value: number | undefined): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
@@ -1037,6 +1057,7 @@ function deleteUntouchedSessionEntryFields(
 type SingleEntryPersistenceMode =
   | "merge"
   | "preserve-activity"
+  | "force-patch-activity"
   | "preserve-patch-activity"
   | "replace";
 

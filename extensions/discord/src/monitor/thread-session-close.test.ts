@@ -2,9 +2,10 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const hoisted = vi.hoisted(() => {
-  const updateSessionStore = vi.fn();
+  const listSessionEntries = vi.fn();
+  const patchSessionEntry = vi.fn();
   const resolveStorePath = vi.fn(() => "/tmp/openclaw-sessions.json");
-  return { updateSessionStore, resolveStorePath };
+  return { listSessionEntries, patchSessionEntry, resolveStorePath };
 });
 
 vi.mock("openclaw/plugin-sdk/session-store-runtime", async () => {
@@ -13,7 +14,8 @@ vi.mock("openclaw/plugin-sdk/session-store-runtime", async () => {
   );
   return {
     ...actual,
-    updateSessionStore: hoisted.updateSessionStore,
+    listSessionEntries: hoisted.listSessionEntries,
+    patchSessionEntry: hoisted.patchSessionEntry,
     resolveStorePath: hoisted.resolveStorePath,
   };
 });
@@ -21,8 +23,25 @@ vi.mock("openclaw/plugin-sdk/session-store-runtime", async () => {
 let closeDiscordThreadSessions: typeof import("./thread-session-close.js").closeDiscordThreadSessions;
 
 function setupStore(store: Record<string, { updatedAt: number }>) {
-  hoisted.updateSessionStore.mockImplementation(
-    async (_storePath: string, mutator: (s: typeof store) => unknown) => mutator(store),
+  hoisted.listSessionEntries.mockImplementation(() =>
+    Object.entries(store).map(([sessionKey, entry]) => ({ sessionKey, entry })),
+  );
+  hoisted.patchSessionEntry.mockImplementation(
+    async (params: {
+      sessionKey: string;
+      update: (entry: { updatedAt: number }) => Partial<{ updatedAt: number }> | null;
+    }) => {
+      const current = store[params.sessionKey];
+      if (!current) {
+        return null;
+      }
+      const patch = params.update(current);
+      if (!patch) {
+        return current;
+      }
+      store[params.sessionKey] = { ...current, ...patch };
+      return store[params.sessionKey];
+    },
   );
 }
 
@@ -38,7 +57,8 @@ describe("closeDiscordThreadSessions", () => {
   });
 
   beforeEach(() => {
-    hoisted.updateSessionStore.mockClear();
+    hoisted.listSessionEntries.mockClear();
+    hoisted.patchSessionEntry.mockClear();
     hoisted.resolveStorePath.mockClear();
     hoisted.resolveStorePath.mockReturnValue("/tmp/openclaw-sessions.json");
   });
@@ -143,7 +163,8 @@ describe("closeDiscordThreadSessions", () => {
     });
 
     expect(count).toBe(0);
-    expect(hoisted.updateSessionStore).not.toHaveBeenCalled();
+    expect(hoisted.listSessionEntries).not.toHaveBeenCalled();
+    expect(hoisted.patchSessionEntry).not.toHaveBeenCalled();
   });
 
   it("does not recount sessions that were already reset", async () => {

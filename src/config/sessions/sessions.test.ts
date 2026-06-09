@@ -884,6 +884,53 @@ describe("session store writer queue", () => {
     });
   });
 
+  it("forces patch activity timestamps against the fresh SQLite transaction row", async () => {
+    const key = "agent:main:fresh-row-force-activity";
+    const { storePath } = await makeTmpStore({
+      [key]: {
+        sessionId: "s-fresh-row-force-activity",
+        updatedAt: 100,
+        displayName: "before",
+      },
+    });
+
+    const persisted = await patchSessionEntryWithRowOptions({
+      storePath,
+      sessionKey: key,
+      forcePatchActivity: true,
+      update: () => {
+        patchSqliteSessionEntry({
+          storePath,
+          sessionKey: key,
+          fallbackEntry: {
+            sessionId: "s-fresh-row-force-activity",
+            updatedAt: 200,
+            displayName: "external",
+            model: "gpt-5.4",
+          },
+          patch: {
+            updatedAt: 200,
+            displayName: "external",
+            model: "gpt-5.4",
+          },
+        });
+        return { updatedAt: 0 };
+      },
+    });
+
+    expect(persisted).toMatchObject({
+      sessionId: "s-fresh-row-force-activity",
+      updatedAt: 0,
+      displayName: "external",
+      model: "gpt-5.4",
+    });
+    expect(loadSessionStore(storePath, { skipCache: true })[key]).toMatchObject({
+      updatedAt: 0,
+      displayName: "external",
+      model: "gpt-5.4",
+    });
+  });
+
   it("deletes SQLite session entries without replacing sibling rows", async () => {
     const deletedKey = "agent:main:fresh-row-delete-entry";
     const siblingKey = "agent:main:fresh-row-delete-sibling";
