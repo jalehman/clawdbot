@@ -1,6 +1,6 @@
 // Shared session-store helpers for command handlers that mutate sessions.
 import type { SessionEntry } from "../../config/sessions.js";
-import { updateSessionStore } from "../../config/sessions.js";
+import { patchSessionEntryWithRowOptions } from "../../config/sessions.js";
 import { applyAbortCutoffToSessionEntry, type AbortCutoff } from "./abort-cutoff.js";
 import type { CommandHandler } from "./commands-types.js";
 
@@ -18,18 +18,16 @@ export async function persistSessionEntry(params: CommandParams): Promise<boolea
     // Slash commands mutate one known session entry; skipping global session
     // maintenance avoids scanning the whole sessions directory for simple
     // command-only writes.
-    await updateSessionStore(
-      params.storePath,
-      (store) => {
-        store[sessionKey] = sessionEntry;
-        return sessionEntry;
-      },
-      {
-        resolveSingleEntryPersistence: (entry) =>
-          entry ? { sessionKey, entry, patch: sessionEntry } : null,
-        skipMaintenance: true,
-      },
-    );
+    const persisted = await patchSessionEntryWithRowOptions({
+      storePath: params.storePath,
+      sessionKey,
+      fallbackEntry: sessionEntry,
+      update: () => sessionEntry,
+      skipMaintenance: true,
+    });
+    if (persisted) {
+      params.sessionStore[sessionKey] = persisted;
+    }
   }
   return true;
 }
@@ -58,24 +56,15 @@ export async function persistAbortTargetEntry(params: {
       abortCutoffTimestamp: abortCutoff?.timestamp,
       updatedAt: entry.updatedAt,
     };
-    await updateSessionStore(
+    const persisted = await patchSessionEntryWithRowOptions({
       storePath,
-      (store) => {
-        const nextEntry = store[key] ?? entry;
-        if (!nextEntry) {
-          return undefined;
-        }
-        nextEntry.abortedLastRun = true;
-        applyAbortCutoffToSessionEntry(nextEntry, abortCutoff);
-        nextEntry.updatedAt = Date.now();
-        store[key] = nextEntry;
-        return nextEntry;
-      },
-      {
-        resolveSingleEntryPersistence: (updated) =>
-          updated ? { sessionKey: key, entry: updated, patch } : null,
-      },
-    );
+      sessionKey: key,
+      fallbackEntry: entry,
+      update: () => patch,
+    });
+    if (persisted) {
+      sessionStore[key] = persisted;
+    }
   }
 
   return true;
