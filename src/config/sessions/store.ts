@@ -174,8 +174,10 @@ type UpdateSessionStoreOptions<T> = SaveSessionStoreOptions & {
 type SingleEntryPersistencePatch = {
   sessionKey: string;
   entry: SessionEntry;
-  patch: Partial<SessionEntry>;
-  mode?: "merge" | "preserve-activity" | "replace";
+  patch?: Partial<SessionEntry>;
+  mode?: SingleEntryPersistenceMode;
+  deleteFields?: readonly string[];
+  shouldPersist?: SingleEntryPersistencePredicate;
 };
 
 type SessionEntryWorkflowOptions = {
@@ -478,21 +480,32 @@ async function saveSessionStoreUnlocked(
   }
 
   if (opts?.singleEntryPersistence && !maintenanceChangedStore) {
+    const singleEntryPatch = opts.singleEntryPersistence.patch ?? opts.singleEntryPersistence.entry;
     const persisted = patchSqliteSessionEntry({
       storePath,
       sessionKey: opts.singleEntryPersistence.sessionKey,
       fallbackEntry: opts.singleEntryPersistence.entry,
-      patch: opts.singleEntryPersistence.patch,
+      patch: singleEntryPatch,
       mode: opts.singleEntryPersistence.mode,
+      deleteFields: opts.singleEntryPersistence.deleteFields,
+      shouldPersist: opts.singleEntryPersistence.shouldPersist,
     });
-    store[opts.singleEntryPersistence.sessionKey] = persisted;
+    if (persisted) {
+      store[opts.singleEntryPersistence.sessionKey] = persisted;
+    } else {
+      delete store[opts.singleEntryPersistence.sessionKey];
+    }
     const freshStore = loadSessionStore(storePath, { skipCache: true, clone: false });
     const cacheStore = reconcileFreshSessionStoreForCache({
       writerStore: store,
       freshStore,
     });
-    store[opts.singleEntryPersistence.sessionKey] =
-      cacheStore[opts.singleEntryPersistence.sessionKey] ?? persisted;
+    const cacheEntry = cacheStore[opts.singleEntryPersistence.sessionKey];
+    if (cacheEntry) {
+      store[opts.singleEntryPersistence.sessionKey] = cacheEntry;
+    } else {
+      delete store[opts.singleEntryPersistence.sessionKey];
+    }
     updateSessionStoreWriteCache({
       storePath,
       store: cacheStore,
@@ -600,12 +613,19 @@ async function persistResolvedSessionEntry(params: {
   resolved: ReturnType<typeof resolveSessionStoreEntry>;
   next: SessionEntry;
   patch?: Partial<SessionEntry>;
-  persistenceMode?: "merge" | "preserve-activity" | "replace";
+  persistenceMode?: "merge" | "preserve-activity" | "preserve-patch-activity" | "replace";
+  deleteFields?: readonly string[];
   skipMaintenance?: boolean;
+  shouldPersist?: (entry: SessionEntry | undefined) => boolean;
   takeCacheOwnership?: boolean;
   returnDetached?: boolean;
-}): Promise<SessionEntry> {
+}): Promise<SessionEntry | null> {
+  const requiresFreshRowOperation =
+    params.shouldPersist !== undefined ||
+    params.persistenceMode === "preserve-patch-activity" ||
+    (params.deleteFields?.length ?? 0) > 0;
   const entryUnchanged =
+    !requiresFreshRowOperation &&
     params.resolved.legacyKeys.length === 0 &&
     sessionEntriesHaveSameSerializedForm(params.resolved.existing, params.next);
   const next = params.takeCacheOwnership ? cloneSessionEntry(params.next) : params.next;
@@ -618,17 +638,23 @@ async function persistResolvedSessionEntry(params: {
     skipMaintenance: params.skipMaintenance,
     skipSerializeForUnchangedStore: entryUnchanged,
     singleEntryPersistence:
-      params.resolved.legacyKeys.length === 0 && params.resolved.existing
+      params.resolved.legacyKeys.length === 0 &&
+      (params.resolved.existing || requiresFreshRowOperation)
         ? {
             sessionKey: params.resolved.normalizedKey,
             entry: next,
             patch: params.patch ?? next,
             mode: params.persistenceMode,
+            deleteFields: params.deleteFields,
+            shouldPersist: params.shouldPersist,
           }
         : undefined,
     takeCacheOwnership: params.takeCacheOwnership,
   });
-  const persisted = params.store[params.resolved.normalizedKey] ?? next;
+  const persisted = params.store[params.resolved.normalizedKey] ?? null;
+  if (!persisted) {
+    return null;
+  }
   return entryUnchanged || params.returnDetached ? cloneSessionEntry(persisted) : persisted;
 }
 
@@ -707,38 +733,7 @@ export async function patchSessionEntry(
     ) => Promise<Partial<SessionEntry> | null> | Partial<SessionEntry> | null;
   },
 ): Promise<SessionEntry | null> {
-  const storePath = resolveSessionWorkflowStorePath(params);
-  return await runExclusiveSessionStoreWrite(storePath, async () => {
-    const store = loadMutableSessionStoreForWriter(storePath);
-    const resolved = resolveSessionStoreEntry({ store, sessionKey: params.sessionKey });
-    const existing = resolved.existing ?? params.fallbackEntry;
-    if (!existing) {
-      return null;
-    }
-    const patch = await params.update(cloneSessionEntry(existing));
-    if (!patch) {
-      return existing;
-    }
-    const next = params.replaceEntry
-      ? cloneSessionEntry(patch as SessionEntry)
-      : params.preserveActivity
-        ? mergeSessionEntryPreserveActivity(existing, patch)
-        : mergeSessionEntry(existing, patch);
-    return await persistResolvedSessionEntry({
-      storePath,
-      store,
-      resolved,
-      next,
-      patch,
-      persistenceMode: params.replaceEntry
-        ? "replace"
-        : params.preserveActivity
-          ? "preserve-activity"
-          : "merge",
-      takeCacheOwnership: true,
-      returnDetached: true,
-    });
-  });
+  return await patchSessionEntryWithRowOptions(params);
 }
 
 export async function upsertSessionEntry(
@@ -923,3 +918,96 @@ export async function updateLastRoute(params: {
     });
   });
 }
+
+export async function patchSessionEntryWithRowOptions(
+  params: SessionEntryWorkflowOptions & {
+    sessionKey: string;
+    fallbackEntry?: SessionEntry;
+    deleteFields?: readonly string[];
+    preserveActivity?: boolean;
+    preservePatchActivity?: boolean;
+    replaceEntry?: boolean;
+    shouldPersist?: (entry: SessionEntry | undefined) => boolean;
+    update: (
+      entry: SessionEntry,
+    ) => Promise<Partial<SessionEntry> | null> | Partial<SessionEntry> | null;
+  },
+): Promise<SessionEntry | null> {
+  const storePath = resolveSessionWorkflowStorePath(params);
+  return await runExclusiveSessionStoreWrite(storePath, async () => {
+    const store = loadMutableSessionStoreForWriter(storePath);
+    const resolved = resolveSessionStoreEntry({ store, sessionKey: params.sessionKey });
+    const existing = resolved.existing ?? params.fallbackEntry;
+    if (!existing) {
+      return null;
+    }
+    const patch = await params.update(cloneSessionEntry(existing));
+    if (!patch) {
+      return existing;
+    }
+    const next = params.replaceEntry
+      ? cloneSessionEntry(patch as SessionEntry)
+      : params.preserveActivity
+        ? mergeSessionEntryPreserveActivity(existing, patch)
+        : mergeSessionEntry(existing, patch);
+    if (params.preservePatchActivity) {
+      preservePatchUpdatedAtActivity(next, resolved.existing, patch);
+    }
+    deleteUntouchedSessionEntryFields(next, patch, params.deleteFields);
+    return await persistResolvedSessionEntry({
+      storePath,
+      store,
+      resolved,
+      next,
+      patch,
+      persistenceMode: params.replaceEntry
+        ? "replace"
+        : params.preserveActivity
+          ? "preserve-activity"
+          : params.preservePatchActivity
+            ? "preserve-patch-activity"
+            : "merge",
+      deleteFields: params.deleteFields,
+      shouldPersist: params.shouldPersist,
+      takeCacheOwnership: true,
+      returnDetached: true,
+    });
+  });
+}
+
+function preservePatchUpdatedAtActivity(
+  entry: SessionEntry,
+  current: SessionEntry | undefined,
+  patch: Partial<SessionEntry>,
+): void {
+  const patchUpdatedAt = normalizePatchActivityUpdatedAt(patch.updatedAt);
+  if (patchUpdatedAt === undefined) {
+    return;
+  }
+  const currentUpdatedAt = normalizePatchActivityUpdatedAt(current?.updatedAt);
+  entry.updatedAt = Math.max(currentUpdatedAt ?? 0, patchUpdatedAt);
+}
+
+function normalizePatchActivityUpdatedAt(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function deleteUntouchedSessionEntryFields(
+  entry: SessionEntry,
+  patch: Partial<SessionEntry>,
+  fields: readonly string[] | undefined,
+): void {
+  for (const field of fields ?? []) {
+    if (!Object.hasOwn(patch, field)) {
+      Reflect.deleteProperty(entry, field);
+    }
+  }
+}
+
+type SingleEntryPersistenceMode =
+  | "merge"
+  | "preserve-activity"
+  | "preserve-patch-activity"
+  | "replace";
+
+type SingleEntryPersistencePredicate = (entry: SessionEntry | undefined) => boolean;

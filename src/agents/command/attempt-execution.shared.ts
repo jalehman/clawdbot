@@ -2,8 +2,8 @@
  * Shared session persistence and prompt-body helpers for agent attempt
  * execution paths.
  */
-import { updateSessionStore } from "../../config/sessions/store.js";
-import { mergeSessionEntry, type SessionEntry } from "../../config/sessions/types.js";
+import { patchSessionEntryWithRowOptions } from "../../config/sessions/store.js";
+import type { SessionEntry } from "../../config/sessions/types.js";
 import {
   formatAgentInternalEventsForPlainPrompt,
   formatAgentInternalEventsForPrompt,
@@ -26,53 +26,24 @@ export type PersistSessionEntryParams = {
 };
 
 /** Persists one session entry while keeping the caller's in-memory store aligned. */
-
-function normalizeTranscriptMarkerUpdatedAt(value: number | undefined): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
-}
-
 export async function persistSessionEntry(
   params: PersistSessionEntryParams,
 ): Promise<SessionEntry | undefined> {
-  const persisted = await updateSessionStore(
-    params.storePath,
-    (store) => {
-      const current = store[params.sessionKey];
-      if (params.shouldPersist && !params.shouldPersist(current)) {
-        return current;
-      }
-      const merged = mergeSessionEntry(store[params.sessionKey], params.entry);
-      if (params.preserveTranscriptMarkerUpdatedAt) {
-        const currentUpdatedAt = normalizeTranscriptMarkerUpdatedAt(current?.updatedAt);
-        const markerUpdatedAt = normalizeTranscriptMarkerUpdatedAt(params.entry.updatedAt);
-        if (markerUpdatedAt !== undefined) {
-          merged.updatedAt = Math.max(currentUpdatedAt ?? 0, markerUpdatedAt);
-        }
-      }
-      for (const field of params.clearedFields ?? []) {
-        // Cleared fields only apply when the replacement entry did not set the
-        // field again; this preserves explicit false/null updates.
-        if (!Object.hasOwn(params.entry, field)) {
-          Reflect.deleteProperty(merged, field);
-        }
-      }
-      store[params.sessionKey] = merged;
-      return merged;
-    },
-    {
-      resolveSingleEntryPersistence: (entry) =>
-        entry && !params.shouldPersist && (params.clearedFields?.length ?? 0) === 0
-          ? { sessionKey: params.sessionKey, entry, patch: params.entry }
-          : null,
-      takeCacheOwnership: true,
-    },
-  );
+  const persisted = await patchSessionEntryWithRowOptions({
+    storePath: params.storePath,
+    sessionKey: params.sessionKey,
+    fallbackEntry: params.entry,
+    deleteFields: params.clearedFields,
+    preservePatchActivity: params.preserveTranscriptMarkerUpdatedAt,
+    shouldPersist: params.shouldPersist,
+    update: () => params.entry,
+  });
   if (persisted) {
     params.sessionStore[params.sessionKey] = persisted;
   } else {
     delete params.sessionStore[params.sessionKey];
   }
-  return persisted;
+  return persisted ?? undefined;
 }
 
 /** Prepends hidden internal event context unless the body already carries it. */

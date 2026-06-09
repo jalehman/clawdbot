@@ -20,11 +20,14 @@ import { resolveAndPersistSessionFile } from "./session-file.js";
 import { readSessionStoreCache, writeSessionStoreCache } from "./store-cache.js";
 import {
   clearExistingSqliteSessionStore,
+  patchSqliteSessionEntry,
   resolveSqliteSessionStoreDatabasePath,
 } from "./store-sqlite.js";
 import {
   clearSessionStoreCacheForTest,
   loadSessionStore,
+  patchSessionEntry,
+  patchSessionEntryWithRowOptions,
   readSessionUpdatedAt,
   saveSessionStore,
   updateSessionStore,
@@ -739,6 +742,144 @@ describe("session store writer queue", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("patches SQLite session entries against the fresh transaction row", async () => {
+    const key = "agent:main:fresh-row-patch";
+    const { storePath } = await makeTmpStore({
+      [key]: {
+        sessionId: "s-fresh-row-patch",
+        updatedAt: 10,
+        displayName: "before",
+        model: "old",
+      },
+    });
+
+    const persisted = await patchSessionEntryWithRowOptions({
+      storePath,
+      sessionKey: key,
+      update: () => {
+        patchSqliteSessionEntry({
+          storePath,
+          sessionKey: key,
+          fallbackEntry: {
+            sessionId: "s-fresh-row-patch",
+            updatedAt: 20,
+            displayName: "external",
+            model: "old",
+            groupActivation: "always",
+          },
+          patch: {
+            updatedAt: 20,
+            displayName: "external",
+            groupActivation: "always",
+          },
+        });
+        return { updatedAt: 30, model: "new" };
+      },
+    });
+
+    expect(persisted).toMatchObject({
+      sessionId: "s-fresh-row-patch",
+      displayName: "external",
+      model: "new",
+      groupActivation: "always",
+    });
+    expect(loadSessionStore(storePath, { skipCache: true })[key]).toMatchObject({
+      displayName: "external",
+      model: "new",
+      groupActivation: "always",
+    });
+  });
+
+  it("deletes fields from the fresh SQLite transaction row", async () => {
+    const key = "agent:main:fresh-row-delete";
+    const { storePath } = await makeTmpStore({
+      [key]: {
+        sessionId: "s-fresh-row-delete",
+        updatedAt: 10,
+        abortCutoffMessageSid: "old-abort",
+        displayName: "before",
+      },
+    });
+
+    const persisted = await patchSessionEntryWithRowOptions({
+      storePath,
+      sessionKey: key,
+      deleteFields: ["abortCutoffMessageSid"],
+      update: () => {
+        patchSqliteSessionEntry({
+          storePath,
+          sessionKey: key,
+          fallbackEntry: {
+            sessionId: "s-fresh-row-delete",
+            updatedAt: 20,
+            abortCutoffMessageSid: "external-abort",
+            displayName: "external",
+          },
+          patch: {
+            updatedAt: 20,
+            abortCutoffMessageSid: "external-abort",
+            displayName: "external",
+          },
+        });
+        return { updatedAt: 30, model: "new" };
+      },
+    });
+
+    expect(persisted).toMatchObject({
+      sessionId: "s-fresh-row-delete",
+      displayName: "external",
+      model: "new",
+    });
+    expect(persisted).not.toHaveProperty("abortCutoffMessageSid");
+    expect(loadSessionStore(storePath, { skipCache: true })[key]).not.toHaveProperty(
+      "abortCutoffMessageSid",
+    );
+  });
+
+  it("skips conditional SQLite patches against the fresh transaction row", async () => {
+    const key = "agent:main:fresh-row-predicate";
+    const { storePath } = await makeTmpStore({
+      [key]: {
+        sessionId: "s-fresh-row-predicate",
+        updatedAt: 10,
+        displayName: "before",
+      },
+    });
+
+    const persisted = await patchSessionEntryWithRowOptions({
+      storePath,
+      sessionKey: key,
+      shouldPersist: (entry) => entry?.sessionId === "s-fresh-row-predicate",
+      update: () => {
+        patchSqliteSessionEntry({
+          storePath,
+          sessionKey: key,
+          fallbackEntry: {
+            sessionId: "s-fresh-row-replaced",
+            updatedAt: 20,
+            displayName: "external",
+          },
+          patch: {
+            sessionId: "s-fresh-row-replaced",
+            updatedAt: 20,
+            displayName: "external",
+          },
+        });
+        return { updatedAt: 30, model: "new" };
+      },
+    });
+
+    expect(persisted).toMatchObject({
+      sessionId: "s-fresh-row-replaced",
+      displayName: "external",
+    });
+    expect(persisted).not.toHaveProperty("model");
+    expect(loadSessionStore(storePath, { skipCache: true })[key]).toMatchObject({
+      sessionId: "s-fresh-row-replaced",
+      displayName: "external",
+    });
   });
 
   it("clears existing SQLite session stores without creating missing databases", async () => {

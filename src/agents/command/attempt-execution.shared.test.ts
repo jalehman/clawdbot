@@ -4,6 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { patchSqliteSessionEntry } from "../../config/sessions/store-sqlite.js";
+import { loadSessionStore } from "../../config/sessions/store.js";
 import {
   INTERNAL_RUNTIME_CONTEXT_BEGIN,
   INTERNAL_RUNTIME_CONTEXT_END,
@@ -87,6 +89,58 @@ describe("attempt execution prompt materialization", () => {
 });
 
 describe("persistSessionEntry", () => {
+  it("keeps the current persisted entry when guarded persistence declines", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-session-store-"));
+    try {
+      const storePath = path.join(dir, "sessions.json");
+      const sessionStore = {
+        main: {
+          sessionId: "stale",
+          updatedAt: 1,
+        },
+      };
+      patchSqliteSessionEntry({
+        storePath,
+        sessionKey: "main",
+        fallbackEntry: {
+          sessionId: "persisted",
+          updatedAt: 10,
+          displayName: "current",
+        },
+        patch: {
+          sessionId: "persisted",
+          updatedAt: 10,
+          displayName: "current",
+        },
+        mode: "replace",
+      });
+
+      const persisted = await persistSessionEntry({
+        sessionStore,
+        sessionKey: "main",
+        storePath,
+        entry: {
+          sessionId: "stale",
+          updatedAt: 20,
+          model: "new",
+        },
+        shouldPersist: () => false,
+      });
+
+      expect(persisted).toMatchObject({
+        sessionId: "persisted",
+        displayName: "current",
+      });
+      expect(persisted).not.toHaveProperty("model");
+      expect(sessionStore.main).toMatchObject({
+        sessionId: "persisted",
+        displayName: "current",
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("clears stale local entries when guarded persistence sees no persisted entry", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-session-store-"));
     try {
@@ -113,6 +167,51 @@ describe("persistSessionEntry", () => {
 
       expect(persisted).toBeUndefined();
       expect(sessionStore.main).toBeUndefined();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("clears requested fields without inflating transcript-marker activity", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-session-store-"));
+    try {
+      const storePath = path.join(dir, "sessions.json");
+      const sessionStore = {
+        main: {
+          sessionId: "persisted",
+          updatedAt: 10,
+          abortCutoffMessageSid: "old-abort",
+        },
+      };
+      patchSqliteSessionEntry({
+        storePath,
+        sessionKey: "main",
+        fallbackEntry: sessionStore.main,
+        patch: sessionStore.main,
+        mode: "replace",
+      });
+
+      const persisted = await persistSessionEntry({
+        sessionStore,
+        sessionKey: "main",
+        storePath,
+        entry: {
+          sessionId: "persisted",
+          updatedAt: 20,
+          model: "new",
+        },
+        clearedFields: ["abortCutoffMessageSid"],
+        preserveTranscriptMarkerUpdatedAt: true,
+      });
+
+      expect(persisted).toMatchObject({
+        sessionId: "persisted",
+        updatedAt: 20,
+        model: "new",
+      });
+      expect(persisted).not.toHaveProperty("abortCutoffMessageSid");
+      expect(loadSessionStore(storePath, { skipCache: true }).main).toEqual(persisted);
+      expect(sessionStore.main).toEqual(persisted);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

@@ -185,7 +185,11 @@ export function replaceSqliteSessionStore(
   database.walMaintenance.checkpoint();
 }
 
-export type PatchSqliteSessionEntryMode = "merge" | "preserve-activity" | "replace";
+export type PatchSqliteSessionEntryMode =
+  | "merge"
+  | "preserve-activity"
+  | "preserve-patch-activity"
+  | "replace";
 
 export function patchSqliteSessionEntry(params: {
   storePath: string;
@@ -193,9 +197,11 @@ export function patchSqliteSessionEntry(params: {
   fallbackEntry: SessionEntry;
   patch: Partial<SessionEntry>;
   mode?: PatchSqliteSessionEntryMode;
-}): SessionEntry {
+  deleteFields?: readonly string[];
+  shouldPersist?: (entry: SessionEntry | undefined) => boolean;
+}): SessionEntry | undefined {
   const databaseOptions = resolveSessionStoreDatabaseOptions(params.storePath);
-  let persisted = params.fallbackEntry;
+  let persisted: SessionEntry | undefined = params.fallbackEntry;
   runOpenClawAgentWriteTransaction((database) => {
     const db = getNodeSqliteKysely<SessionStoreDatabase>(database.db);
     const row =
@@ -208,6 +214,10 @@ export function patchSqliteSessionEntry(params: {
           .where("key", "=", params.sessionKey),
       ) ?? null;
     const current = row ? parseSessionEntryValue(row.value_json) : undefined;
+    if (params.shouldPersist && !params.shouldPersist(current)) {
+      persisted = current;
+      return;
+    }
     persisted =
       params.mode === "replace"
         ? params.fallbackEntry
@@ -216,6 +226,10 @@ export function patchSqliteSessionEntry(params: {
             ? mergeSessionEntryPreserveActivity(current, params.patch)
             : mergeSessionEntry(current, params.patch)
           : params.fallbackEntry;
+    if (params.mode === "preserve-patch-activity") {
+      preservePatchUpdatedAtActivity(persisted, current, params.patch);
+    }
+    deleteUntouchedSessionEntryFields(persisted, params.patch, params.deleteFields);
     const valueJson = JSON.stringify(persisted);
     persisted = parseSessionEntryValue(valueJson) ?? persisted;
     const updatedAt =
@@ -246,6 +260,35 @@ export function patchSqliteSessionEntry(params: {
   }, databaseOptions);
   openOpenClawAgentDatabase(databaseOptions).walMaintenance.checkpoint();
   return persisted;
+}
+
+function preservePatchUpdatedAtActivity(
+  entry: SessionEntry,
+  current: SessionEntry | undefined,
+  patch: Partial<SessionEntry>,
+): void {
+  const patchUpdatedAt = normalizePatchActivityUpdatedAt(patch.updatedAt);
+  if (patchUpdatedAt === undefined) {
+    return;
+  }
+  const currentUpdatedAt = normalizePatchActivityUpdatedAt(current?.updatedAt);
+  entry.updatedAt = Math.max(currentUpdatedAt ?? 0, patchUpdatedAt);
+}
+
+function normalizePatchActivityUpdatedAt(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function deleteUntouchedSessionEntryFields(
+  entry: SessionEntry,
+  patch: Partial<SessionEntry>,
+  fields: readonly string[] | undefined,
+): void {
+  for (const field of fields ?? []) {
+    if (!Object.hasOwn(patch, field)) {
+      Reflect.deleteProperty(entry, field);
+    }
+  }
 }
 
 export function clearExistingSqliteSessionStore(
