@@ -18,10 +18,15 @@ export type MutableCronSession = ReturnType<typeof resolveCronSession> & {
 /** Live provider/model/auth-profile selection reported by the running session. */
 export type CronLiveSelection = LiveSessionModelSelection;
 
-type UpdateSessionStore = (
-  storePath: string,
-  update: (store: MutableSessionStore) => void,
-) => Promise<void>;
+type PatchSessionEntry = (params: {
+  storePath: string;
+  sessionKey: string;
+  fallbackEntry: SessionEntry;
+  update: (entry: SessionEntry) => Partial<SessionEntry> | null;
+  deleteFields?: readonly (keyof SessionEntry)[];
+  preservePatchActivity?: boolean;
+  skipMaintenance?: boolean;
+}) => Promise<SessionEntry | null>;
 
 /** Persists the currently selected mutable cron session entry to the session store. */
 export type PersistCronSessionEntry = () => Promise<void>;
@@ -50,29 +55,114 @@ function toNonResumableCronSessionEntry(entry: SessionEntry): SessionEntry {
   return next as SessionEntry;
 }
 
+const NON_RESUMABLE_CRON_SESSION_FIELDS = [
+  "sessionId",
+  "sessionFile",
+  "sessionStartedAt",
+  "lastInteractionAt",
+  "cliSessionIds",
+  "cliSessionBindings",
+  "claudeCliSessionId",
+] as const satisfies ReadonlyArray<keyof SessionEntry>;
+
+function reconcileActiveCronEntryAfterNonResumablePersist(params: {
+  activeEntry: SessionEntry;
+  persistedEntry: SessionEntry;
+}): SessionEntry {
+  const next = { ...params.persistedEntry };
+  for (const field of NON_RESUMABLE_CRON_SESSION_FIELDS) {
+    if (Object.hasOwn(params.activeEntry, field)) {
+      next[field] = params.activeEntry[field] as never;
+    }
+  }
+  return next;
+}
+
+function deriveCronSessionPatch(params: {
+  persistedRow: SessionEntry | undefined;
+  previousCronEntry: SessionEntry;
+  nextCronEntry: SessionEntry;
+}): Partial<SessionEntry> {
+  if (!params.persistedRow) {
+    return { ...params.nextCronEntry };
+  }
+  const patch: Partial<SessionEntry> = {};
+  for (const key of Object.keys(params.nextCronEntry) as Array<keyof SessionEntry>) {
+    if (JSON.stringify(params.persistedRow[key]) !== JSON.stringify(params.nextCronEntry[key])) {
+      patch[key] = params.nextCronEntry[key] as never;
+    }
+  }
+  for (const key of Object.keys(params.previousCronEntry) as Array<keyof SessionEntry>) {
+    if (!Object.hasOwn(params.nextCronEntry, key)) {
+      patch[key] = undefined as never;
+    }
+  }
+  return patch;
+}
+
 /** Creates the persistence callback that stores cron session metadata after a run. */
 export function createPersistCronSessionEntry(params: {
   isFastTestEnv: boolean;
   cronSession: MutableCronSession;
   agentSessionKey: string;
-  updateSessionStore: UpdateSessionStore;
+  patchSessionEntry: PatchSessionEntry;
 }): PersistCronSessionEntry {
+  const initialStoreEntry = params.cronSession.store[params.agentSessionKey];
+  let lastPersistedRow = initialStoreEntry ? structuredClone(initialStoreEntry) : undefined;
+  let lastCronOwnedEntry = initialStoreEntry
+    ? structuredClone(initialStoreEntry)
+    : structuredClone(params.cronSession.sessionEntry);
   return async () => {
     if (params.isFastTestEnv) {
       return;
     }
-    const persistedEntry =
+    const shouldDropResumeFields =
       isCronSessionKey(params.agentSessionKey) &&
-      params.cronSession.sessionEntry.sessionId &&
-      !cronTranscriptExists(params.cronSession.sessionEntry)
-        ? toNonResumableCronSessionEntry(params.cronSession.sessionEntry)
-        : params.cronSession.sessionEntry;
-    // Update both the in-memory store and persisted JSON so later operations in
-    // this process observe the same session entry that hit disk.
-    params.cronSession.store[params.agentSessionKey] = persistedEntry;
-    await params.updateSessionStore(params.cronSession.storePath, (store) => {
-      store[params.agentSessionKey] = persistedEntry;
+      Boolean(params.cronSession.sessionEntry.sessionId) &&
+      !cronTranscriptExists(params.cronSession.sessionEntry);
+    const persistedEntry = shouldDropResumeFields
+      ? toNonResumableCronSessionEntry(params.cronSession.sessionEntry)
+      : params.cronSession.sessionEntry;
+
+    const patch = deriveCronSessionPatch({
+      persistedRow: lastPersistedRow,
+      previousCronEntry: lastCronOwnedEntry,
+      nextCronEntry: persistedEntry,
     });
+    const deleteFields = shouldDropResumeFields ? NON_RESUMABLE_CRON_SESSION_FIELDS : undefined;
+    for (const field of deleteFields ?? []) {
+      Reflect.deleteProperty(patch, field);
+    }
+    if (typeof persistedEntry.updatedAt === "number" && Number.isFinite(persistedEntry.updatedAt)) {
+      patch.updatedAt = persistedEntry.updatedAt;
+    }
+    const persisted = await params.patchSessionEntry({
+      storePath: params.cronSession.storePath,
+      sessionKey: params.agentSessionKey,
+      fallbackEntry: persistedEntry,
+      update: () => (Object.keys(patch).length > 0 || deleteFields ? patch : null),
+      deleteFields,
+      preservePatchActivity: true,
+    });
+    if (!persisted) {
+      return;
+    }
+    if (shouldDropResumeFields) {
+      params.cronSession.store[params.agentSessionKey] = persisted;
+      params.cronSession.sessionEntry = reconcileActiveCronEntryAfterNonResumablePersist({
+        activeEntry: params.cronSession.sessionEntry,
+        persistedEntry: persisted,
+      });
+      lastPersistedRow = structuredClone(persisted);
+      lastCronOwnedEntry = structuredClone(params.cronSession.sessionEntry);
+      return;
+    }
+    // Update both in-memory handles so later operations in this process observe
+    // the same reconciled row that hit disk.
+    params.cronSession.sessionEntry = persisted;
+    params.cronSession.store[params.agentSessionKey] = persisted;
+    lastPersistedRow = structuredClone(persisted);
+    lastCronOwnedEntry = structuredClone(persisted);
   };
 }
 

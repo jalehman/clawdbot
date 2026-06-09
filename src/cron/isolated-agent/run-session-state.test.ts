@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { SessionEntry } from "../../config/sessions.js";
+import { mergeSessionEntry, type SessionEntry } from "../../config/sessions.js";
 import {
   adoptCronRunSessionMetadata,
   createPersistCronSessionEntry,
@@ -31,6 +31,42 @@ function makeCronSession(entry = makeSessionEntry()): MutableCronSession {
   } as MutableCronSession;
 }
 
+function createPatchSessionEntryMock(initialStore: Record<string, SessionEntry> = {}) {
+  const store: Record<string, SessionEntry> = { ...initialStore };
+  const patchSessionEntry = vi.fn(
+    async (params: {
+      sessionKey: string;
+      fallbackEntry: SessionEntry;
+      update: (entry: SessionEntry) => Partial<SessionEntry> | null;
+      deleteFields?: readonly string[];
+      preservePatchActivity?: boolean;
+    }) => {
+      const existing = store[params.sessionKey] ?? params.fallbackEntry;
+      const patch = params.update({ ...existing });
+      if (!patch) {
+        return existing;
+      }
+      const next = mergeSessionEntry(existing, patch);
+      if (
+        params.preservePatchActivity &&
+        typeof patch.updatedAt === "number" &&
+        Number.isFinite(patch.updatedAt)
+      ) {
+        next.updatedAt = Math.max(existing.updatedAt ?? 0, patch.updatedAt);
+      }
+      for (const field of params.deleteFields ?? []) {
+        if (!Object.hasOwn(patch, field)) {
+          Reflect.deleteProperty(next, field);
+        }
+      }
+      const persisted = JSON.parse(JSON.stringify(next)) as SessionEntry;
+      store[params.sessionKey] = persisted;
+      return persisted;
+    },
+  );
+  return { patchSessionEntry, store };
+}
+
 describe("createPersistCronSessionEntry", () => {
   it("persists isolated cron state only under the stable cron session key", async () => {
     const cronSession = makeCronSession(
@@ -44,24 +80,20 @@ describe("createPersistCronSessionEntry", () => {
         },
       }),
     );
-    const updateSessionStore = vi.fn(
-      async (_storePath, update: (store: Record<string, SessionEntry>) => void) => {
-        const store: Record<string, SessionEntry> = {};
-        update(store);
-        expect(store["agent:main:cron:job"]).toBe(cronSession.sessionEntry);
-        expect(store["agent:main:cron:job:run:run-session-id"]).toBeUndefined();
-      },
-    );
+    const { patchSessionEntry, store } = createPatchSessionEntryMock();
 
     const persist = createPersistCronSessionEntry({
       isFastTestEnv: false,
       cronSession,
       agentSessionKey: "agent:main:cron:job",
-      updateSessionStore,
+      patchSessionEntry,
     });
 
     await persist();
 
+    expect(patchSessionEntry).toHaveBeenCalledOnce();
+    expect(store["agent:main:cron:job"]).toBe(cronSession.sessionEntry);
+    expect(store["agent:main:cron:job:run:run-session-id"]).toBeUndefined();
     expect(cronSession.store["agent:main:cron:job"]).toBe(cronSession.sessionEntry);
     expect(cronSession.store["agent:main:cron:job:run:run-session-id"]).toBeUndefined();
   });
@@ -78,30 +110,42 @@ describe("createPersistCronSessionEntry", () => {
         status: "running",
       }),
     );
-    const updateSessionStore = vi.fn(
-      async (_storePath, update: (store: Record<string, SessionEntry>) => void) => {
-        const store: Record<string, SessionEntry> = {};
-        update(store);
-        expect(store["agent:main:cron:shell-only"]).toEqual({
-          label: "Cron: shell-only",
-          status: "running",
-          updatedAt: 1000,
-          systemSent: true,
-        });
-      },
-    );
+    cronSession.store["agent:main:cron:shell-only"] = makeSessionEntry({
+      sessionFile: missingTranscriptPath,
+      groupActivation: "always",
+    });
+    const { patchSessionEntry, store } = createPatchSessionEntryMock({
+      "agent:main:cron:shell-only": cronSession.store["agent:main:cron:shell-only"],
+    });
 
     const persist = createPersistCronSessionEntry({
       isFastTestEnv: false,
       cronSession,
       agentSessionKey: "agent:main:cron:shell-only",
-      updateSessionStore,
+      patchSessionEntry,
     });
 
     await persist();
 
+    expect(store["agent:main:cron:shell-only"]).toEqual({
+      label: "Cron: shell-only",
+      status: "running",
+      updatedAt: 1000,
+      systemSent: true,
+    });
+    expect(cronSession.sessionEntry.sessionId).toBe("run-session-id");
+    expect(cronSession.sessionEntry.sessionFile).toBe(missingTranscriptPath);
+    expect(cronSession.sessionEntry.groupActivation).toBeUndefined();
     expect(cronSession.store["agent:main:cron:shell-only"]?.sessionId).toBeUndefined();
     expect(cronSession.store["agent:main:cron:shell-only"]?.sessionFile).toBeUndefined();
+
+    cronSession.sessionEntry.status = "still-running";
+    await persist();
+
+    expect(store["agent:main:cron:shell-only"]).toMatchObject({
+      status: "still-running",
+    });
+    expect(store["agent:main:cron:shell-only"]?.groupActivation).toBeUndefined();
   });
 
   it("restores resumable cron fields once the transcript exists", async () => {
@@ -113,27 +157,23 @@ describe("createPersistCronSessionEntry", () => {
       }),
     );
 
+    const { patchSessionEntry, store } = createPatchSessionEntryMock();
     const persist = createPersistCronSessionEntry({
       isFastTestEnv: false,
       cronSession,
       agentSessionKey: "agent:main:cron:completed",
-      updateSessionStore: vi.fn(
-        async (_storePath, update: (store: Record<string, SessionEntry>) => void) => {
-          const store: Record<string, SessionEntry> = {};
-          update(store);
-          expect(store["agent:main:cron:completed"]).toEqual({
-            sessionId: "run-session-id",
-            sessionFile: transcriptPath,
-            label: "Cron: completed",
-            updatedAt: 1000,
-            systemSent: true,
-          });
-        },
-      ),
+      patchSessionEntry,
     });
 
     await persist();
 
+    expect(store["agent:main:cron:completed"]).toEqual({
+      sessionId: "run-session-id",
+      sessionFile: transcriptPath,
+      label: "Cron: completed",
+      updatedAt: 1000,
+      systemSent: true,
+    });
     expect(cronSession.store["agent:main:cron:completed"]).toEqual({
       sessionId: "run-session-id",
       sessionFile: transcriptPath,
@@ -145,23 +185,18 @@ describe("createPersistCronSessionEntry", () => {
 
   it("persists explicit session-bound cron state under the requested session key", async () => {
     const cronSession = makeCronSession();
-    const updateSessionStore = vi.fn(
-      async (_storePath, update: (store: Record<string, SessionEntry>) => void) => {
-        const store: Record<string, SessionEntry> = {};
-        update(store);
-        expect(store["agent:main:session"]).toBe(cronSession.sessionEntry);
-      },
-    );
+    const { patchSessionEntry, store } = createPatchSessionEntryMock();
 
     const persist = createPersistCronSessionEntry({
       isFastTestEnv: false,
       cronSession,
       agentSessionKey: "agent:main:session",
-      updateSessionStore,
+      patchSessionEntry,
     });
 
     await persist();
 
+    expect(store["agent:main:session"]).toBe(cronSession.sessionEntry);
     expect(cronSession.store["agent:main:session"]).toBe(cronSession.sessionEntry);
   });
 
@@ -180,31 +215,26 @@ describe("createPersistCronSessionEntry", () => {
         sessionFile: "/tmp/bound-session-rotated.jsonl",
       },
     });
-    const updateSessionStore = vi.fn(
-      async (_storePath, update: (store: Record<string, SessionEntry>) => void) => {
-        const store: Record<string, SessionEntry> = {};
-        update(store);
-        expect(store["agent:main:telegram:direct:42"]).toEqual({
-          sessionId: "bound-session-rotated",
-          sessionFile: "/tmp/bound-session-rotated.jsonl",
-          usageFamilyKey: "agent:main:telegram:direct:42",
-          usageFamilySessionIds: ["bound-session", "bound-session-rotated"],
-          updatedAt: 1000,
-          systemSent: true,
-        });
-      },
-    );
+    const { patchSessionEntry, store } = createPatchSessionEntryMock();
 
     expect(changed).toBe(true);
     const persist = createPersistCronSessionEntry({
       isFastTestEnv: false,
       cronSession,
       agentSessionKey: "agent:main:telegram:direct:42",
-      updateSessionStore,
+      patchSessionEntry,
     });
 
     await persist();
 
+    expect(store["agent:main:telegram:direct:42"]).toEqual({
+      sessionId: "bound-session-rotated",
+      sessionFile: "/tmp/bound-session-rotated.jsonl",
+      usageFamilyKey: "agent:main:telegram:direct:42",
+      usageFamilySessionIds: ["bound-session", "bound-session-rotated"],
+      updatedAt: 1000,
+      systemSent: true,
+    });
     expect(cronSession.store["agent:main:telegram:direct:42"]).toEqual({
       sessionId: "bound-session-rotated",
       sessionFile: "/tmp/bound-session-rotated.jsonl",
@@ -213,6 +243,35 @@ describe("createPersistCronSessionEntry", () => {
       updatedAt: 1000,
       systemSent: true,
     });
+  });
+
+  it("preserves fresh row fields that cron did not change", async () => {
+    const key = "agent:main:session";
+    const baselineEntry = makeSessionEntry({ status: "queued" });
+    const cronSession = makeCronSession({ ...baselineEntry });
+    cronSession.store[key] = baselineEntry;
+    cronSession.sessionEntry.status = "running";
+    const { patchSessionEntry, store } = createPatchSessionEntryMock({
+      [key]: {
+        ...baselineEntry,
+        groupActivation: "always",
+      },
+    });
+
+    const persist = createPersistCronSessionEntry({
+      isFastTestEnv: false,
+      cronSession,
+      agentSessionKey: key,
+      patchSessionEntry,
+    });
+
+    await persist();
+
+    expect(store[key]).toMatchObject({
+      status: "running",
+      groupActivation: "always",
+    });
+    expect(cronSession.sessionEntry.groupActivation).toBe("always");
   });
 });
 

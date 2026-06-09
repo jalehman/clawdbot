@@ -79,6 +79,29 @@ export const getChannelPluginMock = createMock();
 export const retireSessionMcpRuntimeMock = createMock();
 export const ensureRuntimePluginsLoadedMock = createMock();
 
+async function patchSessionEntryWithRowOptionsMock(params: {
+  storePath: string;
+  sessionKey: string;
+  fallbackEntry: CronSessionEntry;
+  update: (entry: CronSessionEntry) => Partial<CronSessionEntry> | null;
+  deleteFields?: readonly string[];
+}) {
+  const patch = params.update({ ...params.fallbackEntry });
+  if (!patch) {
+    return params.fallbackEntry;
+  }
+  const next = { ...params.fallbackEntry, ...patch };
+  for (const field of params.deleteFields ?? []) {
+    if (!Object.hasOwn(patch, field)) {
+      Reflect.deleteProperty(next, field);
+    }
+  }
+  await updateSessionStoreMock(params.storePath, (store: Record<string, CronSessionEntry>) => {
+    store[params.sessionKey] = next;
+  });
+  return next;
+}
+
 const resolveBootstrapWarningSignaturesSeenMock = createMock();
 const resolveCronStyleNowMock = createMock();
 export const resolveCronAgentLaneMock = createMock();
@@ -295,6 +318,7 @@ vi.mock("../../agents/agent-bundle-mcp-tools.js", () => ({
 }));
 
 vi.mock("../../config/sessions/store.runtime.js", () => ({
+  patchSessionEntryWithRowOptions: patchSessionEntryWithRowOptionsMock,
   updateSessionStore: updateSessionStoreMock,
 }));
 

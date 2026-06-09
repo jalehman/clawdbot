@@ -614,9 +614,9 @@ async function prepareCronRunContext(params: {
     isFastTestEnv: params.isFastTestEnv,
     cronSession,
     agentSessionKey,
-    updateSessionStore: async (storePath, update) => {
-      const { updateSessionStore } = await loadSessionStoreRuntime();
-      await updateSessionStore(storePath, update);
+    patchSessionEntry: async (patchParams) => {
+      const { patchSessionEntryWithRowOptions } = await loadSessionStoreRuntime();
+      return await patchSessionEntryWithRowOptions(patchParams);
     },
   });
   const withRunSession: WithRunSession = (result) => ({
