@@ -76,6 +76,7 @@ import { loadSessionStore } from "../config/sessions/store-load.js";
 import {
   archiveRemovedSessionTranscripts,
   patchSessionEntry,
+  patchSessionEntryWithRowOptions,
   updateSessionStore,
 } from "../config/sessions/store.js";
 import type { SessionEntry } from "../config/sessions/types.js";
@@ -779,25 +780,14 @@ async function restoreHeartbeatUpdatedAt(params: {
   if (typeof updatedAt !== "number") {
     return;
   }
-  const store = loadSessionStore(storePath);
-  const entry = store[sessionKey];
-  if (!entry) {
-    return;
-  }
-  const nextUpdatedAt = Math.max(entry.updatedAt ?? 0, updatedAt);
-  if (entry.updatedAt === nextUpdatedAt) {
-    return;
-  }
-  await updateSessionStore(storePath, (nextStore) => {
-    const nextEntry = nextStore[sessionKey] ?? entry;
-    if (!nextEntry) {
-      return;
-    }
-    const resolvedUpdatedAt = Math.max(nextEntry.updatedAt ?? 0, updatedAt);
-    if (nextEntry.updatedAt === resolvedUpdatedAt) {
-      return;
-    }
-    nextStore[sessionKey] = { ...nextEntry, updatedAt: resolvedUpdatedAt };
+  await patchSessionEntryWithRowOptions({
+    storePath,
+    sessionKey,
+    preservePatchActivity: true,
+    update: (entry) => {
+      const nextUpdatedAt = Math.max(entry.updatedAt ?? 0, updatedAt);
+      return entry.updatedAt === nextUpdatedAt ? null : { updatedAt: nextUpdatedAt };
+    },
   });
 }
 
