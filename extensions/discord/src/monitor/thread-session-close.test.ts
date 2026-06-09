@@ -22,20 +22,27 @@ vi.mock("openclaw/plugin-sdk/session-store-runtime", async () => {
 
 let closeDiscordThreadSessions: typeof import("./thread-session-close.js").closeDiscordThreadSessions;
 
-function setupStore(store: Record<string, { updatedAt: number }>) {
+function setupStore(store: Record<string, { sessionId?: string; updatedAt: number }>) {
   hoisted.listSessionEntries.mockImplementation(() =>
     Object.entries(store).map(([sessionKey, entry]) => ({ sessionKey, entry })),
   );
   hoisted.patchSessionEntry.mockImplementation(
     async (params: {
       sessionKey: string;
-      update: (entry: { updatedAt: number }) => Partial<{ updatedAt: number }> | null;
+      update: (entry: {
+        sessionId?: string;
+        updatedAt: number;
+      }) => Partial<{ sessionId?: string; updatedAt: number }> | null;
+      updateFromFreshRow?: (entry: {
+        sessionId?: string;
+        updatedAt: number;
+      }) => Partial<{ sessionId?: string; updatedAt: number }> | null;
     }) => {
       const current = store[params.sessionKey];
       if (!current) {
         return null;
       }
-      const patch = params.update(current);
+      const patch = (params.updateFromFreshRow ?? params.update)(current);
       if (!patch) {
         return current;
       }
@@ -183,6 +190,47 @@ describe("closeDiscordThreadSessions", () => {
     expect(count).toBe(0);
     expect(store[MATCHED_KEY].updatedAt).toBe(0);
     expect(store[UNMATCHED_KEY].updatedAt).toBe(1_700_000_000_001);
+  });
+
+  it("does not reset a session that changed after the close scan", async () => {
+    const listedEntry = { sessionId: "session-a", updatedAt: 1_000 };
+    const store = {
+      [MATCHED_KEY]: { sessionId: "session-a", updatedAt: 2_000 },
+    };
+    hoisted.listSessionEntries.mockReturnValue([{ sessionKey: MATCHED_KEY, entry: listedEntry }]);
+    hoisted.patchSessionEntry.mockImplementation(
+      async (params: {
+        sessionKey: string;
+        update: (entry: {
+          sessionId?: string;
+          updatedAt: number;
+        }) => Partial<{ sessionId?: string; updatedAt: number }> | null;
+        updateFromFreshRow?: (entry: {
+          sessionId?: string;
+          updatedAt: number;
+        }) => Partial<{ sessionId?: string; updatedAt: number }> | null;
+      }) => {
+        const current = store[params.sessionKey];
+        if (!current) {
+          return null;
+        }
+        const patch = (params.updateFromFreshRow ?? params.update)(current);
+        if (!patch) {
+          return current;
+        }
+        store[params.sessionKey] = { ...current, ...patch };
+        return store[params.sessionKey];
+      },
+    );
+
+    const count = await closeDiscordThreadSessions({
+      cfg: {},
+      accountId: "default",
+      threadId: THREAD_ID,
+    });
+
+    expect(count).toBe(0);
+    expect(store[MATCHED_KEY].updatedAt).toBe(2_000);
   });
 
   it("resolves the store path using cfg.session.store and accountId", async () => {

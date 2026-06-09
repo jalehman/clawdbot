@@ -745,6 +745,7 @@ export async function patchSessionEntry(
     forcePatchActivity?: boolean;
     preserveActivity?: boolean;
     replaceEntry?: boolean;
+    skipMaintenance?: boolean;
     update: (
       entry: SessionEntry,
     ) => Promise<Partial<SessionEntry> | null> | Partial<SessionEntry> | null;

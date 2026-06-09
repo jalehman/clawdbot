@@ -57,13 +57,28 @@ export async function closeDiscordThreadSessions(params: {
     }
     // Setting updatedAt to 0 signals that this session is stale.
     // evaluateSessionFreshness will create a new session on the next message.
+    let applied = false;
     const patched = await patchSessionEntry({
       storePath,
       sessionKey: key,
-      forcePatchActivity: true,
-      update: () => ({ updatedAt: 0 }),
+      replaceEntry: true,
+      skipMaintenance: true,
+      update: (freshEntry) => {
+        if (freshEntry.sessionId !== entry.sessionId || freshEntry.updatedAt !== entry.updatedAt) {
+          return null;
+        }
+        applied = true;
+        return { ...freshEntry, updatedAt: 0 };
+      },
+      updateFromFreshRow: (freshEntry) => {
+        if (freshEntry.sessionId !== entry.sessionId || freshEntry.updatedAt !== entry.updatedAt) {
+          return null;
+        }
+        applied = true;
+        return { ...freshEntry, updatedAt: 0 };
+      },
     });
-    if (patched) {
+    if (applied && patched) {
       resetCount += 1;
     }
   }
