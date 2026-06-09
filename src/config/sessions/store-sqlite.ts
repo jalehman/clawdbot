@@ -66,6 +66,15 @@ function parseSessionEntryValue(raw: string | null): SessionEntry | undefined {
   }
 }
 
+function stripSqliteSessionEntryRuntimeCaches(entry: SessionEntry): SessionEntry {
+  const snapshot = entry.skillsSnapshot;
+  if (!snapshot || snapshot.resolvedSkills === undefined) {
+    return entry;
+  }
+  const { resolvedSkills: _drop, ...rest } = snapshot;
+  return { ...entry, skillsSnapshot: rest };
+}
+
 export function loadSqliteSessionStore(storePath: string): Record<string, SessionEntry> {
   const databaseOptions = resolveSessionStoreDatabaseOptions(storePath);
   const database = openOpenClawAgentDatabase(databaseOptions);
@@ -244,6 +253,7 @@ export function patchSqliteSessionEntry(params: {
       forcePatchUpdatedAtActivity(persisted, patch);
     }
     deleteUntouchedSessionEntryFields(persisted, patch, params.deleteFields);
+    persisted = stripSqliteSessionEntryRuntimeCaches(persisted);
     const valueJson = JSON.stringify(persisted);
     persisted = parseSessionEntryValue(valueJson) ?? persisted;
     const updatedAt =

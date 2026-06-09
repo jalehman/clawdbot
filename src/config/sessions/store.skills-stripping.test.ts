@@ -14,6 +14,7 @@ vi.mock("../config.js", async () => ({
 import {
   clearSessionStoreCacheForTest,
   loadSessionStore,
+  patchSessionEntryWithRowOptions,
   saveSessionStore,
   updateSessionStore,
 } from "./store.js";
@@ -114,6 +115,28 @@ describe("session store strips resolvedSkills from SQLite persistence", () => {
     const snapshot = loaded["agent:main:test:1"]?.skillsSnapshot;
     expect(snapshot?.resolvedSkills).toBeUndefined();
     expect(snapshot?.skills).toHaveLength(6);
+  });
+
+  it("strips resolvedSkills written through row-scoped patches", async () => {
+    await saveSessionStore(
+      storePath,
+      {
+        "agent:main:test:1": makeEntry("session-1"),
+      },
+      { skipMaintenance: true },
+    );
+
+    await patchSessionEntryWithRowOptions({
+      storePath,
+      sessionKey: "agent:main:test:1",
+      skipMaintenance: true,
+      update: () => ({ skillsSnapshot: makeSnapshot(7) }),
+    });
+
+    const loaded = loadSessionStore(storePath, { skipCache: true });
+    const snapshot = loaded["agent:main:test:1"]?.skillsSnapshot;
+    expect(snapshot?.resolvedSkills).toBeUndefined();
+    expect(snapshot?.skills).toHaveLength(7);
   });
 
   it("roundtrips large skills prompts in SQLite", async () => {
