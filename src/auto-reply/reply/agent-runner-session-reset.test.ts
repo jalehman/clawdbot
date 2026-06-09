@@ -86,7 +86,10 @@ describe("resetReplyRunSession", () => {
     };
     const sessionStore = { main: sessionEntry };
     const followupRun = createTestFollowupRun();
-    await writeTestSessionStore(storePath, "main", sessionEntry);
+    await writeTestSessionStore(storePath, "main", {
+      ...sessionEntry,
+      providerOverride: "openai",
+    });
 
     let activeSessionEntry: SessionEntry | undefined = sessionEntry;
     let isNewSession = false;
@@ -121,6 +124,8 @@ describe("resetReplyRunSession", () => {
     expect(activeSessionEntry?.fallbackNoticeActiveModel).toBeUndefined();
     expect(activeSessionEntry?.fallbackNoticeReason).toBeUndefined();
     expect(activeSessionEntry?.systemPromptReport).toBeUndefined();
+    expect(activeSessionEntry?.providerOverride).toBe("openai");
+    expect(sessionStore.main.providerOverride).toBe("openai");
     expect(refreshQueuedFollowupSessionMock).toHaveBeenCalledWith({
       key: "main",
       previousSessionId: "session",
@@ -133,6 +138,7 @@ describe("resetReplyRunSession", () => {
     expect(persisted.main.sessionId).toBe(activeSessionEntry?.sessionId);
     expect(persisted.main.contextBudgetStatus).toBeUndefined();
     expect(persisted.main.fallbackNoticeReason).toBeUndefined();
+    expect(persisted.main.providerOverride).toBe("openai");
   });
 
   it("cleans up the old transcript when requested", async () => {

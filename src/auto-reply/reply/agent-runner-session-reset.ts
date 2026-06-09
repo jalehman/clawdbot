@@ -2,11 +2,11 @@
 import fs from "node:fs";
 import type { SessionEntry } from "../../config/sessions.js";
 import {
+  patchSessionEntryWithRowOptions,
   resolveAgentIdFromSessionKey,
   resolveSessionFilePath,
   resolveSessionFilePathOptions,
   resolveSessionTranscriptPath,
-  updateSessionStore,
 } from "../../config/sessions.js";
 import { generateSecureUuid } from "../../infra/secure-random.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -21,7 +21,7 @@ type ResetSessionOptions = {
 
 const deps = {
   generateSecureUuid,
-  updateSessionStore,
+  patchSessionEntryWithRowOptions,
   refreshQueuedFollowupSession,
   error: (message: string) => defaultRuntime.error(message),
 };
@@ -29,7 +29,7 @@ const deps = {
 export function setAgentRunnerSessionResetTestDeps(overrides?: Partial<typeof deps>): void {
   Object.assign(deps, {
     generateSecureUuid,
-    updateSessionStore,
+    patchSessionEntryWithRowOptions,
     refreshQueuedFollowupSession,
     error: (message: string) => defaultRuntime.error(message),
     ...overrides,
@@ -94,10 +94,47 @@ export async function resetReplyRunSession(params: {
   );
   nextEntry.sessionFile = nextSessionFile;
   params.activeSessionStore[params.sessionKey] = nextEntry;
+  let persistedEntry = nextEntry;
   try {
-    await deps.updateSessionStore(params.storePath, (store) => {
-      store[params.sessionKey!] = nextEntry;
-    });
+    persistedEntry =
+      (await deps.patchSessionEntryWithRowOptions({
+        storePath: params.storePath,
+        sessionKey: params.sessionKey,
+        fallbackEntry: nextEntry,
+        update: () => ({
+          sessionId: nextSessionId,
+          updatedAt: now,
+          sessionStartedAt: now,
+          usageFamilyKey: prevEntry.usageFamilyKey ?? params.sessionKey,
+          usageFamilySessionIds: Array.from(
+            new Set([
+              ...(prevEntry.usageFamilySessionIds ?? []),
+              prevEntry.sessionId,
+              nextSessionId,
+            ]),
+          ),
+          lastInteractionAt: now,
+          systemSent: false,
+          abortedLastRun: false,
+          sessionFile: nextSessionFile,
+          modelProvider: undefined,
+          model: undefined,
+          inputTokens: undefined,
+          outputTokens: undefined,
+          totalTokens: undefined,
+          totalTokensFresh: false,
+          estimatedCostUsd: undefined,
+          cacheRead: undefined,
+          cacheWrite: undefined,
+          contextTokens: undefined,
+          contextBudgetStatus: undefined,
+          systemPromptReport: undefined,
+          fallbackNoticeSelectedModel: undefined,
+          fallbackNoticeActiveModel: undefined,
+          fallbackNoticeReason: undefined,
+        }),
+      })) ?? nextEntry;
+    params.activeSessionStore[params.sessionKey] = persistedEntry;
   } catch (err) {
     deps.error(
       `Failed to persist session reset after ${params.options.failureLabel} (${params.sessionKey}): ${String(err)}`,
@@ -118,7 +155,7 @@ export async function resetReplyRunSession(params: {
     nextSessionId,
     nextSessionFile,
   });
-  params.onActiveSessionEntry(nextEntry);
+  params.onActiveSessionEntry(persistedEntry);
   params.onNewSession(nextSessionId, nextSessionFile);
   deps.error(params.options.buildLogMessage(nextSessionId));
   if (params.options.cleanupTranscripts && prevSessionId) {
