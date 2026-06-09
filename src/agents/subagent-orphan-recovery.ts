@@ -14,9 +14,9 @@ import crypto from "node:crypto";
 import { getRuntimeConfig } from "../config/config.js";
 import {
   loadSessionStore,
+  patchSessionEntryWithRowOptions,
   resolveAgentIdFromSessionKey,
   resolveStorePath,
-  updateSessionStore,
   type SessionEntry,
 } from "../config/sessions.js";
 import { callGateway } from "../gateway/call.js";
@@ -257,17 +257,19 @@ export async function recoverOrphanedSubagentSessions(params: {
         if (!recoveryGate.allowed) {
           if (recoveryGate.shouldMarkWedged) {
             try {
-              await updateSessionStore(storePath, (currentStore) => {
-                const current = currentStore[childSessionKey];
-                if (current) {
+              await patchSessionEntryWithRowOptions({
+                storePath,
+                sessionKey: childSessionKey,
+                update: (current) => {
+                  const next = { ...current };
                   markSubagentRecoveryWedged({
-                    entry: current,
+                    entry: next,
                     now,
                     runId,
                     reason: recoveryGate.reason,
                   });
-                  currentStore[childSessionKey] = current;
-                }
+                  return next;
+                },
               });
               markSubagentRecoveryWedged({
                 entry,
@@ -333,19 +335,20 @@ export async function recoverOrphanedSubagentSessions(params: {
           resumedSessionKeys.add(childSessionKey);
           // Only clear the aborted flag after confirmed successful resume.
           try {
-            await updateSessionStore(storePath, (currentStore) => {
-              const current = currentStore[childSessionKey];
-              if (current) {
-                current.abortedLastRun = false;
+            await patchSessionEntryWithRowOptions({
+              storePath,
+              sessionKey: childSessionKey,
+              update: (current) => {
+                const now = Date.now();
+                const next = { ...current, abortedLastRun: false, updatedAt: now };
                 markSubagentRecoveryAttempt({
-                  entry: current,
-                  now: Date.now(),
+                  entry: next,
+                  now,
                   runId,
                   attempt: recoveryGate.nextAttempt,
                 });
-                current.updatedAt = Date.now();
-                currentStore[childSessionKey] = current;
-              }
+                return next;
+              },
             });
           } catch (err) {
             log.warn(

@@ -2,6 +2,7 @@
 // embedded run was interrupted while the registry still considers them active.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as sessions from "../config/sessions.js";
+import type { SessionEntry } from "../config/sessions.js";
 import * as gateway from "../gateway/call.js";
 import * as sessionUtils from "../gateway/session-utils.fs.js";
 import { resolveInternalSessionEffectsTranscriptPath } from "./internal-session-effects.js";
@@ -23,6 +24,7 @@ vi.mock("../config/config.js", () => ({
 
 vi.mock("../config/sessions.js", () => ({
   loadSessionStore: vi.fn(() => ({})),
+  patchSessionEntryWithRowOptions: vi.fn(async () => ({})),
   resolveAgentIdFromSessionKey: vi.fn(() => "main"),
   resolveStorePath: vi.fn(() => "/tmp/test-sessions.json"),
   updateSessionStore: vi.fn(async () => {}),
@@ -118,18 +120,29 @@ function requireRecord(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function requireFirstUpdateSessionStoreCall() {
-  const call = vi.mocked(sessions.updateSessionStore).mock.calls[0];
+type PatchSessionEntryCall = Parameters<typeof sessions.patchSessionEntryWithRowOptions>[0];
+
+function requireFirstPatchSessionEntryCall(): PatchSessionEntryCall {
+  const call = vi.mocked(sessions.patchSessionEntryWithRowOptions).mock.calls[0];
   if (call === undefined) {
-    throw new Error("expected update session store call");
+    throw new Error("expected patch session entry call");
   }
-  return call;
+  return call[0] as PatchSessionEntryCall;
+}
+
+async function applyPatchUpdate(
+  call: PatchSessionEntryCall,
+  entry: SessionEntry,
+): Promise<SessionEntry> {
+  const patch = await call.update(entry);
+  return patch ? ({ ...entry, ...patch } as SessionEntry) : entry;
 }
 
 describe("subagent-orphan-recovery", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
+    vi.mocked(sessions.patchSessionEntryWithRowOptions).mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -365,21 +378,19 @@ describe("subagent-orphan-recovery", () => {
       getActiveRuns: () => activeRuns,
     });
 
-    // updateSessionStore should have been called AFTER successful resume to clear the flag
-    expect(sessions.updateSessionStore).toHaveBeenCalledOnce();
-    const calls = vi.mocked(sessions.updateSessionStore).mock.calls;
-    const [storePath, updater] = calls[0];
-    expect(storePath).toBe("/tmp/test-sessions.json");
+    // The row patch should run AFTER successful resume to clear the flag.
+    expect(sessions.patchSessionEntryWithRowOptions).toHaveBeenCalledOnce();
+    const patchCall = requireFirstPatchSessionEntryCall();
+    expect(patchCall.storePath).toBe("/tmp/test-sessions.json");
+    expect(patchCall.sessionKey).toBe("agent:main:subagent:test-session-1");
+    expect(sessions.updateSessionStore).not.toHaveBeenCalled();
 
-    // Simulate the updater to verify it clears abortedLastRun
-    const mockStore: Record<string, { abortedLastRun?: boolean; updatedAt?: number }> = {
-      "agent:main:subagent:test-session-1": {
-        abortedLastRun: true,
-        updatedAt: 0,
-      },
-    };
-    (updater as (store: Record<string, unknown>) => void)(mockStore);
-    expect(mockStore["agent:main:subagent:test-session-1"]?.abortedLastRun).toBe(false);
+    const patched = await applyPatchUpdate(patchCall, {
+      sessionId: "session-abc",
+      abortedLastRun: true,
+      updatedAt: 0,
+    });
+    expect(patched.abortedLastRun).toBe(false);
   });
 
   it("persists accepted recovery attempts after successful resume", async () => {
@@ -390,23 +401,12 @@ describe("subagent-orphan-recovery", () => {
       getActiveRuns: () => createActiveRuns(createTestRunRecord()),
     });
 
-    const updateCall = requireFirstUpdateSessionStoreCall();
-    const updater = updateCall[1];
-    if (typeof updater !== "function") {
-      throw new Error("expected update session store callback");
-    }
-    const mockStore: ReturnType<typeof sessions.loadSessionStore> = {
-      "agent:main:subagent:test-session-1": {
-        sessionId: "session-abc",
-        updatedAt: 0,
-        abortedLastRun: true,
-      },
-    };
-    await updater(mockStore);
-    const sessionEntry = requireRecord(
-      mockStore["agent:main:subagent:test-session-1"],
-      "updated session entry",
-    );
+    const patchCall = requireFirstPatchSessionEntryCall();
+    const sessionEntry = await applyPatchUpdate(patchCall, {
+      sessionId: "session-abc",
+      updatedAt: 0,
+      abortedLastRun: true,
+    });
     expect(sessionEntry.abortedLastRun).toBe(false);
     const recovery = requireRecord(sessionEntry.subagentRecovery, "subagent recovery");
     expect(recovery.automaticAttempts).toBe(1);
@@ -437,30 +437,20 @@ describe("subagent-orphan-recovery", () => {
     expect(blockedRun.childSessionKey).toBe("agent:main:subagent:test-session-1");
     expect(blockedRun.error).toContain("recovery blocked after 2 rapid accepted resume attempts");
     expect(gateway.callGateway).not.toHaveBeenCalled();
-    expect(sessions.updateSessionStore).toHaveBeenCalledOnce();
+    expect(sessions.patchSessionEntryWithRowOptions).toHaveBeenCalledOnce();
+    expect(sessions.updateSessionStore).not.toHaveBeenCalled();
 
-    const updateCall = requireFirstUpdateSessionStoreCall();
-    const updater = updateCall[1];
-    if (typeof updater !== "function") {
-      throw new Error("expected update session store callback");
-    }
-    const mockStore: ReturnType<typeof sessions.loadSessionStore> = {
-      "agent:main:subagent:test-session-1": {
-        sessionId: "session-abc",
-        updatedAt: 0,
-        abortedLastRun: true,
-        subagentRecovery: {
-          automaticAttempts: 2,
-          lastAttemptAt: now - 30_000,
-          lastRunId: "previous-run",
-        },
+    const patchCall = requireFirstPatchSessionEntryCall();
+    const sessionEntry = await applyPatchUpdate(patchCall, {
+      sessionId: "session-abc",
+      updatedAt: 0,
+      abortedLastRun: true,
+      subagentRecovery: {
+        automaticAttempts: 2,
+        lastAttemptAt: now - 30_000,
+        lastRunId: "previous-run",
       },
-    };
-    await updater(mockStore);
-    const sessionEntry = requireRecord(
-      mockStore["agent:main:subagent:test-session-1"],
-      "wedged session entry",
-    );
+    });
     expect(sessionEntry.abortedLastRun).toBe(false);
     const recovery = requireRecord(sessionEntry.subagentRecovery, "wedged recovery");
     expect(recovery.automaticAttempts).toBe(2);
@@ -489,6 +479,7 @@ describe("subagent-orphan-recovery", () => {
     expect(result.skipped).toBe(1);
     expect(result.failedRuns).toHaveLength(1);
     expect(gateway.callGateway).not.toHaveBeenCalled();
+    expect(sessions.patchSessionEntryWithRowOptions).not.toHaveBeenCalled();
     expect(sessions.updateSessionStore).not.toHaveBeenCalled();
   });
 
@@ -561,9 +552,11 @@ describe("subagent-orphan-recovery", () => {
     expect(announceDelivery.deliverSubagentAnnouncement).not.toHaveBeenCalled();
   });
 
-  it("prevents duplicate resume when updateSessionStore fails", async () => {
+  it("prevents duplicate resume when the session row patch fails", async () => {
     vi.mocked(gateway.callGateway).mockResolvedValue({ runId: "new-run" } as never);
-    vi.mocked(sessions.updateSessionStore).mockRejectedValue(new Error("write failed"));
+    vi.mocked(sessions.patchSessionEntryWithRowOptions).mockRejectedValue(
+      new Error("write failed"),
+    );
 
     vi.mocked(sessions.loadSessionStore).mockReturnValue({
       "agent:main:subagent:test-session-1": {
@@ -587,6 +580,8 @@ describe("subagent-orphan-recovery", () => {
     expect(result.recovered).toBe(1);
     expect(result.skipped).toBe(1);
     expect(gateway.callGateway).toHaveBeenCalledOnce();
+    expect(sessions.patchSessionEntryWithRowOptions).toHaveBeenCalledOnce();
+    expect(sessions.updateSessionStore).not.toHaveBeenCalled();
   });
 
   it("does not retry a session after the gateway accepted resume but run remap failed", async () => {
@@ -619,7 +614,8 @@ describe("subagent-orphan-recovery", () => {
     expect(second.recovered).toBe(0);
     expect(second.skipped).toBe(1);
     expect(gateway.callGateway).toHaveBeenCalledOnce();
-    expect(sessions.updateSessionStore).toHaveBeenCalledOnce();
+    expect(sessions.patchSessionEntryWithRowOptions).toHaveBeenCalledOnce();
+    expect(sessions.updateSessionStore).not.toHaveBeenCalled();
   });
 
   it("finalizes interrupted runs with a readable failure after recovery retries are exhausted", async () => {
