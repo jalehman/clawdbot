@@ -124,14 +124,31 @@ function setSubagentControlDepsForTest(
   testing.setDepsForTest({
     abortEmbeddedAgentRun: () => false,
     clearSessionQueues: () => ({ followupCleared: 0, laneCleared: 0, keys: [] }),
-    updateSessionStore: async <T>(
-      storePath: string,
-      mutator: (store: Record<string, SessionEntry>) => Promise<T> | T,
-    ) => {
+    patchSessionEntry: async (params) => {
+      const storePath = params.storePath;
+      if (!storePath) {
+        throw new Error("subagent-control test patchSessionEntry requires storePath");
+      }
       const store = readSessionStoreForTest(storePath);
-      const result = await mutator(store);
+      const existing = store[params.sessionKey];
+      if (!existing) {
+        return null;
+      }
+      const patch = await params.update({ ...existing });
+      if (!patch) {
+        return existing;
+      }
+      const persisted = JSON.parse(
+        JSON.stringify({
+          ...existing,
+          ...patch,
+          sessionId: patch.sessionId ?? existing.sessionId ?? "mock-session",
+          updatedAt: Math.max(existing.updatedAt ?? 0, patch.updatedAt ?? 0),
+        }),
+      ) as SessionEntry;
+      store[params.sessionKey] = persisted;
       writeSessionStoreForTest(storePath, store);
-      return result;
+      return persisted;
     },
     ...overrides,
   });
@@ -643,7 +660,7 @@ describe("killSubagentRunAdmin", () => {
     });
 
     setSubagentControlDepsForTest({
-      updateSessionStore: async () => {
+      patchSessionEntry: async () => {
         throw new Error("session store unavailable");
       },
     });
