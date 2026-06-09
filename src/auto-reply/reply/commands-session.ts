@@ -278,7 +278,10 @@ export const handleSendPolicyCommand: CommandHandler = async (params, allowTextC
     } else {
       params.sessionEntry.sendPolicy = sendPolicyCommand.mode;
     }
-    await persistSessionEntry(params);
+    await persistSessionEntry(
+      params,
+      sendPolicyCommand.mode === "inherit" ? { deleteFields: ["sendPolicy"] } : undefined,
+    );
   }
   const label =
     sendPolicyCommand.mode === "inherit"
@@ -371,7 +374,10 @@ export const handleUsageCommand: CommandHandler = async (params, allowTextComman
       targetSessionEntry.responseUsage = next;
     }
     params.sessionStore[params.sessionKey] = targetSessionEntry;
-    await persistSessionEntry({ ...params, sessionEntry: targetSessionEntry });
+    await persistSessionEntry(
+      { ...params, sessionEntry: targetSessionEntry },
+      next === "off" ? { deleteFields: ["responseUsage"] } : undefined,
+    );
   }
 
   return {
@@ -432,7 +438,10 @@ export const handleFastCommand: CommandHandler = async (params, allowTextCommand
     if (resetsToDefault) {
       if (targetSessionEntry && params.sessionStore && params.sessionKey) {
         delete targetSessionEntry.fastMode;
-        await persistSessionEntry({ ...params, sessionEntry: targetSessionEntry });
+        await persistSessionEntry(
+          { ...params, sessionEntry: targetSessionEntry },
+          { deleteFields: ["fastMode"] },
+        );
       }
       return {
         shouldContinue: false,

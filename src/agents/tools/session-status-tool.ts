@@ -14,11 +14,12 @@ import type {
 } from "../../auto-reply/thinking.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import {
+  deriveSessionEntryPatch,
   loadSessionStore,
   mergeSessionEntry,
+  patchSessionEntryWithRowOptions,
   resolveStorePath,
   type SessionEntry,
-  updateSessionStore,
 } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { triggerSessionPatchHook } from "../../gateway/session-patch-hooks.js";
@@ -75,6 +76,25 @@ const SessionStatusToolSchema = Type.Object({
   sessionKey: Type.Optional(Type.String()),
   model: Type.Optional(Type.String()),
 });
+
+const SESSION_STATUS_MODEL_PATCH_FIELDS = [
+  "providerOverride",
+  "modelOverride",
+  "modelOverrideSource",
+  "modelOverrideFallbackOriginProvider",
+  "modelOverrideFallbackOriginModel",
+  "model",
+  "modelProvider",
+  "contextTokens",
+  "contextBudgetStatus",
+  "authProfileOverride",
+  "authProfileOverrideSource",
+  "authProfileOverrideCompactionCount",
+  "liveModelSwitchPending",
+  "fallbackNoticeSelectedModel",
+  "fallbackNoticeActiveModel",
+  "fallbackNoticeReason",
+] as const satisfies ReadonlyArray<keyof SessionEntry>;
 
 type CommandsStatusRuntimeModule = {
   buildStatusText: (params: BuildStatusTextParams) => Promise<string>;
@@ -768,45 +788,61 @@ export function createSessionStatusTool(opts?: {
       const modelRaw = readStringParam(params, "model");
       let changedModel = false;
       if (typeof modelRaw === "string") {
-        const selection = await resolveModelOverride({
-          cfg,
-          raw: modelRaw,
-          sessionEntry: resolved.entry,
-          agentId,
+        let sessionPatchModel: string | null | undefined;
+        const persistedEntry = await patchSessionEntryWithRowOptions({
+          storePath,
+          sessionKey: resolved.key,
+          fallbackEntry: resolved.entry,
+          update: async (freshEntry) => {
+            const selection = await resolveModelOverride({
+              cfg,
+              raw: modelRaw,
+              sessionEntry: freshEntry,
+              agentId,
+            });
+            const nextEntry: SessionEntry = { ...freshEntry };
+            const applied = applyModelOverrideToSessionEntry({
+              entry: nextEntry,
+              selection:
+                selection.kind === "reset"
+                  ? {
+                      provider: configured.provider,
+                      model: configured.model,
+                      isDefault: true,
+                    }
+                  : {
+                      provider: selection.provider,
+                      model: selection.model,
+                      isDefault: selection.isDefault,
+                    },
+              markLiveSwitchPending: true,
+            });
+            if (!applied.updated) {
+              return null;
+            }
+            sessionPatchModel =
+              selection.kind === "reset" ? null : `${selection.provider}/${selection.model}`;
+            const persistedEntry = nextEntry.sessionId.trim()
+              ? nextEntry
+              : (() => {
+                  const persistedEntryPatch: Partial<SessionEntry> = { ...nextEntry };
+                  delete persistedEntryPatch.sessionId;
+                  const existingWithValidSessionId = freshEntry.sessionId?.trim()
+                    ? freshEntry
+                    : undefined;
+                  return mergeSessionEntry(existingWithValidSessionId, persistedEntryPatch);
+                })();
+            const patch = deriveSessionEntryPatch(freshEntry, persistedEntry);
+            for (const field of SESSION_STATUS_MODEL_PATCH_FIELDS) {
+              patch[field] = persistedEntry[field] as never;
+            }
+            return patch;
+          },
+          deleteFields: SESSION_STATUS_MODEL_PATCH_FIELDS,
+          skipMaintenance: true,
         });
-        const nextEntry: SessionEntry = { ...resolved.entry };
-        const applied = applyModelOverrideToSessionEntry({
-          entry: nextEntry,
-          selection:
-            selection.kind === "reset"
-              ? {
-                  provider: configured.provider,
-                  model: configured.model,
-                  isDefault: true,
-                }
-              : {
-                  provider: selection.provider,
-                  model: selection.model,
-                  isDefault: selection.isDefault,
-                },
-          markLiveSwitchPending: true,
-        });
-        if (applied.updated) {
-          const persistedEntry = nextEntry.sessionId.trim()
-            ? nextEntry
-            : (() => {
-                const persistedEntryPatch: Partial<SessionEntry> = { ...nextEntry };
-                delete persistedEntryPatch.sessionId;
-                const existingEntry = store[resolved.key];
-                const existingWithValidSessionId = existingEntry?.sessionId?.trim()
-                  ? existingEntry
-                  : undefined;
-                return mergeSessionEntry(existingWithValidSessionId, persistedEntryPatch);
-              })();
+        if (persistedEntry && sessionPatchModel !== undefined) {
           store[resolved.key] = persistedEntry;
-          await updateSessionStore(storePath, (nextStore) => {
-            nextStore[resolved.key] = persistedEntry;
-          });
           resolved.entry = persistedEntry;
           triggerSessionPatchHook({
             cfg,
@@ -814,7 +850,7 @@ export function createSessionStatusTool(opts?: {
             sessionKey: resolved.key,
             patch: {
               key: resolved.key,
-              model: selection.kind === "reset" ? null : `${selection.provider}/${selection.model}`,
+              model: sessionPatchModel,
             },
           });
           changedModel = true;

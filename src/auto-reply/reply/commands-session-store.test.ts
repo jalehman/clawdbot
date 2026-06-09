@@ -9,6 +9,7 @@ import {
   saveSessionStore,
   type SessionEntry,
 } from "../../config/sessions.js";
+import { closeSqliteSessionStoreDatabase } from "../../config/sessions/store-sqlite.js";
 import { persistAbortTargetEntry, persistSessionEntry } from "./commands-session-store.js";
 import type { HandleCommandsParams } from "./commands-types.js";
 
@@ -17,6 +18,7 @@ async function withTempStore<T>(run: (params: { storePath: string }) => Promise<
   try {
     return await run({ storePath: path.join(dir, "sessions.json") });
   } finally {
+    closeSqliteSessionStoreDatabase(path.join(dir, "sessions.json"));
     clearSessionStoreCacheForTest();
     await fs.rm(dir, { recursive: true, force: true });
   }
@@ -63,6 +65,58 @@ describe("persistSessionEntry", () => {
         model: "gpt-5.5",
         groupActivation: "always",
       });
+    });
+  });
+
+  it("deletes explicitly cleared command fields while preserving unrelated fresh fields", async () => {
+    await withTempStore(async ({ storePath }) => {
+      const sessionKey = "agent:main:explicit:command-clear";
+      const sessionStore: Record<string, SessionEntry> = {
+        [sessionKey]: {
+          sessionId: "session-1",
+          updatedAt: 1,
+          model: "gpt-5.5",
+        },
+      };
+      await saveSessionStore(
+        storePath,
+        {
+          [sessionKey]: {
+            sessionId: "session-1",
+            updatedAt: 1,
+            groupActivation: "always",
+            sendPolicy: "deny",
+            ttsAuto: "off",
+          },
+        },
+        { skipMaintenance: true },
+      );
+
+      const persisted = await persistSessionEntry(
+        {
+          sessionEntry: sessionStore[sessionKey],
+          sessionKey,
+          sessionStore,
+          storePath,
+        } as HandleCommandsParams,
+        { deleteFields: ["sendPolicy", "ttsAuto"] },
+      );
+
+      expect(persisted).toBe(true);
+      const stored = loadSessionStore(storePath, { skipCache: true });
+      expect(stored[sessionKey]).toMatchObject({
+        sessionId: "session-1",
+        model: "gpt-5.5",
+        groupActivation: "always",
+      });
+      expect(stored[sessionKey]).not.toHaveProperty("sendPolicy");
+      expect(stored[sessionKey]).not.toHaveProperty("ttsAuto");
+      expect(sessionStore[sessionKey]).toMatchObject({
+        model: "gpt-5.5",
+        groupActivation: "always",
+      });
+      expect(sessionStore[sessionKey]).not.toHaveProperty("sendPolicy");
+      expect(sessionStore[sessionKey]).not.toHaveProperty("ttsAuto");
     });
   });
 });

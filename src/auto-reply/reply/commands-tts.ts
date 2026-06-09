@@ -238,7 +238,7 @@ export const handleTtsCommands: CommandHandler = async (params, allowTextCommand
     }
     if (requested === "default" || requested === "inherit" || requested === "clear") {
       delete params.sessionEntry.ttsAuto;
-      await persistSessionEntry(params);
+      await persistSessionEntry(params, { deleteFields: ["ttsAuto"] });
       return { shouldContinue: false, reply: { text: "🔊 TTS chat override cleared." } };
     }
     return { shouldContinue: false, reply: ttsUsage() };

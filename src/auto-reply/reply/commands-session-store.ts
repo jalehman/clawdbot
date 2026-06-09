@@ -6,7 +6,15 @@ import type { CommandHandler } from "./commands-types.js";
 
 type CommandParams = Parameters<CommandHandler>[0];
 
-export async function persistSessionEntry(params: CommandParams): Promise<boolean> {
+type PersistSessionEntryOptions = {
+  deleteFields?: readonly (keyof SessionEntry)[];
+};
+
+/** Persists command-owned changes to one session row without whole-store replacement. */
+export async function persistSessionEntry(
+  params: CommandParams,
+  opts?: PersistSessionEntryOptions,
+): Promise<boolean> {
   if (!params.sessionEntry || !params.sessionStore || !params.sessionKey) {
     return false;
   }
@@ -23,6 +31,7 @@ export async function persistSessionEntry(params: CommandParams): Promise<boolea
       sessionKey,
       fallbackEntry: sessionEntry,
       update: () => sessionEntry,
+      deleteFields: opts?.deleteFields,
       skipMaintenance: true,
     });
     if (persisted) {

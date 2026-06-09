@@ -111,6 +111,34 @@ async function createSessionsModuleMock() {
       updateSessionStoreMock(storePath, store);
       return store;
     },
+    patchSessionEntryWithRowOptions: async (params: {
+      storePath: string;
+      sessionKey: string;
+      fallbackEntry?: SessionEntry;
+      update: (
+        entry: SessionEntry,
+      ) => Promise<Partial<SessionEntry> | null> | Partial<SessionEntry> | null;
+      deleteFields?: readonly string[];
+    }) => {
+      const store = loadSessionStoreMock(params.storePath) as Record<string, SessionEntry>;
+      const existing = store[params.sessionKey] ?? params.fallbackEntry;
+      if (!existing) {
+        return null;
+      }
+      const patch = await params.update({ ...existing });
+      if (!patch) {
+        return existing;
+      }
+      const next = actual.mergeSessionEntry(existing, patch);
+      for (const field of params.deleteFields ?? []) {
+        if (!Object.hasOwn(patch, field)) {
+          Reflect.deleteProperty(next, field);
+        }
+      }
+      store[params.sessionKey] = next;
+      updateSessionStoreMock(params.storePath, store);
+      return next;
+    },
     resolveStorePath: (_store: string | undefined, opts?: { agentId?: string }) =>
       opts?.agentId === "support" ? "/tmp/support/sessions.json" : "/tmp/main/sessions.json",
   };
@@ -2206,6 +2234,7 @@ describe("session_status tool", () => {
         providerOverride: "anthropic",
         modelOverride: "claude-sonnet-4-6",
         authProfileOverride: "p1",
+        groupActivation: "always",
       },
     });
 
@@ -2220,6 +2249,7 @@ describe("session_status tool", () => {
     expect(saved.providerOverride).toBeUndefined();
     expect(saved.modelOverride).toBeUndefined();
     expect(saved.authProfileOverride).toBeUndefined();
+    expect(saved.groupActivation).toBe("always");
     expect(saved.liveModelSwitchPending).toBe(true);
   });
 });
