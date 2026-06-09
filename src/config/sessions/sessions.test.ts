@@ -18,6 +18,7 @@ import {
 import { evaluateSessionFreshness, resolveSessionResetPolicy } from "./reset.js";
 import { resolveAndPersistSessionFile } from "./session-file.js";
 import { readSessionStoreCache, writeSessionStoreCache } from "./store-cache.js";
+import { resolveMaintenanceConfigFromInput } from "./store-maintenance.js";
 import {
   clearExistingSqliteSessionStore,
   deleteSqliteSessionEntry,
@@ -929,6 +930,42 @@ describe("session store writer queue", () => {
       displayName: "external",
       model: "gpt-5.4",
     });
+  });
+
+  it("applies caller maintenance config during row-scoped patches", async () => {
+    const activeKey = "agent:main:row-maintenance-active";
+    const staleKey = "agent:main:row-maintenance-stale";
+    const { storePath } = await makeTmpStore({
+      [activeKey]: {
+        sessionId: "s-row-maintenance-active",
+        updatedAt: 20,
+      },
+      [staleKey]: {
+        sessionId: "s-row-maintenance-stale",
+        updatedAt: 10,
+      },
+    });
+
+    const persisted = await patchSessionEntryWithRowOptions({
+      storePath,
+      sessionKey: activeKey,
+      maintenanceConfig: resolveMaintenanceConfigFromInput({
+        mode: "enforce",
+        maxEntries: 1,
+      }),
+      update: () => ({ displayName: "kept" }),
+    });
+
+    expect(persisted).toMatchObject({
+      sessionId: "s-row-maintenance-active",
+      displayName: "kept",
+    });
+    const store = loadSessionStore(storePath, { skipCache: true });
+    expect(store[activeKey]).toMatchObject({
+      sessionId: "s-row-maintenance-active",
+      displayName: "kept",
+    });
+    expect(store[staleKey]).toBeUndefined();
   });
 
   it("deletes SQLite session entries without replacing sibling rows", async () => {

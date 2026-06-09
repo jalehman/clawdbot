@@ -17,6 +17,7 @@ import {
 import { resolveSession } from "./session.js";
 
 const sessionStoreMocks = vi.hoisted(() => ({
+  patchSessionEntryWithRowOptions: vi.fn(),
   updateSessionStore: vi.fn(),
 }));
 
@@ -82,6 +83,40 @@ vi.mock("../../config/sessions.js", async () => {
   const writeStore = async (storePath: string, store: Record<string, SessionEntry>) => {
     await writeSessionStoreForMockAsync(storePath, store);
   };
+  const mergeEntry = (existing: SessionEntry | undefined, patch: Partial<SessionEntry>) => ({
+    ...existing,
+    ...patch,
+    sessionId: patch.sessionId ?? existing?.sessionId ?? "mock-session",
+    updatedAt: Math.max(existing?.updatedAt ?? 0, patch.updatedAt ?? 0, Date.now()),
+  });
+  sessionStoreMocks.patchSessionEntryWithRowOptions.mockImplementation(
+    async (params: {
+      storePath: string;
+      sessionKey: string;
+      fallbackEntry?: SessionEntry;
+      update: (
+        entry: SessionEntry,
+      ) => Promise<Partial<SessionEntry> | null> | Partial<SessionEntry> | null;
+      shouldPersist?: (entry: SessionEntry | undefined) => boolean;
+    }) => {
+      const store = await readStore(params.storePath);
+      const existing = store[params.sessionKey] ?? params.fallbackEntry;
+      if (!existing) {
+        return null;
+      }
+      if (params.shouldPersist && !params.shouldPersist(store[params.sessionKey])) {
+        return store[params.sessionKey] ?? null;
+      }
+      const patch = await params.update({ ...existing });
+      if (!patch) {
+        return existing;
+      }
+      const persisted = mergeEntry(store[params.sessionKey] ?? params.fallbackEntry, patch);
+      store[params.sessionKey] = persisted;
+      await writeStore(params.storePath, store);
+      return persisted;
+    },
+  );
   sessionStoreMocks.updateSessionStore.mockImplementation(
     async <T>(
       storePath: string,
@@ -123,18 +158,14 @@ vi.mock("../../config/sessions.js", async () => {
       }
       return patch;
     },
-    mergeSessionEntry: (existing: SessionEntry | undefined, patch: Partial<SessionEntry>) => ({
-      ...existing,
-      ...patch,
-      sessionId: patch.sessionId ?? existing?.sessionId ?? "mock-session",
-      updatedAt: Math.max(existing?.updatedAt ?? 0, patch.updatedAt ?? 0, Date.now()),
-    }),
+    mergeSessionEntry: mergeEntry,
     setSessionRuntimeModel: (entry: SessionEntry, runtime: { provider: string; model: string }) => {
       entry.modelProvider = runtime.provider;
       entry.model = runtime.model;
       return true;
     },
     updateSessionStore: sessionStoreMocks.updateSessionStore,
+    patchSessionEntryWithRowOptions: sessionStoreMocks.patchSessionEntryWithRowOptions,
     loadSessionStore: (storePath: string) => {
       return readSessionStoreForTest(storePath);
     },
@@ -184,6 +215,7 @@ async function writeSessionStoreSeed(
 describe("updateSessionStoreAfterAgentRun", () => {
   it("passes resolved maintenance config to the gateway turn store write", async () => {
     sessionStoreMocks.updateSessionStore.mockClear();
+    sessionStoreMocks.patchSessionEntryWithRowOptions.mockClear();
     await withTempSessionStore(async ({ storePath }) => {
       const cfg = {
         session: {
@@ -224,32 +256,23 @@ describe("updateSessionStoreAfterAgentRun", () => {
         result,
       });
 
-      // The gateway write takes cache ownership and supplies single-entry
-      // persistence so large stores are not rewritten unnecessarily.
-      const updateOptions = sessionStoreMocks.updateSessionStore.mock.calls.at(-1)?.[2];
+      // The gateway write takes cache ownership and stays row-scoped so large
+      // stores are not rewritten unnecessarily.
+      expect(sessionStoreMocks.updateSessionStore).not.toHaveBeenCalled();
+      const updateOptions =
+        sessionStoreMocks.patchSessionEntryWithRowOptions.mock.calls.at(-1)?.[0];
       expect(updateOptions).toMatchObject({
+        storePath,
+        sessionKey,
         takeCacheOwnership: true,
         maintenanceConfig: {
           mode: "enforce",
           maxEntries: 42,
         },
       });
-      expect(typeof updateOptions?.resolveSingleEntryPersistence).toBe("function");
-      expect(
-        updateOptions?.resolveSingleEntryPersistence?.({
-          sessionId,
-          updatedAt: 2,
-        } as SessionEntry),
-      ).toMatchObject({
-        sessionKey,
-        entry: {
-          sessionId,
-          updatedAt: 2,
-        },
-        patch: {
-          model: "gpt-5.5",
-          modelProvider: "openai",
-        },
+      expect(updateOptions?.update({ sessionId, updatedAt: 2 } as SessionEntry)).toMatchObject({
+        model: "gpt-5.5",
+        modelProvider: "openai",
       });
     });
   });
@@ -1993,6 +2016,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
 describe("recordCliCompactionInStore", () => {
   it("persists native compaction token counts and clears stale CLI usage breakdown", async () => {
     sessionStoreMocks.updateSessionStore.mockClear();
+    sessionStoreMocks.patchSessionEntryWithRowOptions.mockClear();
     await withTempSessionStore(async ({ storePath }) => {
       const sessionKey = "agent:main:explicit:test-record-cli-compaction";
       const sessionId = "test-record-cli-compaction-session";
@@ -2045,21 +2069,20 @@ describe("recordCliCompactionInStore", () => {
         tokensAfter: 0,
       });
 
-      const updateOptions = sessionStoreMocks.updateSessionStore.mock.calls.at(-1)?.[2];
-      expect(typeof updateOptions?.resolveSingleEntryPersistence).toBe("function");
+      expect(sessionStoreMocks.updateSessionStore).not.toHaveBeenCalled();
+      const updateOptions =
+        sessionStoreMocks.patchSessionEntryWithRowOptions.mock.calls.at(-1)?.[0];
+      expect(updateOptions).toMatchObject({ storePath, sessionKey });
       expect(updateOptions?.takeCacheOwnership).toBe(true);
-      expect(updateOptions?.resolveSingleEntryPersistence?.(persistedEntry)).toMatchObject({
-        sessionKey,
-        patch: {
-          compactionCount: 1,
-          contextBudgetStatus: undefined,
-          inputTokens: undefined,
-          outputTokens: undefined,
-          cacheRead: undefined,
-          cacheWrite: undefined,
-          totalTokens: 0,
-          totalTokensFresh: true,
-        },
+      expect(updateOptions?.update(persistedEntry as SessionEntry)).toMatchObject({
+        compactionCount: 1,
+        contextBudgetStatus: undefined,
+        inputTokens: undefined,
+        outputTokens: undefined,
+        cacheRead: undefined,
+        cacheWrite: undefined,
+        totalTokens: 0,
+        totalTokensFresh: true,
       });
 
       const persisted = loadSessionStore(storePath);
@@ -2177,6 +2200,7 @@ describe("recordCliCompactionInStore", () => {
 describe("clearCliSessionInStore", () => {
   it("persists cleared Claude CLI bindings through session-store merge", async () => {
     sessionStoreMocks.updateSessionStore.mockClear();
+    sessionStoreMocks.patchSessionEntryWithRowOptions.mockClear();
     await withTempSessionStore(async ({ storePath }) => {
       const sessionKey = "agent:main:explicit:test-clear-claude-cli";
       const entry: SessionEntry = {
@@ -2207,15 +2231,13 @@ describe("clearCliSessionInStore", () => {
         storePath,
       });
 
-      const updateOptions = sessionStoreMocks.updateSessionStore.mock.calls.at(-1)?.[2];
-      expect(typeof updateOptions?.resolveSingleEntryPersistence).toBe("function");
+      expect(sessionStoreMocks.updateSessionStore).not.toHaveBeenCalled();
+      const updateOptions =
+        sessionStoreMocks.patchSessionEntryWithRowOptions.mock.calls.at(-1)?.[0];
+      expect(updateOptions).toMatchObject({ storePath, sessionKey });
       expect(updateOptions?.takeCacheOwnership).toBe(true);
-      expect(updateOptions?.resolveSingleEntryPersistence?.(cleared)).toMatchObject({
-        sessionKey,
-        entry: cleared,
-        patch: {
-          claudeCliSessionId: undefined,
-        },
+      expect(updateOptions?.update(cleared as SessionEntry)).toMatchObject({
+        claudeCliSessionId: undefined,
       });
       expect(cleared?.cliSessionBindings?.["claude-cli"]).toBeUndefined();
       expect(cleared?.cliSessionBindings?.["codex-cli"]).toEqual({

@@ -624,6 +624,7 @@ async function persistResolvedSessionEntry(params: {
     | "preserve-patch-activity"
     | "replace";
   deleteFields?: readonly string[];
+  maintenanceConfig?: ResolvedSessionMaintenanceConfig;
   skipMaintenance?: boolean;
   shouldPersist?: (entry: SessionEntry | undefined) => boolean;
   takeCacheOwnership?: boolean;
@@ -645,6 +646,7 @@ async function persistResolvedSessionEntry(params: {
   }
   await saveSessionStoreUnlocked(params.storePath, params.store, {
     activeSessionKey: params.resolved.normalizedKey,
+    maintenanceConfig: params.maintenanceConfig,
     skipMaintenance: params.skipMaintenance,
     skipSerializeForUnchangedStore: entryUnchanged,
     singleEntryPersistence:
@@ -959,6 +961,7 @@ export async function patchSessionEntryWithRowOptions(
     fallbackEntry?: SessionEntry;
     deleteFields?: readonly string[];
     forcePatchActivity?: boolean;
+    maintenanceConfig?: ResolvedSessionMaintenanceConfig;
     preserveActivity?: boolean;
     preservePatchActivity?: boolean;
     replaceEntry?: boolean;
@@ -1010,6 +1013,7 @@ export async function patchSessionEntryWithRowOptions(
               ? "preserve-patch-activity"
               : "merge",
       deleteFields: params.deleteFields,
+      maintenanceConfig: params.maintenanceConfig,
       skipMaintenance: params.skipMaintenance,
       shouldPersist: params.shouldPersist,
       takeCacheOwnership: params.takeCacheOwnership ?? true,

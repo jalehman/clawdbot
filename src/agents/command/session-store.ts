@@ -6,12 +6,11 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import {
   canonicalizeAbsoluteSessionFilePath,
   deriveSessionEntryPatch,
-  mergeSessionEntry,
   resolveSessionFilePath,
   resolveSessionFilePathOptions,
   setSessionRuntimeModel,
   type SessionEntry,
-  updateSessionStore,
+  patchSessionEntryWithRowOptions,
   rewriteSessionFileForNewSessionId,
 } from "../../config/sessions.js";
 import { resolveMaintenanceConfigFromInput } from "../../config/sessions/store-maintenance.js";
@@ -293,23 +292,14 @@ export async function updateSessionStoreAfterAgentRun(params: {
       }
     : deriveRunMetadataPatch(entry, next);
   const maintenanceConfig = resolveMaintenanceConfigFromInput(cfg.session?.maintenance);
-  const persisted = await updateSessionStore(
+  const persisted = await patchSessionEntryWithRowOptions({
     storePath,
-    (store) => {
-      if (preserveUserFacingRunState && !store[sessionKey]) {
-        return undefined;
-      }
-      const merged = mergeSessionEntry(store[sessionKey], metadataPatch);
-      store[sessionKey] = merged;
-      return merged;
-    },
-    {
-      takeCacheOwnership: true,
-      maintenanceConfig,
-      resolveSingleEntryPersistence: (entryLocal) =>
-        entryLocal ? { sessionKey, entry: entryLocal, patch: metadataPatch } : undefined,
-    },
-  );
+    sessionKey,
+    fallbackEntry: preserveUserFacingRunState ? undefined : entry,
+    update: () => metadataPatch,
+    takeCacheOwnership: true,
+    maintenanceConfig,
+  });
   if (persisted) {
     sessionStore[sessionKey] = persisted;
   }
@@ -336,21 +326,17 @@ export async function clearCliSessionInStore(params: {
     updatedAt: next.updatedAt,
   };
 
-  const persisted = await updateSessionStore(
+  const persisted = await patchSessionEntryWithRowOptions({
     storePath,
-    (store) => {
-      const merged = mergeSessionEntry(store[sessionKey] ?? entry, patch);
-      store[sessionKey] = merged;
-      return merged;
-    },
-    {
-      resolveSingleEntryPersistence: (entryLocal) =>
-        entryLocal ? { sessionKey, entry: entryLocal, patch } : undefined,
-      takeCacheOwnership: true,
-    },
-  );
-  sessionStore[sessionKey] = persisted;
-  return persisted;
+    sessionKey,
+    fallbackEntry: entry,
+    update: () => patch,
+    takeCacheOwnership: true,
+  });
+  if (persisted) {
+    sessionStore[sessionKey] = persisted;
+  }
+  return persisted ?? undefined;
 }
 
 /** Records CLI compaction metadata on the persisted session entry. */
@@ -426,21 +412,17 @@ export async function recordCliCompactionInStore(params: {
     patch.totalTokens = next.totalTokens;
   }
 
-  const persisted = await updateSessionStore(
+  const persisted = await patchSessionEntryWithRowOptions({
     storePath,
-    (store) => {
-      const merged = mergeSessionEntry(store[sessionKey] ?? entry, patch);
-      store[sessionKey] = merged;
-      return merged;
-    },
-    {
-      resolveSingleEntryPersistence: (entryLocal) =>
-        entryLocal ? { sessionKey, entry: entryLocal, patch } : undefined,
-      takeCacheOwnership: true,
-    },
-  );
-  sessionStore[sessionKey] = persisted;
-  return persisted;
+    sessionKey,
+    fallbackEntry: entry,
+    update: () => patch,
+    takeCacheOwnership: true,
+  });
+  if (persisted) {
+    sessionStore[sessionKey] = persisted;
+  }
+  return persisted ?? undefined;
 }
 
 function resolveCompactionSessionFile(params: {
