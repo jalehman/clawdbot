@@ -36,7 +36,7 @@ import {
   resolveThreadBindingPlacementForCurrentContext,
   resolveThreadBindingSpawnPolicy,
 } from "../../../channels/thread-bindings-policy.js";
-import { updateSessionStore } from "../../../config/sessions.js";
+import { patchSessionEntry } from "../../../config/sessions.js";
 import type { SessionAcpMeta } from "../../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
@@ -474,16 +474,13 @@ async function persistSpawnedSessionLabel(params: {
   if (!params.commandParams.storePath) {
     return;
   }
-  await updateSessionStore(params.commandParams.storePath, (store) => {
-    const existing = store[params.sessionKey];
-    if (!existing) {
-      return;
-    }
-    store[params.sessionKey] = {
-      ...existing,
+  await patchSessionEntry({
+    storePath: params.commandParams.storePath,
+    sessionKey: params.sessionKey,
+    update: () => ({
       label,
       updatedAt: now,
-    };
+    }),
   });
 }
 
