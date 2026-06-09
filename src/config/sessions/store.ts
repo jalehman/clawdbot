@@ -954,7 +954,9 @@ export async function patchSessionEntryWithRowOptions(
     preserveActivity?: boolean;
     preservePatchActivity?: boolean;
     replaceEntry?: boolean;
+    skipMaintenance?: boolean;
     shouldPersist?: (entry: SessionEntry | undefined) => boolean;
+    takeCacheOwnership?: boolean;
     update: (
       entry: SessionEntry,
     ) => Promise<Partial<SessionEntry> | null> | Partial<SessionEntry> | null;
@@ -995,8 +997,9 @@ export async function patchSessionEntryWithRowOptions(
             ? "preserve-patch-activity"
             : "merge",
       deleteFields: params.deleteFields,
+      skipMaintenance: params.skipMaintenance,
       shouldPersist: params.shouldPersist,
-      takeCacheOwnership: true,
+      takeCacheOwnership: params.takeCacheOwnership ?? true,
       returnDetached: true,
     });
   });

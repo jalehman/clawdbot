@@ -3,6 +3,7 @@ export {
   applySessionStoreEntryPatch,
   deleteSessionEntry,
   patchSessionEntry,
+  patchSessionEntryWithRowOptions,
   updateSessionStore,
   updateSessionStoreEntry,
 } from "./store.js";

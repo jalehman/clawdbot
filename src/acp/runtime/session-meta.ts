@@ -385,18 +385,6 @@ function mergeAcpForReturn(entry: SessionEntry | undefined, acp: SessionAcpMeta)
   return mergeSessionEntry(entry, { acp });
 }
 
-function sessionStoreUpdateOptions(params: {
-  sessionKey: string;
-  skipMaintenance?: boolean;
-  takeCacheOwnership?: boolean;
-}) {
-  return {
-    activeSessionKey: normalizeLowercaseStringOrEmpty(params.sessionKey),
-    ...(params.skipMaintenance === true ? { skipMaintenance: true } : {}),
-    ...(params.takeCacheOwnership === true ? { takeCacheOwnership: true } : {}),
-  };
-}
-
 export async function upsertAcpSessionMeta(params: {
   sessionKey: string;
   cfg?: OpenClawConfig;
@@ -468,33 +456,30 @@ export async function upsertAcpSessionMeta(params: {
     if (!entry) {
       return null;
     }
-    const { updateSessionStore } = await loadSessionStoreRuntime();
-    return await updateSessionStore(
-      storeEntry.storePath,
-      (store) => {
-        const storeSessionKey = resolveStoreSessionKey(store, storageSessionKey);
-        const next = { ...(store[storeSessionKey] ?? entry) };
-        delete next.acp;
-        store[storeSessionKey] = next;
-        return next;
-      },
-      sessionStoreUpdateOptions({ ...params, sessionKey: storageSessionKey }),
-    );
+    const { patchSessionEntryWithRowOptions } = await loadSessionStoreRuntime();
+    return await patchSessionEntryWithRowOptions({
+      storePath: storeEntry.storePath,
+      sessionKey: storageSessionKey,
+      fallbackEntry: entry,
+      deleteFields: ["acp"],
+      preserveActivity: true,
+      skipMaintenance: params.skipMaintenance,
+      takeCacheOwnership: params.takeCacheOwnership,
+      update: () => ({}),
+    });
   }
-  const { updateSessionStore } = await loadSessionStoreRuntime();
-  const persisted = await updateSessionStore(
-    storeEntry.storePath,
-    (store) => {
-      const storeSessionKey = resolveStoreSessionKey(store, storageSessionKey);
-      const next = mergeSessionEntry(store[storeSessionKey], {
-        sessionId: preparedEntry?.sessionId,
-        updatedAt,
-      });
-      delete next.acp;
-      store[storeSessionKey] = next;
-      return next;
-    },
-    sessionStoreUpdateOptions({ ...params, sessionKey: storageSessionKey }),
-  );
-  return mergeAcpForReturn(persisted, nextMeta);
+  const { patchSessionEntryWithRowOptions } = await loadSessionStoreRuntime();
+  const persisted = await patchSessionEntryWithRowOptions({
+    storePath: storeEntry.storePath,
+    sessionKey: storageSessionKey,
+    fallbackEntry: preparedEntry,
+    deleteFields: ["acp"],
+    skipMaintenance: params.skipMaintenance,
+    takeCacheOwnership: params.takeCacheOwnership,
+    update: () => ({
+      sessionId: preparedEntry?.sessionId,
+      updatedAt,
+    }),
+  });
+  return mergeAcpForReturn(persisted ?? undefined, nextMeta);
 }
