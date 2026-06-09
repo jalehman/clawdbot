@@ -7,10 +7,18 @@ import {
   isModelKeyAllowedBySet,
 } from "../../agents/model-selection-shared.js";
 import { resolveAgentModelFallbackValues } from "../../config/model-input.js";
-import type { SessionEntry } from "../../config/sessions.js";
+import {
+  deriveSessionEntryPatch,
+  patchSessionEntryWithRowOptions,
+  type SessionEntry,
+} from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { applyModelOverrideToSessionEntry } from "../../sessions/model-overrides.js";
 import type { MsgContext, TemplateContext } from "../templating.js";
+import {
+  copySessionEntryPatchFields,
+  MODEL_OVERRIDE_SESSION_PATCH_FIELDS,
+} from "./directive-session-patch.js";
 import {
   modelKey,
   resolveModelDirectiveSelection,
@@ -106,17 +114,18 @@ function buildSelectionFromExplicit(params: {
   };
 }
 
-function applySelectionToSession(params: {
+async function applySelectionToSession(params: {
   selection: ModelDirectiveSelection;
   sessionEntry?: SessionEntry;
   sessionStore?: Record<string, SessionEntry>;
   sessionKey?: string;
   storePath?: string;
-}) {
+}): Promise<void> {
   const { selection, sessionEntry, sessionStore, sessionKey, storePath } = params;
   if (!sessionEntry || !sessionStore || !sessionKey) {
     return;
   }
+  const previousSessionEntry = { ...sessionEntry };
   const { updated } = applyModelOverrideToSessionEntry({
     entry: sessionEntry,
     selection,
@@ -126,15 +135,21 @@ function applySelectionToSession(params: {
   }
   sessionStore[sessionKey] = sessionEntry;
   if (storePath) {
-    void import("../../config/sessions.js")
-      .then(({ updateSessionStore }) =>
-        updateSessionStore(storePath, (store) => {
-          store[sessionKey] = sessionEntry;
-        }),
-      )
-      .catch(() => {
-        // Ignore persistence errors; session still proceeds.
+    const patch = deriveSessionEntryPatch(previousSessionEntry, sessionEntry);
+    copySessionEntryPatchFields(patch, sessionEntry, MODEL_OVERRIDE_SESSION_PATCH_FIELDS);
+    try {
+      const persisted = await patchSessionEntryWithRowOptions({
+        storePath,
+        sessionKey,
+        fallbackEntry: sessionEntry,
+        update: () => patch,
       });
+      if (persisted) {
+        sessionStore[sessionKey] = persisted;
+      }
+    } catch {
+      // Ignore persistence errors; session still proceeds.
+    }
   }
 }
 
@@ -247,7 +262,7 @@ export async function applyResetModelOverride(params: {
   params.sessionCtx.BodyStripped = cleanedBody;
   params.sessionCtx.BodyForCommands = cleanedBody;
 
-  applySelectionToSession({
+  await applySelectionToSession({
     selection,
     sessionEntry: params.sessionEntry,
     sessionStore: params.sessionStore,

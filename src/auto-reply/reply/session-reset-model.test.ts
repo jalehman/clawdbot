@@ -1,8 +1,17 @@
 // Tests reset model selection and persisted model override cleanup.
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.js";
 import type { OpenClawConfig } from "../../config/config.js";
-import type { SessionEntry } from "../../config/sessions.js";
+import {
+  clearSessionStoreCacheForTest,
+  loadSessionStore,
+  saveSessionStore,
+  type SessionEntry,
+} from "../../config/sessions.js";
+import { closeSqliteSessionStoreDatabase } from "../../config/sessions/store-sqlite.js";
 import type { ModelAliasIndex } from "./model-selection-directive.js";
 import { applyResetModelOverride } from "./session-reset-model.js";
 
@@ -10,6 +19,17 @@ const modelCatalog: ModelCatalogEntry[] = [
   { provider: "minimax", id: "m2.7", name: "M2.7" },
   { provider: "openai", id: "gpt-4o-mini", name: "GPT-4o mini" },
 ];
+
+async function withTempStore<T>(run: (params: { storePath: string }) => Promise<T>): Promise<T> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-reset-model-"));
+  try {
+    return await run({ storePath: path.join(dir, "sessions.json") });
+  } finally {
+    closeSqliteSessionStoreDatabase(path.join(dir, "sessions.json"));
+    clearSessionStoreCacheForTest();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
 
 function createResetFixture(entry: Partial<SessionEntry> = {}) {
   const cfg = {} as OpenClawConfig;
@@ -75,6 +95,51 @@ describe("applyResetModelOverride", () => {
     expect(sessionEntry.authProfileOverride).toBeUndefined();
     expect(sessionEntry.authProfileOverrideSource).toBeUndefined();
     expect(sessionEntry.authProfileOverrideCompactionCount).toBeUndefined();
+  });
+
+  it("persists reset model overrides as row-scoped patches", async () => {
+    await withTempStore(async ({ storePath }) => {
+      const sessionKey = "agent:main:dm:1";
+      const fixture = createResetFixture();
+      await saveSessionStore(
+        storePath,
+        {
+          [sessionKey]: {
+            sessionId: "s1",
+            updatedAt: 1,
+            groupActivation: "always",
+            authProfileOverride: "stale-profile",
+            authProfileOverrideSource: "user",
+          },
+        },
+        { skipMaintenance: true },
+      );
+
+      await applyResetModelOverride({
+        cfg: fixture.cfg,
+        resetTriggered: true,
+        bodyStripped: "minimax summarize",
+        sessionCtx: fixture.sessionCtx,
+        ctx: fixture.ctx,
+        sessionEntry: fixture.sessionEntry,
+        sessionStore: fixture.sessionStore,
+        sessionKey,
+        storePath,
+        defaultProvider: "openai",
+        defaultModel: "gpt-4o-mini",
+        aliasIndex: fixture.aliasIndex,
+        modelCatalog,
+      });
+
+      const stored = loadSessionStore(storePath, { skipCache: true });
+      expect(stored[sessionKey]).toMatchObject({
+        providerOverride: "minimax",
+        modelOverride: "m2.7",
+        groupActivation: "always",
+      });
+      expect(stored[sessionKey]?.authProfileOverride).toBeUndefined();
+      expect(stored[sessionKey]?.authProfileOverrideSource).toBeUndefined();
+    });
   });
 
   it("skips when resetTriggered is false", async () => {

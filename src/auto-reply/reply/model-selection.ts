@@ -29,7 +29,7 @@ import {
   OPENAI_PROVIDER_ID,
   listOpenAIAuthProfileProvidersForAgentRuntime,
 } from "../../agents/openai-routing.js";
-import type { SessionEntry } from "../../config/sessions/types.js";
+import { deriveSessionEntryPatch, type SessionEntry } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { applyModelOverrideToSessionEntry } from "../../sessions/model-overrides.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
@@ -38,6 +38,10 @@ export {
   resolveModelDirectiveSelection,
   type ModelDirectiveSelection,
 } from "./model-selection-directive.js";
+import {
+  copySessionEntryPatchFields,
+  MODEL_OVERRIDE_SESSION_PATCH_FIELDS,
+} from "./directive-session-patch.js";
 import {
   isStaleHeartbeatAutoFallbackOverride,
   resolveStoredModelOverride,
@@ -282,6 +286,7 @@ export async function createModelSelectionState(params: {
     );
     const key = modelKey(normalizedOverride.provider, normalizedOverride.model);
     if (staleDirectStoredOverride || !visibilityPolicy.allowsKey(key)) {
+      const previousSessionEntry = { ...sessionEntry };
       const { updated } = applyModelOverrideToSessionEntry({
         entry: sessionEntry,
         selection: { provider: primaryProvider, model: primaryModel, isDefault: true },
@@ -290,11 +295,19 @@ export async function createModelSelectionState(params: {
       if (updated) {
         sessionStore[sessionKey] = sessionEntry;
         if (storePath) {
-          await (
+          const patch = deriveSessionEntryPatch(previousSessionEntry, sessionEntry);
+          copySessionEntryPatchFields(patch, sessionEntry, MODEL_OVERRIDE_SESSION_PATCH_FIELDS);
+          const persisted = await (
             await loadSessionStoreRuntime()
-          ).updateSessionStore(storePath, (store) => {
-            store[sessionKey] = sessionEntry;
+          ).patchSessionEntryWithRowOptions({
+            storePath,
+            sessionKey,
+            fallbackEntry: sessionEntry,
+            update: () => patch,
           });
+          if (persisted) {
+            sessionStore[sessionKey] = persisted;
+          }
         }
       }
       resetModelOverride = updated;

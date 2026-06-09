@@ -1,4 +1,7 @@
 // Tests model selection resolution from directives, config, and session state.
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MODEL_CONTEXT_TOKEN_CACHE } from "../../agents/context-cache.js";
 import {
@@ -6,7 +9,13 @@ import {
   loadModelCatalog as loadModelCatalogLocal,
 } from "../../agents/model-catalog.runtime.js";
 import type { OpenClawConfig } from "../../config/config.js";
-import type { SessionEntry } from "../../config/sessions.js";
+import {
+  clearSessionStoreCacheForTest,
+  loadSessionStore,
+  saveSessionStore,
+  type SessionEntry,
+} from "../../config/sessions.js";
+import { closeSqliteSessionStoreDatabase } from "../../config/sessions/store-sqlite.js";
 import { createModelSelectionState, resolveContextTokens } from "./model-selection.js";
 
 vi.mock("../../agents/model-catalog.runtime.js", () => ({
@@ -73,6 +82,17 @@ const makeConfiguredModel = (overrides: Record<string, unknown> = {}) => ({
   maxTokens: 16_384,
   ...overrides,
 });
+
+async function withTempStore<T>(run: (params: { storePath: string }) => Promise<T>): Promise<T> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-model-selection-"));
+  try {
+    return await run({ storePath: path.join(dir, "sessions.json") });
+  } finally {
+    closeSqliteSessionStoreDatabase(path.join(dir, "sessions.json"));
+    clearSessionStoreCacheForTest();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
 
 describe("createModelSelectionState catalog loading", () => {
   it("skips full catalog loading for ordinary allowlist-backed turns", async () => {
@@ -989,6 +1009,62 @@ describe("createModelSelectionState respects session model override", () => {
     expect(state.resetModelOverrideRef).toBe("openai/gpt-4o-mini");
     expect(sessionStore[sessionKey]?.modelOverride).toBeUndefined();
     expect(sessionStore[sessionKey]?.providerOverride).toBeUndefined();
+  });
+
+  it("persists disallowed override cleanup as a row-scoped patch", async () => {
+    await withTempStore(async ({ storePath }) => {
+      const cfg = {
+        agents: {
+          defaults: {
+            model: { primary: "openai/gpt-4o" },
+            models: {
+              "openai/gpt-4o": {},
+            },
+          },
+        },
+      } as OpenClawConfig;
+      const sessionKey = "agent:main:telegram:direct:1";
+      const sessionEntry = makeEntry({
+        providerOverride: "openai",
+        modelOverride: "gpt-4o-mini",
+      });
+      const sessionStore = { [sessionKey]: sessionEntry };
+      await saveSessionStore(
+        storePath,
+        {
+          [sessionKey]: {
+            sessionId: "session-id",
+            updatedAt: 1,
+            providerOverride: "openai",
+            modelOverride: "gpt-4o-mini",
+            groupActivation: "always",
+          },
+        },
+        { skipMaintenance: true },
+      );
+
+      await createModelSelectionState({
+        cfg,
+        agentCfg: cfg.agents?.defaults,
+        sessionEntry,
+        sessionStore,
+        sessionKey,
+        storePath,
+        defaultProvider: "openai",
+        defaultModel: "gpt-4o",
+        provider: "openai",
+        model: "gpt-4o",
+        hasModelDirective: false,
+      });
+
+      const stored = loadSessionStore(storePath, { skipCache: true });
+      expect(stored[sessionKey]).toMatchObject({
+        sessionId: "session-id",
+        groupActivation: "always",
+      });
+      expect(stored[sessionKey]?.providerOverride).toBeUndefined();
+      expect(stored[sessionKey]?.modelOverride).toBeUndefined();
+    });
   });
 
   it("keeps wildcard-provider overrides when configured catalog rows are unavailable", async () => {
