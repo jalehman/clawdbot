@@ -10,6 +10,7 @@ import {
   resolveSessionFilePathOptions,
   rewriteSessionFileForNewSessionId,
   type SessionEntry,
+  patchSessionEntryWithRowOptions,
   updateSessionStore,
 } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -317,17 +318,27 @@ export async function incrementCompactionCount(params: {
   } else if (incrementBy > 0) {
     updates.totalTokensFresh = false;
   }
-  sessionStore[sessionKey] = {
-    ...entry,
-    ...updates,
-  };
+  const tokenBreakdownFields: Array<keyof SessionEntry> =
+    tokensAfterCompaction !== undefined
+      ? ["inputTokens", "outputTokens", "cacheRead", "cacheWrite"]
+      : [];
+  let nextEntry = { ...entry, ...updates };
+  for (const field of tokenBreakdownFields) {
+    Reflect.deleteProperty(nextEntry, field);
+  }
+  sessionStore[sessionKey] = nextEntry;
   if (storePath) {
-    await updateSessionStore(storePath, (store) => {
-      store[sessionKey] = {
-        ...store[sessionKey],
-        ...updates,
-      };
+    const persisted = await patchSessionEntryWithRowOptions({
+      storePath,
+      sessionKey,
+      fallbackEntry: entry,
+      deleteFields: tokenBreakdownFields,
+      update: () => updates,
     });
+    if (persisted) {
+      nextEntry = persisted;
+      sessionStore[sessionKey] = persisted;
+    }
   }
   if ((sessionIdChanged || sessionFileChanged) && cfg) {
     emitCompactionSessionLifecycleHooks({
@@ -335,7 +346,7 @@ export async function incrementCompactionCount(params: {
       sessionKey,
       storePath,
       previousEntry: entry,
-      nextEntry: sessionStore[sessionKey],
+      nextEntry,
     });
   }
   return nextCount;

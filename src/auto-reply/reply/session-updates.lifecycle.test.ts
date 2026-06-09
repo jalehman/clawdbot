@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import { loadSessionStore } from "../../config/sessions/store.js";
 import type { HookRunner } from "../../plugins/hooks.js";
 
 const hookRunnerMocks = vi.hoisted(() => ({
@@ -107,5 +108,41 @@ describe("session-updates lifecycle hooks", () => {
     expect(startContext?.sessionId).toBe("s2");
     expect(startContext?.sessionKey).toBe(sessionKey);
     expect(startContext?.agentId).toBe("main");
+  });
+
+  it("clears stale token breakdown fields when persisting post-compaction totals", async () => {
+    const { storePath, sessionKey, sessionStore, entry } = await createFixture();
+    entry.inputTokens = 10;
+    entry.outputTokens = 20;
+    entry.cacheRead = 30;
+    entry.cacheWrite = 40;
+    await fs.writeFile(storePath, JSON.stringify(sessionStore, null, 2), "utf-8");
+
+    await incrementCompactionCount({
+      sessionEntry: entry,
+      sessionStore,
+      sessionKey,
+      storePath,
+      tokensAfter: 123,
+    });
+
+    expect(sessionStore[sessionKey]).toMatchObject({
+      totalTokens: 123,
+      totalTokensFresh: true,
+    });
+    expect(sessionStore[sessionKey]).not.toHaveProperty("inputTokens");
+    expect(sessionStore[sessionKey]).not.toHaveProperty("outputTokens");
+    expect(sessionStore[sessionKey]).not.toHaveProperty("cacheRead");
+    expect(sessionStore[sessionKey]).not.toHaveProperty("cacheWrite");
+
+    const persisted = loadSessionStore(storePath, { skipCache: true })[sessionKey];
+    expect(persisted).toMatchObject({
+      totalTokens: 123,
+      totalTokensFresh: true,
+    });
+    expect(persisted).not.toHaveProperty("inputTokens");
+    expect(persisted).not.toHaveProperty("outputTokens");
+    expect(persisted).not.toHaveProperty("cacheRead");
+    expect(persisted).not.toHaveProperty("cacheWrite");
   });
 });
