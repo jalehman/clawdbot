@@ -11,7 +11,6 @@ import {
   rewriteSessionFileForNewSessionId,
   type SessionEntry,
   patchSessionEntryWithRowOptions,
-  updateSessionStore,
 } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
@@ -44,20 +43,15 @@ async function persistSessionEntryUpdate(params: {
   if (!params.storePath) {
     return;
   }
-  await updateSessionStore(
-    params.storePath,
-    (store) => {
-      const next = { ...store[params.sessionKey!], ...params.nextEntry };
-      store[params.sessionKey!] = next;
-      return next;
-    },
-    {
-      resolveSingleEntryPersistence: (entry) =>
-        entry && params.sessionKey
-          ? { sessionKey: params.sessionKey, entry, patch: params.nextEntry }
-          : null,
-    },
-  );
+  const persisted = await patchSessionEntryWithRowOptions({
+    storePath: params.storePath,
+    sessionKey: params.sessionKey,
+    fallbackEntry: params.sessionStore[params.sessionKey],
+    update: () => params.nextEntry,
+  });
+  if (persisted) {
+    params.sessionStore[params.sessionKey] = persisted;
+  }
 }
 
 function emitCompactionSessionLifecycleHooks(params: {

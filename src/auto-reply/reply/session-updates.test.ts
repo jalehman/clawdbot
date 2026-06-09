@@ -12,6 +12,8 @@ const {
   resolveAgentConfigMock,
   resolveSessionAgentIdMock,
   resolveAgentIdFromSessionKeyMock,
+  patchSessionEntryWithRowOptionsMock,
+  updateSessionStoreMock,
 } = vi.hoisted(() => ({
   buildWorkspaceSkillSnapshotMock: vi.fn((..._args: unknown[]) => ({
     prompt: "",
@@ -29,6 +31,8 @@ const {
   resolveAgentConfigMock: vi.fn(() => undefined),
   resolveSessionAgentIdMock: vi.fn(() => "writer"),
   resolveAgentIdFromSessionKeyMock: vi.fn(() => "main"),
+  patchSessionEntryWithRowOptionsMock: vi.fn(),
+  updateSessionStoreMock: vi.fn(),
 }));
 
 vi.mock("../../agents/agent-scope.js", () => ({
@@ -54,8 +58,8 @@ vi.mock("../../skills/runtime/refresh-state.js", () => ({
 }));
 
 vi.mock("../../config/sessions.js", () => ({
-  updateSessionStore: vi.fn(),
-  patchSessionEntryWithRowOptions: vi.fn(),
+  updateSessionStore: updateSessionStoreMock,
+  patchSessionEntryWithRowOptions: patchSessionEntryWithRowOptionsMock,
   resolveSessionFilePath: vi.fn(),
   resolveSessionFilePathOptions: vi.fn(),
 }));
@@ -116,5 +120,55 @@ describe("ensureSkillSnapshot", () => {
     expect(workspaceDir).toBe(TEST_WORKSPACE_DIR);
     expect(snapshotParams.agentId).toBe("writer");
     expect(resolveAgentIdFromSessionKeyMock).not.toHaveBeenCalled();
+  });
+
+  it("persists generated snapshots with a row-scoped session entry patch", async () => {
+    vi.stubEnv("OPENCLAW_TEST_FAST", "0");
+    const sessionStore = {
+      main: {
+        sessionId: "session-1",
+        updatedAt: 1000,
+        lastChannel: "discord",
+      },
+    };
+    patchSessionEntryWithRowOptionsMock.mockResolvedValue({
+      ...sessionStore.main,
+      updatedAt: 2000,
+      systemSent: true,
+      skillsSnapshot: { prompt: "fresh", skills: [], resolvedSkills: [] },
+    });
+
+    await ensureSkillSnapshot({
+      sessionStore,
+      sessionKey: "main",
+      storePath: "/tmp/sessions.sqlite",
+      isFirstTurnInSession: true,
+      workspaceDir: TEST_WORKSPACE_DIR,
+      cfg: {},
+    });
+
+    expect(updateSessionStoreMock).not.toHaveBeenCalled();
+    expect(patchSessionEntryWithRowOptionsMock).toHaveBeenCalledTimes(1);
+    const [persistCall] = patchSessionEntryWithRowOptionsMock.mock.calls[0] as [
+      {
+        storePath: string;
+        sessionKey: string;
+        fallbackEntry: typeof sessionStore.main;
+        update: () => unknown;
+      },
+    ];
+    expect(persistCall.storePath).toBe("/tmp/sessions.sqlite");
+    expect(persistCall.sessionKey).toBe("main");
+    expect(persistCall.fallbackEntry).toMatchObject({
+      sessionId: "session-1",
+      lastChannel: "discord",
+      systemSent: true,
+    });
+    expect(persistCall.update()).toMatchObject({
+      sessionId: "session-1",
+      lastChannel: "discord",
+      systemSent: true,
+    });
+    expect(sessionStore.main.skillsSnapshot?.prompt).toBe("fresh");
   });
 });
