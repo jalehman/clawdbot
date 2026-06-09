@@ -10,6 +10,7 @@ import { splitTrailingAuthProfile } from "../../../agents/model-ref-profile.js";
 import { normalizeConfiguredProviderCatalogModelId } from "../../../agents/model-ref-shared.js";
 import { resolveModelRuntimePolicy } from "../../../agents/model-runtime-policy.js";
 import { openAIProviderUsesCodexRuntimeByDefault } from "../../../agents/openai-routing.js";
+import { readSessionStoreReadOnly } from "../../../config/sessions/store-read.js";
 import { loadSessionStore, updateSessionStore } from "../../../config/sessions/store.js";
 import { resolveAllAgentSessionStoreTargetsSync } from "../../../config/sessions/targets.js";
 import type { SessionEntry } from "../../../config/sessions/types.js";
@@ -3042,7 +3043,7 @@ export async function maybeRepairCodexSessionRoutes(params: {
   if (!params.shouldRepair) {
     const stale = targets.flatMap((target) => {
       const sessionKeys = scanCodexSessionStoreRoutes(
-        loadSessionStore(target.storePath, { skipCache: true, clone: false }),
+        readSessionStoreReadOnly(target.storePath, { clone: false }),
       );
       return sessionKeys.map((sessionKey) => `${target.agentId}:${sessionKey}`);
     });

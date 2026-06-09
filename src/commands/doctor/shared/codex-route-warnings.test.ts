@@ -1,6 +1,10 @@
 // Codex route warning tests cover doctor diagnostics for Codex route configuration.
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveAgentHarnessPolicy } from "../../../agents/harness/policy.js";
+import { resolveSqliteSessionStoreDatabasePath } from "../../../config/sessions/store-sqlite.js";
 import type { SessionEntry } from "../../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 
@@ -34,6 +38,7 @@ vi.mock("../../../plugins/installed-plugin-index.js", async (importOriginal) => 
 import {
   collectCodexRouteWarnings,
   maybeRepairCodexRoutes,
+  maybeRepairCodexSessionRoutes,
   repairCodexSessionStoreRoutes,
 } from "./codex-route-warnings.js";
 
@@ -3796,6 +3801,30 @@ describe("collectCodexRouteWarnings", () => {
     expect(store.main.fallbackNoticeReason).toBeUndefined();
     expect(store.other.updatedAt).toBe(2);
     expect(store.other.agentHarnessId).toBe("codex");
+  });
+
+  it("does not create a SQLite session database while preview-scanning a missing store", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-codex-routes-"));
+    try {
+      const storePath = path.join(root, "configured-sessions.json");
+      const databasePath = resolveSqliteSessionStoreDatabasePath(storePath);
+
+      const result = await maybeRepairCodexSessionRoutes({
+        cfg: { session: { store: storePath } } as OpenClawConfig,
+        shouldRepair: false,
+      });
+
+      expect(result).toMatchObject({
+        scannedStores: 1,
+        repairedStores: 0,
+        repairedSessions: 0,
+        warnings: [],
+        changes: [],
+      });
+      expect(fs.existsSync(databasePath)).toBe(false);
+    } finally {
+      fs.rmSync(root, { force: true, recursive: true });
+    }
   });
 
   it("preserves explicit OpenClaw runtime pins while repairing legacy session routes", () => {
