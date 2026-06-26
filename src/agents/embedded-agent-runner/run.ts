@@ -1683,6 +1683,7 @@ async function runEmbeddedAgentInternal(
       const rateLimitProfileRotationLimit = resolveRateLimitProfileRotationLimit(params.config);
       let activeSessionId = params.sessionId;
       let activeSessionFile = params.sessionFile;
+      let activeSessionTarget: ContextEngineSessionTarget | undefined = params.sessionTarget;
       const adoptActiveSessionId = (nextSessionId: string | undefined) => {
         if (!nextSessionId || nextSessionId === activeSessionId) {
           return;
@@ -1696,6 +1697,23 @@ async function runEmbeddedAgentInternal(
           sessionId: activeSessionId,
           lifecycleGeneration,
         });
+      };
+      const adoptActiveSessionTarget = async (
+        nextSessionTarget: ContextEngineSessionTarget | undefined,
+      ) => {
+        if (!nextSessionTarget) {
+          return;
+        }
+        const resolvedTarget = await resolveAgentRunSessionTarget({
+          agentId: nextSessionTarget.agentId ?? sessionAgentId,
+          config: params.config,
+          sessionId: nextSessionTarget.sessionId ?? activeSessionId,
+          sessionKey: nextSessionTarget.sessionKey ?? resolvedSessionKey,
+          sessionTarget: nextSessionTarget,
+        });
+        activeSessionTarget = nextSessionTarget;
+        activeSessionFile = resolvedTarget.sessionFile;
+        adoptActiveSessionId(resolvedTarget.sessionId);
       };
       let suppressNextUserMessagePersistence = params.suppressNextUserMessagePersistence ?? false;
       // The embedded agent owns JSONL persistence; this marker lets the outer retry avoid
@@ -1923,9 +1941,10 @@ async function runEmbeddedAgentInternal(
           ...hookCtx,
           sessionId: activeSessionId,
         });
-        const adoptCompactionTranscript = (
+        const adoptCompactionTranscript = async (
           compactResult: Awaited<ReturnType<typeof contextEngine.compact>>,
         ) => {
+          await adoptActiveSessionTarget(compactResult.result?.sessionTarget);
           const nextSessionId = compactResult.result?.sessionId;
           adoptActiveSessionId(nextSessionId);
         };
@@ -2201,6 +2220,7 @@ async function runEmbeddedAgentInternal(
             replyToMode: params.replyToMode,
             hasRepliedRef: params.hasRepliedRef,
             sessionFile: activeSessionFile,
+            sessionTarget: activeSessionTarget,
             trajectorySessionFile,
             workspaceDir: resolvedWorkspace,
             cwd: params.cwd,
@@ -2664,7 +2684,7 @@ async function runEmbeddedAgentInternal(
                 };
               }
               if (timeoutCompactResult.compacted) {
-                adoptCompactionTranscript(timeoutCompactResult);
+                await adoptCompactionTranscript(timeoutCompactResult);
               }
               await runOwnsCompactionAfterHook("timeout recovery", timeoutCompactResult);
               if (timeoutCompactResult.compacted) {
@@ -2868,7 +2888,7 @@ async function runEmbeddedAgentInternal(
                   params.abortSignal,
                 );
                 if (compactResult.ok && compactResult.compacted) {
-                  adoptCompactionTranscript(compactResult);
+                  await adoptCompactionTranscript(compactResult);
                   await runContextEngineMaintenance({
                     contextEngine,
                     sessionId: activeSessionId,
@@ -2910,7 +2930,7 @@ async function runEmbeddedAgentInternal(
                 continue;
               }
               if (compactResult.compacted) {
-                adoptCompactionTranscript(compactResult);
+                await adoptCompactionTranscript(compactResult);
                 if (
                   typeof compactResult.result?.tokensAfter === "number" &&
                   Number.isFinite(compactResult.result.tokensAfter) &&
