@@ -1944,8 +1944,18 @@ async function runEmbeddedAgentInternal(
         const adoptCompactionTranscript = async (
           compactResult: Awaited<ReturnType<typeof contextEngine.compact>>,
         ) => {
-          await adoptActiveSessionTarget(compactResult.result?.sessionTarget);
           const nextSessionId = compactResult.result?.sessionId;
+          const nextSessionTarget = compactResult.result?.sessionTarget;
+          const nextSessionFile = (compactResult.result as { sessionFile?: string } | undefined)
+            ?.sessionFile;
+          await adoptActiveSessionTarget(
+            nextSessionTarget && nextSessionId
+              ? { ...nextSessionTarget, sessionId: nextSessionTarget.sessionId ?? nextSessionId }
+              : nextSessionTarget,
+          );
+          if (!nextSessionTarget && nextSessionFile) {
+            activeSessionFile = nextSessionFile;
+          }
           adoptActiveSessionId(nextSessionId);
         };
         const onCompactionHookMessages = async (payload: {
