@@ -55,6 +55,45 @@ function extractTextMessageContent(content: unknown): string | undefined {
   return undefined;
 }
 
+function renderSessionMemoryMessage(entry: unknown): string | undefined {
+  if (!entry || typeof entry !== "object") {
+    return undefined;
+  }
+  const record = entry as {
+    message?: {
+      content?: unknown;
+      provenance?: unknown;
+      role?: unknown;
+    };
+    type?: unknown;
+  };
+  if (record.type !== "message" || !record.message) {
+    return undefined;
+  }
+  const role = record.message.role;
+  if ((role !== "user" && role !== "assistant") || !("content" in record.message)) {
+    return undefined;
+  }
+  if (role === "user" && hasInterSessionUserProvenance(record.message)) {
+    return undefined;
+  }
+  const text = extractTextMessageContent(record.message.content);
+  const sanitized = text ? sanitizeSessionMemoryTranscriptText(text) : null;
+  return sanitized && !sanitized.startsWith("/") ? `${role}: ${sanitized}` : undefined;
+}
+
+/** Renders recent user/assistant transcript events into session memory text. */
+export function getRecentSessionContentFromEvents(
+  events: readonly unknown[],
+  messageCount = 15,
+): string | null {
+  const allMessages = events.flatMap((event) => {
+    const rendered = renderSessionMemoryMessage(event);
+    return rendered ? [rendered] : [];
+  });
+  return allMessages.slice(-messageCount).join("\n");
+}
+
 export async function getRecentSessionContent(
   sessionFilePath: string,
   messageCount = 15,
@@ -63,34 +102,16 @@ export async function getRecentSessionContent(
     const content = await fs.readFile(sessionFilePath, "utf-8");
     const lines = content.trim().split("\n");
 
-    const allMessages: string[] = [];
-    for (const line of lines) {
-      try {
-        const entry = JSON.parse(line);
-        if (entry.type === "message" && entry.message) {
-          const msg = entry.message as {
-            role?: unknown;
-            content?: unknown;
-            provenance?: unknown;
-          };
-          const role = msg.role;
-          if ((role === "user" || role === "assistant") && "content" in msg && msg.content) {
-            if (role === "user" && hasInterSessionUserProvenance(msg)) {
-              continue;
-            }
-            const text = extractTextMessageContent(msg.content);
-            const sanitized = text ? sanitizeSessionMemoryTranscriptText(text) : null;
-            if (sanitized && !sanitized.startsWith("/")) {
-              allMessages.push(`${role}: ${sanitized}`);
-            }
-          }
+    return getRecentSessionContentFromEvents(
+      lines.flatMap((line) => {
+        try {
+          return [JSON.parse(line) as unknown];
+        } catch {
+          return [];
         }
-      } catch {
-        // Skip invalid JSON lines.
-      }
-    }
-
-    return allMessages.slice(-messageCount).join("\n");
+      }),
+      messageCount,
+    );
   } catch {
     return null;
   }
