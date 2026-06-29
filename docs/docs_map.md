@@ -1129,6 +1129,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: ClawSweeper activity forwarding
   - H2: Manual dispatches
   - H2: Runners
+  - H2: Runner registration budget
   - H2: Local equivalents
   - H2: OpenClaw Performance
   - H2: Full Release Validation
@@ -1471,6 +1472,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Structured Health Checks
   - H2: Check Selection
   - H2: Post-upgrade mode
+  - H2: Session SQLite migration
   - H2: macOS: launchctl env overrides
   - H2: Related
 
@@ -1756,6 +1758,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
 - Headings:
   - H2: Commands
   - H3: Author
+  - H3: Provider Scaffold
   - H3: Install
   - H4: Marketplace shorthand
   - H3: List
@@ -2885,6 +2888,12 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
 - Headings:
   - H2: What it is
   - H2: Where it shows up
+  - H2: Default usage footer mode
+  - H3: Three distinct session states
+  - H3: Precedence
+  - H3: Resetting vs. turning off
+  - H3: Toggle behavior
+  - H3: Config
   - H2: Custom /usage full footer
   - H3: Shape
   - H3: Contract Paths
@@ -3742,7 +3751,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Insecure or dangerous flags summary
   - H2: Reverse proxy configuration
   - H2: HSTS and origin notes
-  - H2: Local session logs live on disk
+  - H2: Local session history lives on disk
   - H2: Node execution (system.run)
   - H2: Dynamic skills (watcher / remote nodes)
   - H2: The threat model
@@ -4188,6 +4197,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H3: Health checks
   - H3: LAN vs loopback
   - H3: Host Local Providers
+  - H3: Claude CLI backend in Docker
   - H3: Bonjour / mDNS
   - H3: Storage and persistence
   - H3: Shell helpers (optional)
@@ -4592,6 +4602,32 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Troubleshooting tips
   - H2: Related
 
+## maturity/scorecard.md
+
+- Route: /maturity/scorecard
+- Headings:
+  - H1: Maturity scorecard
+  - H2: What this page is for
+  - H2: At a glance
+  - H2: Score bands
+  - H2: Surface explorer
+  - H2: QA evidence summary
+  - H3: Readiness by area
+
+## maturity/taxonomy.md
+
+- Route: /maturity/taxonomy
+- Headings:
+  - H1: Maturity taxonomy
+  - H2: How to read this page
+  - H2: Maturity levels
+  - H2: Product areas
+  - H2: Details
+  - H3: Core
+  - H3: Platform
+  - H3: Channel
+  - H3: Provider and tool
+
 ## network.md
 
 - Route: /network
@@ -4815,6 +4851,16 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Open questions
   - H2: Acceptance criteria
 
+## plan/path3-sqlite-session-artifact-family.md
+
+- Route: /plan/path3-sqlite-session-artifact-family
+- Headings:
+  - H1: Path 3 SQLite Session Artifact Family
+  - H2: Authoritative family
+  - H2: Non-family artifacts after the flip
+  - H2: Patch points
+  - H2: Focused tests
+
 ## plan/ui-channels.md
 
 - Route: /plan/ui-channels
@@ -4922,6 +4968,8 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Install the CLI (required for local mode)
   - H2: Launchd (Gateway as LaunchAgent)
   - H2: Version compatibility
+  - H2: State directory on macOS
+  - H2: Debug app connectivity
   - H2: Smoke check
   - H2: Related
 
@@ -5126,20 +5174,12 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
 
 - Route: /platforms/macos
 - Headings:
-  - H2: What it does
-  - H2: Local vs remote mode
-  - H2: Launchd control
-  - H2: Node capabilities (mac)
-  - H2: Exec approvals (system.run)
-  - H2: Deep links
-  - H3: openclaw://agent
-  - H2: Onboarding flow (typical)
-  - H2: State dir placement (macOS)
-  - H2: Build and dev workflow (native)
-  - H2: Debug gateway connectivity (macOS CLI)
-  - H2: Remote connection plumbing (SSH tunnels)
-  - H3: Control tunnel (Gateway WebSocket port)
-  - H2: Related docs
+  - H2: Download
+  - H2: First run
+  - H2: Choose a Gateway mode
+  - H2: What the app owns
+  - H2: macOS detail pages
+  - H2: Related
 
 ## platforms/oracle.md
 
@@ -5437,6 +5477,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Plugin install
   - H2: Quickstart
   - H2: Supported providers
+  - H2: BYOK
   - H2: Auth
   - H2: Configuration surface
   - H2: Compaction
@@ -6830,6 +6871,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H3: Tool-result middleware
   - H3: Terminal outcome classification
   - H3: Agent-end side effects
+  - H3: User input and tool surfaces
   - H3: Native Codex harness mode
   - H2: Runtime strictness
   - H2: Native sessions and transcript mirror
@@ -8133,6 +8175,19 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H3: Example
   - H2: Related
 
+## reference/path3-live-sqlite-e2e-harness.md
+
+- Route: /reference/path3-live-sqlite-e2e-harness
+- Headings:
+  - H2: Command shape
+  - H2: Isolated built-CLI proof
+  - H2: Preflight
+  - H2: Agent-driven scenario
+  - H2: Per-step assertions
+  - H2: Evidence artifact
+  - H2: Safety rules
+  - H2: Passing result
+
 ## reference/prompt-caching.md
 
 - Route: /reference/prompt-caching
@@ -8228,8 +8283,8 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Cron sessions and run logs
   - H2: Session keys (sessionKey)
   - H2: Session ids (sessionId)
-  - H2: Session store schema (sessions.json)
-  - H2: Transcript structure (.jsonl)
+  - H2: Session store schema
+  - H2: Transcript event structure
   - H2: Context windows vs tracked tokens
   - H2: Compaction: what it is
   - H2: Compaction chunk boundaries and tool pairing
